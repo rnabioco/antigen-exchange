@@ -1,0 +1,1002 @@
+---
+title: "Antigen Tracking Analysis"
+author: "Ryan Sheridan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc:            true
+    toc_float:      true
+    toc_depth:      2
+    df_print:       "paged"
+    code_folding:   "hide"
+    self_contained: true
+    highlight:      "kate"
+    
+params:
+  drop:          "R/object.rds"
+  genome:        "mmusculus"                        # Genome to use for GO analysis
+  template_dir:  "src"                              # Directory containing template Rmarkdowns
+  res_dir:       "results/2022-10-28"               # Directory to save results
+  obj_dir:       "Ryan/Projects"                    # Dropbox path for loading/saving Seurat objects
+  table_dir:     "tables"
+  ref_dir:       "ref"                              # Directory to use for loading/saving clustifyr references
+  mito_max:      20
+  gene_min:      250
+  gene_max:      5000
+  rm_doublets:   false
+  
+  type_res:      5
+  lec_res:       0.3
+  fib_res:       3
+  dc_res:        3
+  rslns:
+    value:       [1, 3, 5]
+  
+  # These parameters specify the input matrices and cell types that should be used for analysis
+  sobjs:
+    value:
+      LEC-P2:    "stromal_P2-JH300_1"
+      LEC-P4:    "stromal_P4-JH300_2"
+      LEC-P4-P2: "stromal_P4_P2-JH300_3"
+      DC-P2:     "DC_P2-JH300_4"
+      DC-P4:     "DC_P4-JH300_5"
+      DC-P4-P2:  "DC_P4_P2-JH300_6"
+      
+  ag_key:
+    value:
+      6wk: ["ABPS4", "P4"]
+      3wk: ["ABPS2", "P2"]
+---
+
+---
+
+<br>
+
+```{r "setup", include = FALSE}
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo    = FALSE,
+  dpi     = 300
+)
+
+# Default chunk options
+knitr::knit(here::here(params$res_dir, "setup.Rmd"), "")
+
+library(celda)
+library(singleCellTK)
+library(scater)
+
+# Run decontX
+decontx <- !file.exists(here(params$res_dir, params$obj_dir, "so_lec_dct.qs"))
+
+so_dc_sub <- so_dc_sub %>%
+  mutate_meta(
+    mutate,
+    sub_type = recode(sub_type, CCR7hi = "activated migratory DCs")
+  )
+
+```
+
+```{r "theme"}
+
+# ggplot2 themes
+txt_pt1  <- 10
+txt_pt2  <- 12
+ttl_pt1  <- 14
+ttl_pt2  <- 16
+ln_pt    <- 0.5
+ln_col   <- "grey85"
+cir_size <- 3.5
+sqr_size <- 4
+
+txt_theme_1 <- theme(
+  strip.text  = element_text(size = ttl_pt1),
+  legend.text = element_text(size = txt_pt1),
+  axis.title  = element_text(size = txt_pt2),
+  axis.text   = element_text(size = txt_pt1)
+)
+
+line_theme <- theme(
+  axis.line.x  = element_line(size = ln_pt, color = ln_col),
+  axis.line.y  = element_line(size = ln_pt, color = ln_col),
+  axis.ticks.x = element_line(size = ln_pt, color = ln_col),
+  axis.ticks.y = element_line(size = ln_pt, color = ln_col)
+)
+
+base_theme <- theme_cowplot() +
+  theme(
+    plot.title       = element_text(face = "plain", size = ttl_pt2),
+    strip.background = element_blank(),
+    strip.text       = element_text(face = "plain")
+  ) +
+  txt_theme_1 +
+  line_theme
+
+umap_theme <- base_theme +
+  theme(
+    axis.title   = element_blank(),
+    axis.line.x  = element_blank(),
+    axis.line.y  = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text    = element_blank()
+  )
+
+box_theme <- base_theme +
+  theme(
+    legend.position = "none",
+    axis.line.x     = element_blank(),
+    axis.line.y     = element_blank(),
+    panel.border    = element_rect(fill = NA, color = ln_col, size = ln_pt),
+    axis.text.x     = element_text(angle = 45, hjust = 1),
+    axis.title.x    = element_blank()
+  )
+
+fade_0 <- "#FAFAFA"
+fade_1 <- "#F0F0F0"
+fade_2 <- "#D9D9D9"
+
+hist_y_lab <- "number of cells"
+
+# alpha for plots
+al <- 0.7
+
+# Okabe Ito color palettes
+ito_cols <- c(
+  palette_OkabeIto[c(1:3, 5)], "#D7301F",
+  palette_OkabeIto[c(4, 6)],   "#6A51A3",
+  palette_OkabeIto[7],         "#875C04",
+  "#065D43", "#FFD6AD", "#00446E"
+)
+
+ito_cols <- ito_cols[3:length(ito_cols)] %>%
+  darken(0.2) %>%
+  c(ito_cols, ., "#686868", "#000000")
+
+# Set sample colors
+get_cols <- create_col_fun(ito_cols)
+
+sam_cols <- get_cols()[seq_along(sam_lvls)]
+
+names(sam_cols) <- sam_lvls
+
+n_sams <- length(sam_lvls)
+
+# Cell type colors
+type_cols <- unique(so_df$cell_type)
+type_cols <- set_names(ito_cols[seq_along(type_cols)], type_cols)
+
+type_cols["unassigned"] <- "#999999"
+
+lec_cols <- unique(so_lec_sub_df$sub_type)
+lec_cols <- set_names(ito_cols[seq_along(lec_cols)], lec_cols)
+
+lec_cols["unassigned"] <- "#999999"
+
+dc_cols <- unique(so_dc_sub$sub_type)
+dc_cols <- set_names(ito_cols[seq_along(dc_cols)], dc_cols)
+
+dc_cols["unassigned"] <- "#999999"
+
+# Ags for plots
+ag_clrs <- c("#D7301F", "#6A51A3")
+
+ags <- colnames(so_df)
+ags <- rel_ags <- grep("^Ag_[0-9]+wk", ags, value = TRUE)
+
+ags <- set_names(
+  ag_clrs[seq_along(ags)],
+  ags
+)
+
+rel_ags <- set_names(
+  unname(ags),
+  str_c("rel_", rel_ags)
+)
+
+# Set colors
+mice <- unique(so_lec$mouse)
+
+mouse_cols <- set_names(
+  sam_cols[seq_along(mice)],
+  mice
+)
+
+mouse_cols["6wk"]     <- "#6A51A3"
+mouse_cols["6wk_3wk"] <- "#D7301F"
+
+sam_cols_2 <- set_names(
+  sam_cols[seq_along(sam_lvls_2)],
+  sam_lvls_2
+)
+
+ag_grps <- unique(so_lec$Ag_class)
+
+ag_cols <- set_names(
+  ito_cols[c(2, 5)],
+  ag_grps
+)
+
+ag_pos_grp <- "Ag+"
+
+```
+
+```{r "load matrices"}
+
+# FOR DECONTX
+
+# Load raw matrices
+raw_paths <- params$sobjs %>%
+  map_chr(~ here(params$res, .x))
+
+sce_raw <- importCellRanger(
+  sampleDirs  = raw_paths,
+  sampleNames = names(raw_paths),
+  dataType    = "raw"
+)
+
+# Load filtered matrices
+filt_paths <- params$sobjs %>%
+  map_chr(~ here(params$res, .x))
+
+sce_filt <- importCellRanger(
+  sampleDirs  = filt_paths,
+  sampleNames = names(filt_paths),
+  dataType    = "filtered"
+)
+
+```
+
+```{r "DECONTX", eval = decontx}
+
+# Decontx
+sce <- decontX(
+  x          = sce_filt,
+  background = sce_raw,
+  batch      = sce_filt$sample,
+  bgBatch    = sce_raw$sample
+)
+
+decont_dat <- sce@assays@data$decontXcounts[c("ABPS2", "ABPS4"), ] %>%
+  t() %>%
+  as.data.frame()
+
+met_dat <- sce@colData[c("cell_barcode", "sample", "decontX_contamination")]
+
+decont_dat <- cbind(decont_dat, met_dat)
+
+# Add results to LEC meta.data
+lec_dct_dat <- so_lec@meta.data %>%
+  select(orig.ident) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  mutate(cell_barcode = str_remove(.cell_id, "_[0-9]+$")) %>%
+  inner_join(decont_dat, by = c("cell_barcode", orig.ident = "sample")) %>%
+  select(-cell_barcode, -orig.ident) %>%
+  column_to_rownames(".cell_id")
+
+so_lec_dct <- so_lec %>%
+  AddMetaData(lec_dct_dat)
+
+# Add results to DC meta.data
+dc_dct_dat <- so_dc@meta.data %>%
+  select(orig.ident) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  mutate(cell_barcode = str_remove(.cell_id, "_[0-9]+$")) %>%
+  inner_join(decont_dat, by = c("cell_barcode", orig.ident = "sample")) %>%
+  select(-cell_barcode, -orig.ident) %>%
+  column_to_rownames(".cell_id")
+
+so_dc_dct <- so_dc %>%
+  AddMetaData(dc_dct_dat)
+
+# Save objects
+so_lec_dct %>%
+  qsave(here(params$res_dir, params$obj_dir, "so_lec_dct.qs"))
+
+so_dc_dct %>%
+  qsave(here(params$res_dir, params$obj_dir, "so_dc_dct.qs"))
+
+```
+
+```{r "load decontx objects"}
+
+# Save objects
+so_lec_dct <- qread(here(params$res_dir, params$obj_dir, "so_lec_dct.qs"))
+so_dc_dct  <- qread(here(params$res_dir, params$obj_dir, "so_dc_dct.qs"))
+
+so_dc_dct <- so_dc_dct %>%
+  mutate_meta(
+    mutate,
+    sub_type = recode(sub_type, CCR7hi = "activated migratory DCs")
+  )
+
+```
+
+## Background signal
+
+The fraction of total counts present in cell-containing droplets is shown below for each library.
+
+```{r "EMPTY DROP CONTAMINATION", fig.width = 13, fig.height = 3}
+
+# Ag columns
+ag_key <- c(
+  Ag_6wk = "ABPS2",
+  Ag_3wk = "ABPS4"
+)
+
+ag_key_dct <- ag_key
+names(ag_key_dct) <- str_c(names(ag_key_dct), "_dct")
+
+# Calculate total raw and filtered counts
+lib_counts <- sce_raw@assays@data$counts[c("ABPS2", "ABPS4"), ] %>%
+  t() %>%
+  as_tibble(rownames = ".cell_id") %>%
+  mutate(
+    .cell_id = rownames(sce_raw@colData),
+    sample   = sce_raw@colData$sample,
+    is_cell  = .cell_id %in% rownames(sce_filt@colData)
+  ) %>%
+  
+  group_by(sample, is_cell) %>%
+  summarize(
+    across(starts_with("ABPS"), sum),
+    n_cells = n(),
+    .groups = "drop"
+  ) %>%
+  dplyr::rename(!!!syms(ag_key)) %>%
+  pivot_longer(all_of(names(ag_key))) %>%
+  
+  group_by(sample) %>%
+  mutate(total_counts = sum(value)) %>%
+  
+  group_by(sample, name) %>%
+  mutate(frac = value / sum(value)) %>%
+  ungroup()
+
+# Plot raw and filtered counts
+lib_counts %>%
+  mutate(name = fct_relevel(name, names(ag_key))) %>%
+  ggplot(aes(name, frac, fill = is_cell)) +
+  geom_col() +
+  facet_wrap(~ sample, nrow = 1) +
+  labs(y = "fraction total counts", x = "Ag tag") +
+  djvdj_theme()
+
+# Library sizes to use for normalization
+lib_sizes <- lib_counts %>%
+  filter(is_cell) %>%
+  group_by(sample) %>%
+  summarize(total_counts = sum(value), .groups = "drop")
+
+lib_sizes <- set_names(
+  lib_sizes$total_counts,
+  lib_sizes$sample
+)
+
+```
+
+<br>
+
+## LEC Ag signal
+
+Relative Ag-6wk or Ag-3wk signal (expressed relative to mean B/T cell counts) is shown below for each timepoint.
+
+```{r "LEC AG BOXES", fig.width = 12, fig.height = 3}
+
+create_Ag_boxes <- function(df, fill = "mouse", ag_clmn, pseudo = NULL,
+                            ag_clrs = mouse_cols, typ_lvls, ttl, hline = 1,
+                            log_trans = TRUE, include_p = TRUE) {
+  
+  # Format data
+  dat <- df %>%
+    mutate(
+      value    = !!sym(ag_clmn),
+      sub_type = fct_relevel(sub_type, typ_lvls)
+    )
+  
+  if (is.null(pseudo)) {
+    dat <- dat %>%
+      mutate(value = value + (min(value[value > 0]) / 2))
+    
+  } else {
+    dat <- dat %>%
+      mutate(value = value + pseudo)
+  }
+  
+  # Create boxplots
+  typ_labs <- get_nlab_fun(dat, "sub_type", l = "\n", r = "")
+  
+  res <- dat %>%
+    ggplot(aes(sub_type, value)) +
+    geom_boxplot(
+      aes(fill = !!sym(fill)),
+      outlier.size = 0.25, alpha = 0.85, key_glyph = draw_key_point,
+      position = position_dodge2(preserve = "single")
+    ) +
+    labs(y = ttl) +
+    guides(fill = guide_legend(override.aes = list(size = 4, shape = 22))) +
+    scale_fill_manual(values = ag_clrs) +
+    scale_x_discrete(labels = typ_labs) +
+    djvdj_theme() +
+    theme(
+      axis.title.x = element_blank(),
+      axis.text.x  = element_text(size = 10),
+      legend.text  = element_text(size = 10)
+    )
+  
+  # Log-transform
+  if (log_trans) {
+    res <- res +
+      scale_y_log10(
+        expand = expansion(c(0.05, 0.1)),
+        labels = trans_format("log10", math_format(10^.x)), breaks = 10^(-4:4)
+      )
+  }
+  
+  # Add hline
+  if (!is.null(hline)) {
+    res <- res +
+      geom_hline(yintercept = hline, linetype = 2)
+  }
+  
+  # Calculate p-values
+  if (fill != "sub_type" && include_p) {
+    p <- dat %>%
+      group_by(sub_type) %>%
+      summarize(
+        p    = (pairwise.wilcox.test(value, !!sym(fill)))$p.value,
+        p    = as.double(p),
+        n    = n(),
+        grps = str_c(unique(!!sym(fill)), collapse = ", "),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        p = p.adjust(p, method = "bonf"),
+        p = format_pvalue(p)
+      )
+    
+    res <- res +
+      geom_richtext(
+        aes(sub_type, Inf, label = p),
+        data        = p,
+        fill        = NA,
+        label.color = NA,
+        vjust       = 1.05,
+        size        = 8 / .pt
+      )
+  }
+
+  res
+}
+
+plt_dat <- so_lec@meta.data %>%
+  filter(cell_type == "LEC")
+
+names(rel_ags) %>%
+  map(~ {
+    ms  <- str_extract(.x, "[0-9]+wk")
+    ttl <- str_c("relative Ag-", ms)
+    
+    plt_dat %>%
+      filter(grepl(ms, mouse)) %>%
+      create_Ag_boxes(
+        ag_clmn  = .x,
+        fill     = "mouse",
+        ag_clrs  = mouse_cols,
+        typ_lvls = names(lec_cols),
+        ttl      = ttl
+      )
+  }) %>%
+  plot_grid(plotlist = ., nrow = 1)
+
+```
+
+<br>
+
+```{r "LEC AG BOXES 2", fig.width = 10, fig.height = 4}
+
+plt_dat <- so_lec@meta.data %>%
+  filter(cell_type == "LEC")
+
+names(rel_ags) %>%
+  map(~ {
+    ms  <- str_extract(.x, "[0-9]+wk")
+    ttl <- str_c("relative Ag-", ms)
+    
+    plt_dat %>%
+      filter(grepl(ms, mouse)) %>%
+      create_Ag_boxes(
+        ag_clmn  = .x,
+        fill     = "mouse",
+        ag_clrs  = mouse_cols,
+        typ_lvls = rev(names(lec_cols)),
+        ttl      = ttl,
+        include_p = FALSE
+      ) +
+      coord_flip() +
+      theme(
+        axis.title.x = element_text(),
+        axis.title.y = element_blank()
+      )
+  }) %>%
+  plot_grid(plotlist = ., nrow = 1)
+
+```
+
+```{r "LEC AG BOXES 3", fig.width = 8, fig.height = 5, eval = FALSE}
+
+# Function to create plots
+create_Ag_boxes <- function(df, fill = "mouse", ag_clmn, pseudo = NULL,
+                            ag_clrs = mouse_cols, typ_lvls,
+                            log_trans = TRUE, include_p = TRUE, x_lim = c(0.01, 2000)) {
+  
+  # Format data
+  dat <- df %>%
+    mutate(
+      value    = !!sym(ag_clmn),
+      sub_type = fct_relevel(sub_type, typ_lvls)
+    )
+  
+  if (is.null(pseudo)) {
+    dat <- dat %>%
+      mutate(value = value + (min(value[value > 0]) / 2))
+    
+  } else {
+    dat <- dat %>%
+      mutate(value = value + pseudo)
+  }
+  
+  # browser()
+  
+  # Create boxplots
+  typ_labs <- get_nlab_fun(dat, "sub_type", l = "\n(", r = ")")
+  
+  res <- dat %>%
+    ggplot(aes(value, sub_type)) +
+    geom_violin(aes(fill = !!sym(fill)), size = 0.3, draw_quantiles = c(0.25, 0.75), alpha = 0.75) +
+    stat_summary(geom = "point", color = "black", fun = median) +
+    
+    scale_color_manual(values = ag_clrs) +
+    scale_fill_manual(values = ag_clrs) +
+    scale_y_discrete(labels = typ_labs) +
+    theme_minimal_vgrid() +
+    theme(
+      legend.position    = "none",
+      axis.title.y       = element_blank(),
+      axis.title         = element_text(size = 10),
+      axis.text          = element_text(size = 8),
+      axis.ticks.x       = element_line(size = 0.1),
+      panel.grid.major.x = element_line(size = 0.1)
+    ) +
+    labs(x = "Relative ova signal")
+  
+  # Log-transform
+  if (log_trans) {
+    res <- res +
+      scale_x_log10(
+        expand = expansion(c(0.05, 0.02)),
+        labels = trans_format("log10", math_format(10^.x)), breaks = 10^(-4:4),
+        limits = x_lim
+      )
+  }
+
+  res
+}
+
+# Cell type colors
+clrs <- c(
+  "Epithelial" = "#6A51A3",
+  "B cell"     = "#E69F00",
+  "T cell"     = "#009E73",
+  "NK"         = "#6A51A3",
+  "Unassigned" = "#999999",
+  "Marco_LEC"  = "#CC79A7",
+  "Collecting" = "#D7301F",
+  "Valve"      = "#8C4651",
+  "Ptx3_LEC"   = "#F0E442",
+  "cLEC"       = "#56B4E9",
+  "fLEC"       = "#D55E00",
+  "BEC"        = "#0072B2"
+)
+
+# Create plots
+plt_dat <- so_lec@meta.data %>%
+  filter(cell_type %in% c("LEC", "BEC", "T cells", "B cells", "Epithelial cells")) %>%
+  mutate(
+    sub_type = ifelse(cell_type != "LEC", cell_type, sub_type),
+    sub_type = recode(
+      sub_type,
+      `B cells` = "B cell",
+      `T cells` = "T cell",
+      `Epithelial cells` = "Epithelial"
+    )
+  )
+
+names(rel_ags) %>%
+  rev() %>%
+  map(~ {
+    ms  <- str_extract(.x, "[0-9]+wk")
+    
+    dat <- plt_dat %>%
+      filter(mouse == ms)
+    
+    plt_lvls <- dat %>%
+      group_by(sub_type) %>%
+      summarize(!!sym(.x) := median(!!sym(.x))) %>%
+      arrange(!!sym(.x)) %>%
+      pull(sub_type)
+    
+    dat %>%
+      create_Ag_boxes(
+        ag_clmn  = .x,
+        fill     = "sub_type",
+        ag_clrs  = clrs,
+        typ_lvls = plt_lvls,
+        x_lim    = c(0.01, 4900)
+      ) +
+      ggtitle(ms) +
+      theme(
+        panel.grid.major.x = element_line(color = "grey85", size = 0.25),
+        plot.title   = element_text(face = "plain"),
+        axis.title.x = element_text(),
+        axis.title.y = element_blank()
+      )
+  }) %>%
+  plot_grid(plotlist = ., nrow = 1)
+
+# ggsave("../2022-10-18_LEC_figure.png", width = 8, height = 6, dpi = 500, bg = "white")
+
+```
+
+<br>
+
+## UMAPs
+
+UMAPs show relative Ag-6wk or Ag-3wk signal for LEC subsets.
+
+```{r "LEC AG UMAPS", fig.width = 16, fig.height = 5}
+
+create_Ag_umaps <- function(df, typ_clmn = "sub_type", ag_clmn, typ_clrs = lec_cols,
+                            ag_clrs = c("#56B4E9", "white", "#D7301F"),
+                            ag_clr_pos = c(0, 0.5, 1), typ_size = 1, ag_size = 2,
+                            log_trans = TRUE) {
+  
+  # Legend title
+  ttl <- str_extract(ag_clmn, "[0-9]+wk$")
+  ttl <- str_c("relative\nAg-", ttl)
+  
+  # Theme parameters
+  plt_theme <- djvdj_theme() +
+    theme(
+      aspect.ratio = 0.9,
+      strip.text   = element_text(size = 16),
+      axis.title   = element_blank(),
+      axis.text    = element_blank(),
+      axis.ticks   = element_blank()
+    )
+  
+  # Cell type UMAP
+  typ_labs <- get_nlab_fun(df, typ_clmn, l = " (", r = ")")
+  
+  typ_u <- df %>%
+    mutate(key = "Cell type") %>%
+    plot_scatter(
+      data_col = typ_clmn,
+      size     = typ_size
+    ) +
+    scale_color_manual(values = typ_clrs, labels = typ_labs) +
+    guides(color = guide_legend(nrow = 5, override.aes = list(size = 4))) +
+    facet_wrap(~ key) +
+    plt_theme +
+    theme(
+      legend.position  = "bottom",
+      legend.direction = "vertical",
+      legend.title     = element_blank()
+    )
+  
+  # Ag UMAP
+  log_trans <- rep(log_trans, nrow(df))
+  
+  sig_u <- df %>%
+    mutate(
+      value = min((!!sym(ag_clmn))[!!sym(ag_clmn) > 0]) / 2,
+      value = if_else(log_trans, !!sym(ag_clmn) + value, !!sym(ag_clmn))
+    ) %>%
+    arrange(value) %>%
+    
+    ggplot(aes(UMAP_1, UMAP_2, fill = value)) +
+    geom_point_trace(size = ag_size) +
+    scale_fill_gradientn(
+      colours = ag_clrs,
+      values  = ag_clr_pos,
+      # low    = ag_clrs[1],
+      # mid    = "white",
+      # high   = ag_clrs[2],
+      # midpoint = mid_point
+      trans  = ifelse(log_trans[1], "log10", "identity"),
+      labels = trans_format("log10", math_format(10^.x)), breaks = 10^(-4:4)
+    ) +
+    guides(fill = guide_colorbar(
+      title     = ttl,
+      ticks     = FALSE,
+      barwidth  = unit(10, "pt"),
+      barheight = unit(150, "pt")
+    )) +
+    facet_wrap(~ mouse) +
+    plt_theme
+  
+  # Create final figure
+  res <- plot_grid(
+    typ_u, sig_u,
+    nrow  = 1,
+    align = "h",
+    axis  = "tb",
+    rel_widths = c(1, 3)
+  )
+  
+  res
+}
+
+# LEC subset UMAPs
+so_lec_sub@meta.data %>%
+  create_Ag_umaps(
+    ag_clmn = "rel_Ag_6wk",
+    ag_clr_pos = c(0, 0.5, 1)
+  )
+
+so_lec_sub@meta.data %>%
+  create_Ag_umaps(ag_clmn = "rel_Ag_3wk")
+
+```
+
+
+
+
+```{r "DSB TEST", eval = FALSE}
+
+library(dsb)
+
+# Background cell barcodes
+ag_all_bcs  <- sce_raw@assays@data$counts[unname(ag_key), ]
+colnames(ag_all_bcs) <- colnames(sce_raw)
+
+ag_all_bcs <- ag_all_bcs[, !colnames(ag_all_bcs) %in% colnames(ag_cell_bcs)]
+
+# Cell-associated barcodes
+ag_cell_bcs <- sce_filt@assays@data$counts[unname(ag_key), ]
+colnames(ag_cell_bcs) <- colnames(sce_filt)
+
+# DSB correction
+dsb_counts <- DSBNormalizeProtein(
+  cell_protein_matrix = ag_cell_bcs,
+  empty_drop_matrix   = ag_all_bcs,
+  use.isotype.control = FALSE
+)
+
+dsb_counts <- dsb_counts %>%
+  t() %>%
+  as_tibble(rownames = "cell_id") %>%
+  dplyr::rename(
+    Ag_6wk_dsb = "ABPS2",
+    Ag_3wk_dsb = "ABPS4"
+  )
+
+# Plot corrected counts
+plt_dat <- so_norm@meta.data %>%
+  as_tibble(rownames = "cell_id") %>%
+  mutate(
+    cell_id = str_c(orig.ident, "_", cell_id),
+    cell_id = str_remove(cell_id, "_[0-9]+$")
+  ) %>%
+  left_join(dsb_counts, by = "cell_id") %>%
+  filter(cell_type %in% c("LEC", "T cells", "B cells")) %>%
+  mutate(sub_type = if_else(cell_type == "LEC", sub_type, cell_type))
+
+# c("Ag_6wk_dct", "Ag_3wk_dct") %>%
+# c("rel_Ag_6wk", "rel_Ag_3wk") %>%
+c("Ag_6wk_dsb", "Ag_3wk_dsb") %>%
+  map(~ {
+    ms  <- str_extract(.x, "[0-9]+wk")
+    ttl <- str_c("corrected Ag-", ms)
+    
+    plt_dat %>%
+      filter(grepl(ms, mouse)) %>%
+      create_Ag_boxes(
+        ag_clmn   = .x,
+        fill      = "mouse",
+        # log_trans = FALSE,
+        hline     = NULL,
+        pseudo    = 0,
+        ag_clrs   = mouse_cols,
+        typ_lvls  = names(lec_cols),
+        ttl       = ttl
+      )
+  }) %>%
+  plot_grid(plotlist = ., nrow = 1)
+
+```
+
+```{r, eval = FALSE}
+
+control_grps <- c("B cells", "T cells", "Tgd")
+
+x <- so_lec %>%
+  mutate_meta(~ {
+    .x %>%
+      group_by(orig.ident) %>%
+      mutate(
+        mn_6wk = mean(Ag_6wk[cell_type %in% control_grps]),
+        mn_3wk = mean(Ag_3wk[cell_type %in% control_grps]),
+        new_6wk = Ag_6wk / mn_6wk,
+        new_3wk = Ag_3wk / mn_3wk
+      ) %>%
+      ungroup()
+  })
+
+# Boxplots
+clmn <- "new_6wk"
+clmn <- "new_3wk"
+
+x@meta.data %>%
+  mutate(
+    sub_type = if_else(cell_type == "LEC", sub_type, cell_type),
+    value    = min((!!sym(clmn))[!!sym(clmn) > 0]),
+    value    = value / 2,
+    value    = !!sym(clmn) + value
+  ) %>%
+  ggplot(aes(sub_type, value, fill = mouse)) +
+  geom_boxplot() +
+  scale_y_log10()
+
+so_lec@meta.data %>%
+  mutate(sub_type = if_else(cell_type == "LEC", sub_type, cell_type)) %>%
+  group_by(orig.ident, sub_type) %>%
+  summarize(
+    sum = sum(nCount_ADT),
+    mn_tot  = mean(nCount_ADT),
+    mn  = mean(Ag_6wk),
+    n   = n(),
+    .groups = "drop"
+  ) %>%
+  as.data.frame()
+  
+dat <- so_lec@meta.data %>%
+  group_by(orig.ident) %>%
+  mutate(
+    Ag_6wk = Ag_6wk / sum(Ag_6wk),
+    Ag_6wk = Ag_6wk + 7.984924e-06
+  ) %>%
+  ungroup()
+  
+dat %>%
+  ggplot(aes(sub_type, Ag_6wk, fill = mouse)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  djvdj_theme()
+
+```
+
+```{r "APOPTOSIS GENES", eval = FALSE}
+
+# positive regulation of endothelial cell apoptotic process
+# endothelial cell proliferation
+gns <- c(
+  "Apoa1",
+  "Apc",
+  "Xbp1",
+  "Tek",
+  "Itgb1bp1",
+  "Cd34",
+  "Bmp4",
+  "Epha2",
+  "Col18a1",
+  "Scarb1",
+  "Vegfa",
+  "Bmper",
+  "Prkx",
+  "Cav1",
+  "Fgf10",
+  "Ern1",
+  "Enpep",
+  "Pdgfb",
+  "Calca",
+  "Dlg1",
+  # "Prok1",
+  # "Prok2",
+  "Cav2",
+  "Sema5a",
+  "Bmpr2",
+  "Nf1",
+  "Fgfr3",
+  "Fgf7",
+  "Fgf2",
+  "Thap1",
+  "Hmgb1",
+  "Vstm4",
+  "Pik3cb",
+  "Loxl2",
+  "Tgfbr1",
+  "Nrarp"
+)
+
+# endothelial cell apoptotic process
+gns <- c(
+  "Braf",
+  "Col18a1",
+  "Cd248",
+  "Angptl4",
+  "Tnf",
+  "Col4a3",
+  "Bmpr2",
+  "Hipk1",
+  "Id1"
+)
+
+so_lec_sub %>%
+  subset(mouse == "6wk_3wk") %>%
+  FetchData(c("orig.ident", "mouse", "sub_type", gns)) %>%
+  pivot_longer(all_of(gns)) %>%
+  ggplot(aes(sub_type, value, fill = sub_type)) +
+  geom_boxplot() +
+  facet_wrap(mouse ~ name) +
+  djvdj_theme()
+
+```
+
+```{r "DECONTX TEST PLOTS", eval = FALSE}
+
+# TEST PLOTS
+sig <- "ABPS2"
+sig <- "Ag_6wk"
+sig <- "rel_Ag_6wk"
+
+sig <- "ABPS4"
+sig <- "Ag_3wk"
+sig <- "rel_Ag_3wk"
+
+so_dct@meta.data %>%
+  # filter(!!sym(sig) > 0) %>%
+  # filter(mouse != "3wk") %>%
+  filter(cell_type %in% c("LEC", "T cells", "B cells")) %>%
+  # filter(cell_type %in% "LEC") %>%
+  mutate(sub_type = if_else(cell_type == "LEC", sub_type, cell_type)) %>%
+  mutate(
+    pseudo = min((!!sym(sig))[!!sym(sig) > 0]) / 2,
+    !!sym(sig) := !!sym(sig) + pseudo
+  ) %>%
+  
+  # mutate(!!sym(sig) := if_else(!!sym(sig) < 0.00004, 0, !!sym(sig))) %>%
+  
+  ggplot(aes(sub_type, !!sym(sig), fill = sub_type)) +
+  # ggplot(aes(sub_type, !!sym(sig), fill = orig.ident)) +
+  facet_wrap(~ orig.ident) +
+  geom_boxplot() +
+  scale_y_log10() +
+  djvdj_theme()
+
+
+
+
+so_dct@meta.data %>%
+  group_by(orig.ident) %>%
+  mutate(ABPS4 = ABPS4 / sum(ABPS4)) %>%
+  ungroup() %>%
+  filter(cell_type %in% c("DC", "T cells", "B cells")) %>%
+  mutate(
+    pseudo      = min((!!sym(sig))[!!sym(sig) > 0]) / 2,
+    !!sym(sig) := !!sym(sig) + pseudo,
+    sub_type    = ifelse(cell_type == "DC", sub_type, cell_type)
+  ) %>%
+  ggplot(aes(sub_type, !!sym(sig), fill = mouse)) +
+  geom_boxplot(notch = TRUE) +
+  scale_y_log10() +
+  djvdj_theme()
+
+so_dct@meta.data %>%
+  mutate(change = ABPS2 / Ag_6wk) %>%
+  ggplot(aes(sub_type, change, fill = mouse)) +
+  geom_boxplot(notch = TRUE)
+  
+```
