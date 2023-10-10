@@ -13,14 +13,14 @@ output:
     highlight:      "kate"
 params:
   template_dir:  "src"                                                                      # Directory containing template Rmarkdowns
-  so_dir:        "~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/figures/sobjs" # Directory for loading/saving Seurat objects
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs" # Directory for loading/saving Seurat objects
   ref_dir:       "ref"                                                                      # Directory to use for loading/saving clustifyr references
   sample_info:   "sample_info.xlsx"
   res_dir:                                                
     value:
       exp-0: "~/Projects/antigen-tracking/results"
-      exp-1: "results/2022-03-11"
-      exp-2: "results/2022-10-28"
+      exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
+      exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
   chunk_output_type: console
 ---
@@ -40,18 +40,21 @@ knitr::opts_chunk$set(
 
 # Load packages
 R_packages <- c(
-  "tidyverse",  "Seurat",
+  "tidyverse",
+  "ggbeeswarm",
+  "ggforce",
+  "Seurat",
   "gprofiler2", "knitr",
-  "cowplot",    "ggbeeswarm",
+  "cowplot",
   "ggrepel",    "RColorBrewer",
   "xlsx",
   "colorblindr",
-  "ggforce",    "broom",
+  "broom",
   "mixtools",
   "clustifyr",
   "boot",       "scales",
   "patchwork",  "ComplexHeatmap",
-  "devtools",   "broom",
+  "devtools",
   "presto",     "here",
   "tools",
   "clustifyrdata",
@@ -102,17 +105,158 @@ stopifnot(identical(rownames(ref_lymphnodestromal), rownames(ref_frc)))
 ref_frc <- cbind(ref_lymphnodestromal, ref_frc)
 ```
 
-```{r}
-mats <- sam_info %>%
+```{r "Create Seurat objects"}
+# Create objects
+sobjs <- sam_info %>%
   pmap(~ {
     args <- list(...)
     
-    args$directory %>%
+    mat <- args$directory %>%
       here(params$res_dir[args$experiment], .) %>%
-      here("outs/filtered_feature_bc_matrix") %>%
-      Read10X()
+      here("outs/filtered_feature_bc_matrix")
+    
+    mat %>%
+      create_sobj(
+        proj_name = args$sample,
+        gene_min = 250,
+        gene_max = 5000,
+        mito_max = 20
+      ) %>%
+      mutate_meta(
+        mutate,
+        exp         = args$experiment,
+        directory   = args$directory,
+        sample      = args$sample,
+        tm          = args$tm,
+        mouse       = args$mouse,
+        vaccination = args$vaccination,
+        cell_sort   = args$cell_sort
+      ) %>%
+      norm_sobj()
   })
+
+sobjs %>%
+  qsave(here(params$so_dir, "raw_sobjs.qs"))
+
+# Filter objects
+stat_clmns <- c(
+  "nCount_RNA", "nFeature_RNA",
+  "nCount_ADT", "nFeature_ADT",
+  "pct_mito"
+)
+
+sobjs %>%
+  map_dfr(~ {
+    .x@meta.data %>%
+      as_tibble(rownames = "cell_id") %>%
+      group_by(exp, sample, tm, mouse, vaccination, cell_sort) %>%
+      mutate(across(all_of(stat_clmns), median, .names = "med_{.col}")) %>%
+      group_by(qc_class, !!!syms(str_c("med_", stat_clmns)), .add = TRUE) %>%
+      summarize(n = n(), .groups = "drop")
+  }) %>%
+  write_tsv(here(params$so_dir, "sample_stats.tsv"))
+
+sobjs <- sobjs %>%
+  map(subset, qc_class == "pass")
+
+sobjs %>%
+  qsave(here(params$so_dir, "sobjs.qs"))
 ```
+
+```{r "CD45- samples"}
+# Merge objects
+neg_idx    <- sam_info$cell_sort == "CD45neg"
+cd45neg_so <- merge(sobjs[neg_idx][[1]], sobjs[neg_idx][-1])
+
+# Cluster cells
+cd45neg_so <- cd45neg_so %>%
+  FindVariableFeatures(nfeatures = 2000) %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  RunUMAP(dims = 1:40) %>%
+  AddMetaData(FetchData(., c("UMAP_1", "UMAP_2")))
+
+cd45neg_so <- cd45neg_so %>%
+  RunHarmony(
+    group.by.vars = "mouse",
+    dims = 1:40,
+    plot_convergence = TRUE
+  ) %>%
+  RunUMAP(
+    dims = 1:40,
+    reduction      = "harmony",
+    reduction.name = "humap",
+    reduction.key  = "hUMAP_"
+  ) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:40) %>%
+  FindClusters(resolution = c(1, 3, 5, 10)) %>%
+  AddMetaData(FetchData(., c("hUMAP_1", "hUMAP_2")))
+
+# Broad cell type annotations
+clst_clmn <- "RNA_snn_res.5"
+
+cd45neg_so <- cd45neg_so %>%
+  mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
+  clustify(
+    ref_mat     = ref_immgen,
+    cluster_col = clst_clmn,
+    n_genes     = 2000,
+    threshold   = 0.55
+  )
+
+cd45neg_so %>%
+  qsave(here(params$so_dir, "cd45neg_so.qs"))
+```
+
+```{r "CD45+ samples"}
+# Merge objects
+pos_idx    <- sam_info$cell_sort == "CD45pos"
+cd45pos_so <- merge(sobjs[pos_idx][[1]], sobjs[pos_idx][-1])
+
+# Cluster cells
+cd45pos_so <- cd45pos_so %>%
+  FindVariableFeatures(nfeatures = 2000) %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  RunUMAP(dims = 1:40) %>%
+  AddMetaData(FetchData(., c("UMAP_1", "UMAP_2")))
+
+cd45pos_so <- cd45pos_so %>%
+  RunHarmony(
+    group.by.vars = "mouse",
+    dims = 1:40,
+    plot_convergence = TRUE
+  ) %>%
+  RunUMAP(
+    dims = 1:40,
+    reduction      = "harmony",
+    reduction.name = "humap",
+    reduction.key  = "hUMAP_"
+  ) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:40) %>%
+  FindClusters(resolution = c(1, 3, 5, 10)) %>%
+  AddMetaData(FetchData(., c("hUMAP_1", "hUMAP_2")))
+
+# Broad cell type annotations
+clst_clmn <- "RNA_snn_res.5"
+
+cd45pos_so <- cd45pos_so %>%
+  mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
+  clustify(
+    ref_mat     = ref_immgen,
+    cluster_col = clst_clmn,
+    n_genes     = 2000,
+    threshold   = 0.55
+  )
+
+cd45pos_so %>%
+  qsave(here(params$so_dir, "cd45pos_so.qs"))
+```
+
+
+
+
+
 
 ```{r "Ag normalization factors"}
 #' Calculate antigen score by subtracting B/T cell signal

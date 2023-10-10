@@ -316,7 +316,7 @@ shorten_names <- function(str_in, extra_path = "/outs/(filtered|raw)_feature_bc_
 #' @return Seurat object
 #' @export
 create_sobj <- function(mat_dir, proj_name = "SeuratProject", hash_ids = NULL, adt_count_min = 0,
-                        gene_min = 250, gene_max = 5000, mito_max = 15, mt_str = "^mt-",
+                        gene_min = 250, gene_max = 5000, mito_max = 20, mt_str = "^mt-",
                         rna_assay = "Gene Expression", adt_assay = "Antibody Capture") {
   
   # Load matrices
