@@ -84,7 +84,7 @@ ags <- unique(ag_key$tag)
 
 ag_key <- ag_key %>%
   split(.$experiment) %>%
-  map(~ set_names(.x$identity, .x$tag))
+  map(~ set_names(.x$tag, .x$identity))
 
 # Check for save objects
 create_sobjs <- !file.exists(here(params$so_dir, "lec_so.qs"))
@@ -175,23 +175,97 @@ calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
           .names = "{.col}_cpm")
         ) %>%
         
-        mutate(across(all_of(cpm_clmns), ~ {
-          idx   <- !!sym(type_clmn) %in% typs   # rows to use
-          t_cut <- quantile(.x[idx], q)         # set cutoff
-          res   <- .x - t_cut                   # subtract background
-
-          # replace negative values and log-transform
-          res[res < 0] <- 0
-          
-          res <- log1p(res)
-          
-          res
-        }, .names = "{.col}_score")) %>%
+        mutate(across(
+          all_of(cpm_clmns),
+          ~ {
+            idx   <- !!sym(type_clmn) %in% typs   # rows to use
+            t_cut <- quantile(.x[idx], q)         # set cutoff
+            res   <- .x - t_cut                   # subtract background
+            
+            # replace negative values and log-transform
+            res[res < 0] <- 0
+            
+            res <- log1p(res)
+            
+            res
+          },
+          .names = "{.col}_score")
+        ) %>%
         ungroup() %>%
         rename(!!!final_clmns)
     })
   
   res
+}
+#' Format and normalize Ag meta.data columns
+#' 
+#' @param so_in Input object
+#' @param norm_factors Named vector containing normalization factors for
+#' `calc_ag_score()`
+#' @param ag_key List of named vectors containing labels for each Ag tag for
+#' each experiment. List names should be experiment name, vector names should
+#' be new label for the Ag tag.
+#' @noRd
+format_ag_data <- function(so_in, norm_factors, ag_key) {
+  
+  # Assign labels for Ag tags (ABPS2, ABPS4)
+  res <- so_in %>%
+    mutate_meta(~ {
+      dat <- .x
+      
+      c("3wk", "6wk") %>%
+        walk(~ {
+          clmn <- str_c("Ag_", .x)
+          
+          dat <<- dat %>%
+            group_by(exp) %>%
+            mutate(
+              !!sym(clmn) := ag_key[[as.character(cur_group())]][.x],
+              
+              !!sym(clmn) := case_when(
+                !!sym(clmn) == "ABPS2" ~ ABPS2,
+                !!sym(clmn) == "ABPS4" ~ ABPS4
+              )
+            ) %>%
+            ungroup()
+        })
+      
+      dat
+    })
+  
+  # Calculate Ag scores
+  ag_clmns <- c("ovalbumin", "Ag_3wk", "Ag_6wk")
+  
+  res <- res %>%
+    mutate_meta(mutate, across(all_of(ag_clmns), ~ replace_na(.x, 0))) %>%
+    calc_ag_score(
+      clmns        = ag_clmns,
+      type_clmn    = "cell_type",
+      sample_clmn  = "directory",
+      norm_factors = norm_factors
+    )
+  
+  # Format Ag score columns
+  res <- res %>%
+    mutate_meta(
+      mutate,
+      Ag_score = case_when(
+        exp == "exp-0" ~ ovalbumin_score,
+        mouse == "3wk" ~ Ag_3wk_score,
+        mouse == "6wk" ~ Ag_6wk_score,
+        
+        # for 6wk-3wk use highest score
+        mouse == "6wk-3wk" & Ag_3wk_score >= Ag_6wk_score ~ Ag_3wk_score,
+        mouse == "6wk-3wk" & Ag_6wk_score >= Ag_3wk_score ~ Ag_6wk_score
+      ),
+      
+      # these columns are used for antigen-exchange plots
+      Ag_score_3 = ifelse(vaccination == "dual", Ag_3wk_score, Ag_score),
+      Ag_score_6 = ifelse(vaccination == "dual", Ag_6wk_score, Ag_score),
+      
+      tm_3 = ifelse(vaccination == "dual", 21, tm),
+      tm_6 = ifelse(vaccination == "dual", 42, tm)
+    )
 }
 ```
 
@@ -227,7 +301,7 @@ shared_gns    <- intersect(rownames(ref_immgen), rownames(ref_mousespleenDC))
 ref_immgen_dc <- cbind(ref_immgen[shared_gns, ], ref_mousespleenDC[shared_gns, ])
 ```
 
-```{r "Normalization factors", eval = create_sobjs}
+```{r "Ag normalization factors", eval = create_sobjs}
 # Calculate total UMI counts for each library using raw matrix
 # do not use filtered matrix since a poor quality library would have a high
 # fraction of counts in empty drops that would not be taken into account when
@@ -368,21 +442,6 @@ cd45neg_so <- cd45neg_so %>%
     type_col = "rough_type"
   ) %>%
   mutate_meta(mutate, cell_type = str_remove(rough_type, " \\(.+$"))
-
-# Save object
-cd45neg_so %>%
-  qsave(here(params$so_dir, "cd45neg_so.qs"))
-```
-
-```{r "CD45- Ag scores", eval = create_sobjs}
-
-# Calculate Ag scores
-cd45neg_so <- cd45neg_so %>%
-  AddMetaData(FetchData(., ags, slot = "counts"), col.name = ags)
-```
-
-```{r "LEC subsets", eval = create_sobjs}
-
 ```
 
 ```{r "CD45+ samples", eval = create_sobjs}
@@ -465,26 +524,34 @@ cd45pos_so %>%
   qsave(here(params$so_dir, "cd45pos_so.qs"))
 ```
 
-```{r "Ag normalization factors"}
+```{r "Ag scores", eval = create_sobjs}
+# CD45-
+cd45neg_so <- cd45neg_so %>%
+  AddMetaData(FetchData(., ags, slot = "counts"), col.name = ags)
 
+cd45neg_so <- cd45neg_so %>%
+  format_ag_data(
+    norm_factors = norm_factors,
+    ag_key = ag_key
+  )
 
+# CD45+
+cd45pos_so <- cd45pos_so %>%
+  AddMetaData(FetchData(., ags, slot = "counts"), col.name = ags)
 
-# Paths to raw matrices to use for normalization factors
-mat_dir <- names(params$res_dir)
-mat_dir <- set_names(params[mat_dir], mat_dir)
+cd45pos_so <- cd45pos_so %>%
+  format_ag_data(
+    norm_factors = norm_factors,
+    ag_key = ag_key
+  )
 
-# Calculate normalization factors
-norm_obj <- here("results/norm_factors.qs")
+# Save objects
+save_objs(cd45neg_so, ob_dir = params$so_dir)
+save_objs(cd45pos_so, ob_dir = params$so_dir)
+```
 
-if (!file.exists(norm_obj)) {
-  norm_factors <- sam_info %>%
-    head(2)
-    
-  
-  # qsave(norm_factors, norm_obj)
-}
+```{r "LEC subsets", eval = create_sobjs}
 
-norm_factors <- qread(norm_obj)
 ```
 
 ```{r "load seurat objects"}
