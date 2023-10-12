@@ -316,9 +316,9 @@ sobjs <- sam_info %>%
     mat %>%
       create_sobj(
         proj_name = args$sample,
-        gene_min = 250,
-        gene_max = 5000,
-        mito_max = 20
+        gene_min  = 250,
+        gene_max  = 5000,
+        mito_max  = 20
       ) %>%
       mutate_meta(
         mutate,
@@ -336,12 +336,36 @@ sobjs <- sam_info %>%
 sobjs %>%
   qsave(here(params$so_dir, "raw_sobjs.qs"))
 
-# Filter objects
+# Save sample stats
 stat_clmns <- c(
   "nCount_RNA", "nFeature_RNA",
   "nCount_ADT", "nFeature_ADT",
   "pct_mito"
 )
+
+plan(multisession, workers = 4)
+
+sam_stats <- sam_info %>%
+  future_pmap_dfr(~ {
+    args <- list(...)
+    
+    mat_dir <- args$directory %>%
+      here(params$res_dir[args$experiment], ., "outs")
+    
+    c("raw", "filtered") %>%
+      map_dfr(~ {
+        mat <- Read10X(here(mat_dir, str_c(.x, "_feature_bc_matrix")))
+        mat <- mat$`Antibody Capture`
+        
+        tibble(
+          matrix    = str_c("Ag_counts_", .x),
+          directory = args$directory,
+          ag_counts = sum(mat)
+        )
+      })
+  }) %>%
+  pivot_wider(names_from = matrix, values_from = ag_counts) %>%
+  mutate(Ag_counts_frac = Ag_counts_filtered / Ag_counts_raw)
 
 sobjs %>%
   map_dfr(~ {
@@ -352,8 +376,10 @@ sobjs %>%
       group_by(qc_class, !!!syms(str_c("med_", stat_clmns)), .add = TRUE) %>%
       summarize(n = n(), .groups = "drop")
   }) %>%
+  left_join(sam_stats, by = "directory") %>%
   write_tsv(here(params$so_dir, "sample_stats.tsv"))
 
+# Save raw objects
 sobjs <- sobjs %>%
   map(subset, qc_class == "pass")
 
@@ -549,6 +575,17 @@ lec_so <- lec_so %>%
     cell_type = ifelse(subtype == "BEC", subtype, "LEC")
   )
 
+# Use higher correlation cutoff for LECs
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    subtype = ifelse(
+      cell_type == "LEC" & r < 0.75,
+      "unassigned",
+      subtype
+    )
+  )
+
 # Adjust cell type labels
 typ_data <- lec_so %>%
   FetchData(c("cell_type", "subtype"))
@@ -596,6 +633,9 @@ rm(all_meta, cd45neg_so, cd45pos_so, lec_so, dc_so)
 all_meta <- read_tsv(here(params$so_dir, "all_meta.tsv.gz"))
 lec_so   <- qread(here(params$so_dir, "lec_so.qs"))
 dc_so    <- qread(here(params$so_dir, "dc_so.qs"))
+
+# cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+# cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
 ```
 
 ```{r "theme"}
@@ -776,3 +816,87 @@ marks[-1] %>%
   plot_grid(plotlist = .)
 ```
 
+```{r "AG HIGH", eval = FALSE}
+clust_dat <- lec_so@meta.data %>%
+  as_tibble(rownames = "cell_id") %>%
+  filter(Ag_score > 0)
+
+# Downsample samples
+# This ensures that larger samples do not skew the clustering
+sam_size <- min(table(clust_dat$mouse))
+
+set.seed(42)
+  
+clust_dat <- clust_dat %>%
+  group_by(mouse) %>%
+  slice_sample(n = sam_size) %>%
+  ungroup()
+
+# Identify threshold for Ag-high/low cells
+ag_threshold <- clust_dat %>%
+  filter(cell_type %in% c("LEC", "BEC")) %>%
+  
+  mutate(
+    km_class  = kmeans(Ag_score, centers = 2)$cluster
+    
+    # gmm_class = normalmixEM(clust_score, k = 2)$posterior %>%
+    #   as.data.frame() %>%
+    #   mutate(Ag_class = ifelse(comp.2 > 0.5, "high", "low")) %>%
+    #   pull(Ag_class)
+  ) %>%
+  group_by(km_class) %>%
+  summarize(Ag_score = max(Ag_score)) %>%
+  pull(Ag_score) %>%
+  min()
+
+# Set Ag-high/low classifications
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    Ag_class = ifelse(
+      Ag_score >= ag_threshold,
+      "high", "low"
+    )
+  )
+
+# DEGs
+old_so <- qread("~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/2022-10-28/sobjs/so_lec_new.qs")
+
+deg_dat <- old_so %>%
+  mutate_meta(
+    mutate,
+    # mouse_type = mouse
+    mouse_type = str_c(subtype, "--", mouse)
+  )
+
+typs <- deg_dat@meta.data %>%
+  group_by(mouse_type) %>%
+  filter(n_distinct(Ag_class) == 2) %>%
+  pull(mouse_type) %>%
+  unique()
+
+degs <- typs %>%
+  map_dfr(~ {
+    deg_dat %>%
+      subset(mouse_type == .x) %>%
+      wilcoxauc(group_by = "Ag_class") %>%
+      mutate(mouse_type = .x)
+  })
+
+degs_filt <- degs %>%
+  filter(padj < 0.05, logFC > 0) %>%
+  separate(mouse_type, into = c("mouse", "type"), sep = "--") %>%
+  arrange(mouse, type, padj)
+
+degs_filt %>%
+  write_tsv(here("ag_high_degs.tsv.gz"))
+
+# # Plot examples
+# old_so %>%
+#   FetchData(c("Apoe", "mouse", "tm", "subtype", "Ag_class")) %>%
+#   mutate(mouse = fct_relevel(mouse, mice)) %>%
+#   ggplot(aes(mouse, Apoe, fill = Ag_class)) +
+#   geom_boxplot() +
+#   # facet_wrap(~ subtype) +
+#   djvdj_theme()
+```
