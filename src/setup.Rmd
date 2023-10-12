@@ -1,33 +1,3 @@
----
-title: "Antigen Tracking Figures"
-author: "Ryan Sheridan"
-date: "`r Sys.Date()`"
-output:
-  html_document:
-    toc:            true
-    toc_float:      true
-    toc_depth:      4
-    df_print:       "paged"
-    code_folding:   "hide"
-    self_contained: true
-    highlight:      "kate"
-params:
-  template_dir:  "src"                                                                      # Directory containing template Rmarkdowns
-  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs" # Directory for loading/saving Seurat objects
-  ref_dir:       "ref"                                                                      # Directory to use for loading/saving clustifyr references
-  sample_info:   "sample_info.xlsx"
-  res_dir:                                                
-    value:
-      exp-0: "~/Projects/antigen-tracking/results"
-      exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
-      exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
-editor_options: 
-  chunk_output_type: console
----
-
----
-
-<br>
 
 ```{r "packages", include = FALSE, warning = FALSE, message = FALSE}
 # Default chunk options
@@ -96,28 +66,32 @@ create_sobjs <- !file.exists(here(params$so_dir, "lec_so.qs"))
 #' @param obj Input object
 #' @param group_vars Variable(s) to using for grouping cells
 #' @noRd
-integrate_sobjs <- function(so_in, group_vars = "mouse") {
+integrate_sobjs <- function(so_in, group_vars = "mouse", dims = 1:40,
+                            resolution = c(1, 3, 5, 10)) {
+  rm_clmns <- c(str_c("UMAP_", 1:2), str_c("hUMAP_", 1:2))
+  
   res <- so_in %>%
+    mutate_meta(dplyr::select, -any_of(rm_clmns)) %>%
     FindVariableFeatures(nfeatures = 2000) %>%
     ScaleData() %>%
     RunPCA() %>%
-    RunUMAP(dims = 1:40) %>%
+    RunUMAP(dims = dims) %>%
     AddMetaData(FetchData(., c("UMAP_1", "UMAP_2")))
   
   res <- res %>%
     RunHarmony(
       group.by.vars = group_vars,
-      dims = 1:40,
+      dims = dims,
       plot_convergence = TRUE
     ) %>%
     RunUMAP(
-      dims = 1:40,
+      dims = dims,
       reduction      = "harmony",
       reduction.name = "humap",
       reduction.key  = "hUMAP_"
     ) %>%
-    FindNeighbors(reduction = "harmony", dims = 1:40) %>%
-    FindClusters(resolution = c(1, 3, 5, 10)) %>%
+    FindNeighbors(reduction = "harmony", dims = dims) %>%
+    FindClusters(resolution = resolution) %>%
     AddMetaData(FetchData(., c("hUMAP_1", "hUMAP_2")))
   
   res
@@ -440,8 +414,16 @@ cd45neg_so <- cd45neg_so %>%
     type     = "Endothelial cells",
     clst_col = clst_clmn,
     type_col = "rough_type"
-  ) %>%
-  mutate_meta(mutate, cell_type = str_remove(rough_type, " \\(.+$"))
+  )
+
+# Adjust cell type labels
+# fibroblasts also include DN stromal cells
+cd45neg_so <- cd45neg_so %>%
+  mutate_meta(
+    mutate,
+    cell_type = str_remove(rough_type, " \\(.+$"),
+    cell_type = recode(cell_type, `Stromal cells` = "Fibroblasts")
+  )
 ```
 
 ```{r "CD45+ samples", eval = create_sobjs}
@@ -518,10 +500,6 @@ cd45pos_so <- cd45pos_so %>%
     subtype   = cell_type,
     cell_type = ifelse(grepl("DC", cell_type), "DC", cell_type)
   )
-
-# Save object
-cd45pos_so %>%
-  qsave(here(params$so_dir, "cd45pos_so.qs"))
 ```
 
 ```{r "Ag scores", eval = create_sobjs}
@@ -544,647 +522,87 @@ cd45pos_so <- cd45pos_so %>%
     norm_factors = norm_factors,
     ag_key = ag_key
   )
+```
+
+```{r "LEC object", eval = create_sobjs}
+# Re-cluster and integrate endothelial cells
+lec_so <- cd45neg_so %>%
+  subset(cell_type == "Endothelial cells")
+
+lec_so <- lec_so %>%
+  integrate_sobjs(group_vars = "mouse")
+
+# Annotate LEC subsets
+clst_clmn <- "RNA_snn_res.10"
+
+lec_so <- lec_so %>%
+  mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
+  clustify(
+    ref_mat     = ref_lec,
+    cluster_col = clst_clmn,
+    n_genes     = 2000,
+    threshold   = 0.53
+  ) %>%
+  mutate_meta(
+    mutate,
+    subtype   = type,
+    cell_type = ifelse(subtype == "BEC", subtype, "LEC")
+  )
+
+# Adjust cell type labels
+typ_data <- lec_so %>%
+  FetchData(c("cell_type", "subtype"))
+
+cd45neg_so <- cd45neg_so %>%
+  AddMetaData(typ_data, col.name = c("new_type", "subtype")) %>%
+  mutate_meta(~ {
+    .x %>%
+      mutate(
+        cell_type = ifelse(!is.na(new_type), new_type, cell_type),
+        subtype   = ifelse(!is.na(subtype),  subtype,  cell_type)
+      ) %>%
+      dplyr::select(-new_type)
+  })
+```
+
+```{r "DC object", eval = create_sobjs}
+# Re-cluster and integrate DCs
+dc_so <- cd45pos_so %>%
+  subset(cell_type == "DC")
+
+dc_so <- dc_so %>%
+  integrate_sobjs(group_vars = "mouse")
+```
+
+```{r "save objects", eval = create_sobjs}
+# Save meta.data for all cells combined
+all_meta <- list(cd45neg_so, cd45pos_so) %>%
+  map_dfr(~ .x@meta.data) %>%
+  as_tibble(rownames = ".cell_id")
+
+all_meta %>%
+  write_tsv(here(params$so_dir, "all_meta.tsv.gz"))
 
 # Save objects
 save_objs(cd45neg_so, ob_dir = params$so_dir)
 save_objs(cd45pos_so, ob_dir = params$so_dir)
-```
+save_objs(lec_so,     ob_dir = params$so_dir)
+save_objs(dc_so,      ob_dir = params$so_dir)
 
-```{r "LEC subsets", eval = create_sobjs}
-
+rm(all_meta, cd45neg_so, cd45pos_so, lec_so, dc_so)
 ```
 
 ```{r "load seurat objects"}
-lec_so     <- qread(here(params$so_dir, "lec_so.qs"))
-cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
-cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
-```
-
-
-
-
-
-```{r "Ag objects"}
-# Object list
-sobjs <- list()
-
-# Load original objects
-orig_dir <- here("~/Dropbox/Ryan/Projects/antigen-tracking/sobjs")
-
-sobjs$orig_lec <- merge(
-  read_rds(here(orig_dir, "walsh_d2_LEC.rds")),
-  read_rds(here(orig_dir, "walsh_d14_LEC.rds"))
-)
-
-sobjs$orig_lec <- sobjs$orig_lec %>%
-  mutate_meta(
-    mutate,
-    cell_type = recode(cell_type, `B cell` = "B cells", `T cell` = "T cells"),
-    cell_type = ifelse(subtype == "BEC", subtype, cell_type),
-    mouse     = str_extract(orig.ident, "d[0-9]+$"),
-    exp       = "exp-0",
-    sample    = mouse
-  )
-
-sobjs$orig_dc <- merge(
-  read_rds(here(orig_dir, "walsh_d2_DC.rds")),
-  read_rds(here(orig_dir, "walsh_d14_DC.rds"))
-)
-
-sobjs$orig_dc <- sobjs$orig_dc %>%
-  mutate_meta(
-    mutate,
-    cell_type = recode(cell_type, `B cell` = "B cells", `T cell` = "T cells"),
-    cell_type = ifelse(subtype == "BEC", subtype, cell_type),
-    mouse     = str_extract(orig.ident, "d[0-9]+$"),
-    exp       = "exp-0",
-    sample    = mouse
-  )
-
-# Load r1 objects
-r1_dir <- here(params$so_dir, params$res_dir$r1_lec, "sobjs")
-
-obj_typs <- c("lec", "dc")
-
-sobjs[str_c("r1_", obj_typs)] <- obj_typs %>%
-  str_c(r1_dir, "/so_", ., ".qs") %>%
-  map(~ {
-    .x %>%
-      qread() %>%
-      mutate_meta(
-        mutate,
-        exp = "exp-1",
-        sample = str_replace(sample, "6wk_3wk", "6wk-3wk"),
-        mouse  = str_replace(mouse, "6wk_3wk", "6wk-3wk")
-      )
-  })
-
-# Add r2 object
-r2_dir <- here(params$so_dir, params$res_dir$r2_lec, "sobjs")
-
-sobjs[str_c("r2_", obj_typs)] <- obj_typs %>%
-  str_c(r2_dir, "/so_", ., ".qs") %>%
-  map(~ {
-    .x %>%
-      qread() %>%
-      mutate_meta(mutate, exp = "exp-2", rep = "r1")
-  })
-
-# Add subtype column to Ag-exchange objects
-lec_nms <- c("r1_lec", "r2_lec")
-dc_nms  <- c("r1_dc", "r2_dc")
-
-sobjs[lec_nms] <- sobjs[lec_nms] %>%
-  map(~ {
-    .x %>%
-      mutate_meta(
-        mutate,
-        subtype = ifelse(cell_type == "LEC", sub_type, cell_type)
-      )
-  })
-
-sobjs[dc_nms] <- sobjs[dc_nms] %>%
-  map(~ {
-    .x %>%
-      mutate_meta(
-        mutate,
-        subtype = ifelse(cell_type == "DC", sub_type, cell_type)
-      )
-  })
-```
-
-```{r "Ag scores"}
-# COULD ALSO TRY TMM NORMALIZATION FROM edgeR
-
-# Calculate Ag scores
-# Set columns containing raw Ag counts to use for calculating scores
-ag_args <- list(
-  c(Ag_score = "adt_ovalbumin"),  # orig_lec
-  c(Ag_score = "adt_ovalbumin"),  # orig_dc
-  c("Ag_3wk", "Ag_6wk"),          # r1_lec
-  c("Ag_3wk", "Ag_6wk"),          # r1_dc
-  c("Ag_3wk", "Ag_6wk"),          # r2_lec
-  c("Ag_3wk", "Ag_6wk")           # r2_lec
-)
-
-names(ag_args) <- names(sobjs)
-
-sobjs <- ag_args %>%
-  imap(~ {
-    calc_ag_score(
-      obj          = sobjs[[.y]],
-      clmns        = .x,
-      norm_factors = norm_factors[[.y]],
-      q            = 0.75
-    )
-  })
-
-# Set Ag score columns
-tms <- c(
-  d2    = 2,
-  d14   = 14,
-  `3wk` = 21,
-  `6wk` = 42
-)
-
-sobjs <- sobjs %>%
-  map(~ {
-    missing <- c("Ag_score", "Ag_3wk_score", "Ag_6wk_score")
-    missing <- missing[!missing %in% colnames(.x@meta.data)]
-    
-    .x[[missing]] <- as.numeric(NA)
-    
-    .x %>%
-      mutate_meta(
-        mutate,
-        mouse = fct_relevel(mouse, c(names(tms), "6wk-3wk")),
-        
-        vaccination = ifelse(mouse == "6wk-3wk", "dual", "single"),
-        vaccination = fct_relevel(vaccination, c("single", "dual")),
-        
-        Ag_score = case_when(
-          grepl("d[0-9]+$", mouse) ~ Ag_score,
-          grepl("^3wk$", mouse)    ~ Ag_3wk_score,
-          grepl("^6wk$", mouse)    ~ Ag_6wk_score,
-          
-          Ag_3wk_score >= Ag_6wk_score ~ Ag_3wk_score,  # For 6wk-3wk use highest
-          Ag_6wk_score >= Ag_3wk_score ~ Ag_6wk_score
-        ),
-        
-        Ag_score_3  = ifelse(vaccination == "dual", Ag_3wk_score, Ag_score),
-        Ag_score_6  = ifelse(vaccination == "dual", Ag_6wk_score, Ag_score),
-        
-        tm   = tms[as.character(mouse)],
-        tm_3 = ifelse(vaccination == "dual", tms[["3wk"]], tm),
-        tm_6 = ifelse(vaccination == "dual", tms[["6wk"]], tm)            
-      )
-  })
-
-# Create Ag data.frame
-ag_dat <- sobjs %>%
-  imap_dfr(~ .x@meta.data, .id = "object") %>%
-  mutate(cell_group = str_extract(object, "(?<=_)[a-zA-Z]+$"))
-
-sams <- obj_typs %>%
-  set_names() %>%
-  map(~ grep(str_c("_", .x, "$"), names(sobjs), value = TRUE))
-```
-
-```{r "LEC data"}
-if (!file.exists(lec_dir)) {
-  # Merge LEC objects
-  lec_so <- sobjs[sams$lec] %>%
-    map(subset, cell_type %in% c("LEC", "BEC"))
-  
-  lec_so["orig_lec"] <- lec_so$orig_lec %>%
-    mutate_meta(mutate, sample = mouse)
-  
-  lec_so <- merge(lec_so[[1]], lec_so[-1])
-  
-  rm(sobjs)
-  
-  # Integrate samples
-  lec_so <- lec_so %>%
-    FindVariableFeatures() %>%
-    ScaleData() %>%
-    RunPCA() %>%
-    RunUMAP(dims = 1:40) %>%
-    AddMetaData(FetchData(., c("UMAP_1", "UMAP_2")))
-  
-  lec_so <- lec_so %>%
-    RunHarmony(
-      "orig.ident",
-      dims = 1:40, plot_convergence = TRUE
-    ) %>%
-    RunUMAP(
-      dims = 1:40,
-      reduction      = "harmony",
-      reduction.name = "humap",
-      reduction.key  = "hUMAP_"
-    ) %>%
-    FindNeighbors(reduction = "harmony", dims = 1:40) %>%
-    FindClusters(resolution = 1:5) %>%
-    AddMetaData(FetchData(., c("hUMAP_1", "hUMAP_2")))
-  
-  # New subset annotations
-  clst_clmn <- "RNA_snn_res.5"
-  
-  lec_so <- lec_so %>%
-    mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
-    clustify(
-      ref_mat     = ref_lec,
-      cluster_col = clst_clmn,
-      n_genes     = 2000
-      # threshold   = 0.55
-    )
-  
-  # Remove contaminating CD45+ cells
-  lec_so <- lec_so %>%
-    classify_markers(
-      feats    = c("Ptprc", "Cd19"),
-      filt     = Ptprc > 0.2 & Cd19 > 0.1,
-      type     = "B cells",
-      clst_col = clst_clmn,
-      type_col = "cell_type"
-    ) %>%
-    classify_markers(
-      feats    = c("Ptprc", "Cd3e"),
-      filt     = Ptprc > 0.5 & Cd3e > 0.4,
-      type     = "T cells",
-      clst_col = clst_clmn,
-      type_col = "cell_type"
-    )
-  
-  # Remove contaminating erythrocytes based on Hba expression
-  lec_so <- lec_so %>%
-    classify_markers(
-      feats    = "Hba-a1",
-      filt     = `Hba-a1` > 0.5,
-      type     = "Erythrocytes",
-      clst_col = clst_clmn,
-      type_col = "cell_type"
-    )
-  
-  # Adjust unassigned clusters based on Pdpn and Pecam1 expression
-  lec_so <- lec_so %>%
-    classify_markers(
-      feats    = c("Pdpn", "Pecam1"),
-      filt     = Pdpn < 0.1 & Pecam1 > 0.1,
-      type     = "BEC",
-      clst_col = clst_clmn,
-      type_col = "type"
-    )
-  
-  # Adjust cell_type labels based on refined subtype annotations
-  lec_so <- lec_so %>%
-    subset(cell_type %in% c("LEC", "BEC")) %>%
-    mutate_meta(
-      mutate,
-      type        = ifelse(type == "unassigned" & cell_type == "BEC", "BEC", type),
-      cell_type   = ifelse(type == "BEC", "BEC", "LEC"),
-      old_subtype = subtype,
-      subtype     = type
-    )
-  
-  # Re-integrate samples after refining annotations
-  lec_so <- lec_so %>%
-    FindVariableFeatures() %>%
-    ScaleData() %>%
-    RunPCA() %>%
-    RunUMAP(dims = 1:40) %>%
-    AddMetaData(FetchData(., c("UMAP_1", "UMAP_2")))
-  
-  lec_so <- lec_so %>%
-    RunHarmony(
-      "orig.ident",
-      dims = 1:40, plot_convergence = TRUE
-    ) %>%
-    RunUMAP(
-      dims = 1:40,
-      reduction      = "harmony",
-      reduction.name = "humap",
-      reduction.key  = "hUMAP_"
-    ) %>%
-    FindNeighbors(reduction = "harmony", dims = 1:40) %>%
-    FindClusters(resolution = 1:5) %>%
-    AddMetaData(FetchData(., c("hUMAP_1", "hUMAP_2")))
-  
-  lec_so %>%
-    qsave(file = lec_dir)
-  
-  rm(lec_so)
-  
-} else {
-  rm(sobjs)
-}
-
-lec_so <- qread(lec_dir)
-
-
-
-# # Checking different normalization
-# ag_clmns <- c("Ag_score", "Ag_3wk_score", "Ag_6wk_score")
-# 
-# ag <- ag_dat %>%
-#   as_tibble(rownames = "cell_id") %>%
-#   mutate(cell_id = str_remove(cell_id, "\\.\\.\\..+$")) %>%
-#   dplyr::select(cell_id, orig.ident, all_of(ag_clmns))
-# 
-# lec_so <- lec_so %>%
-#   mutate_meta(~ {
-#     .x %>%
-#       dplyr::select(-ends_with("_raw")) %>%
-#       mutate(
-#         raw_cell_id = str_remove(.cell_id, "_[0-9]+$")
-#       ) %>%
-#       rename_with(.cols = all_of(ag_clmns), ~ str_c(.x, "_raw")) %>%
-#       left_join(ag, by = c(raw_cell_id = "cell_id", "orig.ident")) %>%
-#       mutate(
-#         Ag_score_3  = ifelse(vaccination == "dual", Ag_3wk_score, Ag_score),
-#         Ag_score_6  = ifelse(vaccination == "dual", Ag_6wk_score, Ag_score),
-#       )
-#   })
-```
-
-```{r "LEC Ag-high"}
-# Format data for clustering based on Ag scores
-# The strategy is to identify Ag-high/low cells for all datasets together
-# One might expect that changes in gene expression will depend on absolute
-# levels of Ag taken up by the cell, and so it would make the most sense to
-# use a consistent cutoff for Ag-high cells across all cell types and datasets.
-# This should work since Ag scores are corrected based on background T/B signal.
-# 
-# Duplicate 6wk-3wk data so both Ag scores are included when classifying Ag-high
-# cells
-# clust_dat <- lec_ag_dat %>%
-#   mutate(
-#     clust_score = Ag_score_3,
-#     Ag_mouse = ifelse(
-#       mouse == "6wk-3wk",
-#       str_c(mouse, "_Ag-3wk"),
-#       as.character(mouse)
-#     )
-#   )
-# 
-# clust_dat <- lec_ag_dat %>%
-#   filter(mouse == "6wk-3wk") %>%
-#   mutate(
-#     clust_score = Ag_score_6,
-#     Ag_mouse = ifelse(
-#       mouse == "6wk-3wk",
-#       str_c(mouse, "_Ag-6wk"),
-#       as.character(mouse)
-#     )
-#   ) %>%
-#   bind_rows(clust_dat, .) %>%
-#   as_tibble(rownames = "cell_id")
-
-clust_dat <- lec_so@meta.data %>%
-  as_tibble(rownames = "cell_id") %>%
-  filter(Ag_score > 0)
-
-# Downsample samples
-# This ensures that larger samples do not skew the clustering
-sam_size <- min(table(clust_dat$mouse))
-
-set.seed(42)
-  
-clust_dat <- clust_dat %>%
-  group_by(mouse) %>%
-  slice_sample(n = sam_size) %>%
-  ungroup()
-
-# Identify threshold for Ag-high/low cells
-ag_threshold <- clust_dat %>%
-  filter(cell_type %in% c("LEC", "BEC")) %>%
-  
-  mutate(
-    km_class  = kmeans(Ag_score, centers = 2)$cluster
-    
-    # gmm_class = normalmixEM(clust_score, k = 2)$posterior %>%
-    #   as.data.frame() %>%
-    #   mutate(Ag_class = ifelse(comp.2 > 0.5, "high", "low")) %>%
-    #   pull(Ag_class)
-  ) %>%
-  group_by(km_class) %>%
-  summarize(Ag_score = max(Ag_score)) %>%
-  pull(Ag_score) %>%
-  min()
-
-# Set Ag-high/low classifications
-lec_so <- lec_so %>%
-  mutate_meta(
-    mutate,
-    Ag_class = ifelse(
-      Ag_score >= ag_threshold,
-      "high", "low"
-    )
-  )
-```
-
-```{r "DC data"}
-# Merge DC objects
-dc_dir <- here(params$so_dir, "results/2022-10-28/sobjs")
-
-if (!file.exists(here(dc_dir, "so_dc_sub_merge.qs"))) {
-  dc_so <- sobjs[sams$dc]
-  
-  rm(sobjs)
-  
-  dc_so <- merge(dc_so[[1]], dc_so[-1])
-  
-  dc_so <- dc_so %>%
-    FindVariableFeatures(assay = "RNA", nfeatures = 2000) %>%
-    ScaleData(assay = "RNA") %>%
-    RunPCA(assay = "RNA") %>%
-    RunUMAP(assay = "RNA", dims = 1:40) %>%
-    FindNeighbors(dims = 1:40) %>%
-    FindClusters(resolution = c(1, 3, 5, 10))
-  
-  # Integrate samples
-  dc_so <- dc_so %>%
-    RunHarmony(
-      group.by.vars = c("mouse", "exp"),
-      plot_convergence = TRUE
-    ) %>%
-    RunUMAP(
-      reduction      = "harmony",
-      reduction.name = "humap",
-      reduction.key  = "hUMAP_",
-      dims = 1:40
-    ) %>%
-    FindNeighbors(reduction = "harmony", dims = 1:40) %>% 
-    FindClusters(resolution = c(1, 3, 5, 10))
-  
-  # Annotate cell types
-  dc_so <- dc_so %>%
-    mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
-    clustify(
-      ref_mat = ref_immgen,
-      cluster_col = "RNA_snn_res.3"
-    )
-  
-  dc_so %>%
-    qsave(here(dc_dir, "so_dc_merge.qs"))
-  
-  # Annotate DC subsets
-  dc_so <- dc_so %>%
-    subset(cell_type == "DC")
-  
-  dc_so <- dc_so %>%
-    FindVariableFeatures(assay = "RNA", nfeatures = 2000) %>%
-    ScaleData(assay = "RNA") %>%
-    RunPCA(assay = "RNA") %>%
-    RunUMAP(assay = "RNA", dims = 1:40) %>%
-    FindNeighbors(dims = 1:40) %>%
-    FindClusters(resolution = c(1, 3, 5, 10))
-  
-  dc_so <- dc_so %>%
-    RunHarmony(
-      group.by.vars = c("mouse", "exp"),
-      plot_convergence = TRUE
-    ) %>%
-    RunUMAP(
-      reduction      = "harmony",
-      reduction.name = "humap",
-      reduction.key  = "hUMAP_",
-      dims = 1:40
-    ) %>%
-    FindNeighbors(reduction = "harmony", dims = 1:40) %>% 
-    FindClusters(resolution = c(1, 3, 5, 10))
-  
-  rownames(ref_mousespleenDC) <- ref_mousespleenDC %>%
-    rownames() %>%
-    str_to_title()
-  
-  dc_so <- dc_so %>%
-    mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
-    clustify(
-      ref_mat = ref_mousespleenDC,
-      cluster_col = "RNA_snn_res.1"
-    )
-  
-  dc_so %>%
-    qsave(here(dc_dir, "so_dc_sub_merge.qs"))
-  
-} else {
-  rm(sobjs)
-}
-
-dc_so <- qread(here(dc_dir, "so_dc_sub_merge.qs"))
-
-dc_type_dat <- dc_so %>%
-  FetchData("type")
-
-rm(dc_so)
-
-dc_ag_dat <- here(dc_dir, "so_dc_merge.qs") %>%
-  qread() %>%
-  AddMetaData(dc_type_dat, col.name = "subtype") %>%
-  .@meta.data %>%
-  mutate(
-    subtype    = ifelse(is.na(subtype), cell_type, subtype),
-    vaccination = fct_relevel(vaccination, c("single", "dual"))
-  )
-
-
-
-# # Try annotating using combined DC reference
-# rownames(ref_mousespleenDC) <- ref_mousespleenDC %>%
-#   rownames() %>%
-#   str_to_title()
-# 
-# shared_gns <- rownames(ref_mousespleenDC)
-# shared_gns <- shared_gns[shared_gns %in% rownames(ref_immgen)]
-# 
-# ref_combined <- cbind(
-#   ref_immgen[shared_gns, ],
-#   ref_mousespleenDC[shared_gns, ]
-# )
-# 
-# x <- dc_so %>%
-#   mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
-#   clustify(
-#     ref_mat       = ref_combined,
-#     cluster_col   = "RNA_snn_res.5",
-#     rename_prefix = "combined",
-#     n_genes       = 2000
-#   ) %>%
-#   mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2"))) %>%
-#   clustify(
-#     ref_mat       = ref_immgen,
-#     cluster_col   = "RNA_snn_res.5",
-#     rename_prefix = "immgen",
-#     n_genes       = 2000
-#   )
-# 
-# x %>%
-#   plot_scatter(
-#     "combined_type",
-#     x = "hUMAP_1", y = "hUMAP_2",
-#     size = 0.001
-#   ) +
-#   facet_wrap(~ mouse)
-
-# x %>%
-#   plot_scatter(
-#     "Ag_score",
-#     x = "hUMAP_1", y = "hUMAP_2",
-#     plot_colors = c("white", "red"),
-#     size = 0.2, outline = TRUE
-#   ) +
-#   facet_wrap(~ mouse)
-#   
-# x %>%
-#   plot_scatter(
-#     "combined_r",
-#     x = "hUMAP_1", y = "hUMAP_2",
-#     plot_colors = c("white", "red"),
-#     size = 0.2, outline = TRUE
-#   ) +
-#   facet_wrap(~ mouse)
-# 
-# x %>%
-#   plot_violin(
-#     "combined_r", "combined_type",
-#     group_col = "mouse",
-#     method = "boxplot"
-#   )
-# 
-# x %>%
-#   plot_violin(
-#     "immgen_r", "immgen_type",
-#     group_col = "mouse",
-#     method = "boxplot"
-#   )
-
-# # Marker genes
-# gns <- c(
-#   "Itgax",                                             # most DCs
-#   "Cd8a", "Xcr1", "Cd24a", "Clec9a", "Itgae", "Irf8",  # cDC1
-#   "Clec12a", "Cx3cr1", "Cd14", "Il1a",                 # cDC2 T-bet-
-#   "P2rx7", "Lyz2", "Csf1r",
-#   "Tbx21", "Dtx1", "Ccr6",                             # cDC2 T-bet+
-#   "Siglech", "Tcf4", "Bst2",                           # Siglec-H
-#   "Cd4", "Sirpa", "Itgam",                             # cDC2
-#   "Cd207",                                             # Langerhans
-#   "Ccr7"                                               # CCR7 high
-# )
-# 
-# gns <- c(
-#   "Cd3e",           # T cells
-#   "Fcer1a",         # Basophils
-#   "Cd19", "Ms4a1",  # B cells (CD20)
-#   "Cd14"            # Monocytes
-# )
-# 
-# x <- x %>%
-#   subset(mouse == "d14")
-# 
-# gns %>%
-#   map(~ {
-#     x %>%
-#       plot_violin(
-#         .x,
-#         cluster_col = "combined_type",
-#         method = "boxplot"
-#       ) +
-#       theme(axis.text.x = element_text(angle = 45, hjust = 1))
-#   }) %>%
-#   plot_grid(plotlist = .)
+all_meta <- read_tsv(here(params$so_dir, "all_meta.tsv.gz"))
+lec_so   <- qread(here(params$so_dir, "lec_so.qs"))
+dc_so    <- qread(here(params$so_dir, "dc_so.qs"))
 ```
 
 ```{r "theme"}
 # Plot levels
-reps <- na.omit(unique(lec_so$rep))
-reps <- str_c("_", reps)
-
-lvls <- c(
-  "d2", "d14",
-  str_c("3wk", c("", reps)),
-  str_c("6wk", c("", reps)),
-  str_c("6wk-3wk", c("", reps))
-)
+mice <- unique(sam_info$mouse)
+tms  <- as.character(na.omit(unique(sam_info$tm)))
+vacs <- unique(sam_info$vaccination)
 
 # ggplot2 themes
 txt_pt1  <- 10
@@ -1251,7 +669,7 @@ ito_cols <- ito_cols[3:length(ito_cols)] %>%
 clrs <- ito_cols
 
 # Cell type colors
-typs <- unique(ag_dat$cell_type)
+typs <- unique(all_meta$cell_type)
 
 typ_clrs <- set_names(
   clrs[seq_along(typs)],
@@ -1260,7 +678,6 @@ typ_clrs <- set_names(
 
 # Subtype colors
 lec_clrs <- lec_so@meta.data %>%
-  filter(cell_type %in% c("LEC", "BEC")) %>%
   pull(subtype) %>%
   unique()
 
@@ -1269,8 +686,7 @@ lec_clrs <- set_names(
   lec_clrs
 )
 
-dc_clrs <- dc_ag_dat %>%
-  filter(cell_type == "DC") %>%
+dc_clrs <- dc_so@meta.data %>%
   pull(subtype) %>%
   unique()
 
@@ -1282,10 +698,7 @@ dc_clrs <- set_names(
 dc_clrs["unassigned"] <- lec_clrs["unassigned"] <- "grey65"
 
 # Mouse colors
-m_clrs <- set_names(
-  clrs[1:(length(tms) + 1)],
-  c(names(tms), "6wk-3wk")
-)
+m_clrs <- set_names(clrs[seq_along(mice)], mice)
 
 # Tm colors
 tm_clrs <- set_names(
@@ -1303,8 +716,6 @@ mouse_key <- lec_so@meta.data %>%
 mouse_key <- set_names(
   mouse_key$mouse, mouse_key$orig.ident
 )
-
-vacs <- c("single", "dual")
 ```
 
 
