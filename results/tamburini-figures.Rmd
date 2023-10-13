@@ -1123,10 +1123,14 @@ rf_marks <- tibble(
 # 2. identify cells in mock that are predicted to take up Ag
 
 # Identify Ag markers for all LECs for each mouse
-degs_1 <- unique(lec_so$mouse) %>%
-  map_dfr(~ {
-    res <- lec_so %>%
-      subset(mouse == .x) %>%
+deg_so <- lec_so %>%
+  SplitObject("mouse")
+
+plan(multisession, workers = min(length(deg_so), 8))
+
+degs_1 <- deg_so %>%
+  future_imap_dfr(~ {
+    res <- .x %>%
       wilcoxauc(group_by = "Ag_group")
 
     if (nrow(res) == 0) return(NULL)
@@ -1136,15 +1140,19 @@ degs_1 <- unique(lec_so$mouse) %>%
         padj < 0.05, logFC > 0.25,
         !grepl("^(mt-|R[pls])", feature)
       ) %>%
-      mutate(mouse = .x) %>%
+      mutate(mouse = .y) %>%
       arrange(padj)
   })
 
 # Identify Ag markers for subtype
-degs_2 <- unique(lec_so$subtype) %>%
-  map_dfr(~ {
-    res <- lec_so %>%
-      subset(subtype == .x) %>%
+deg_so <- lec_so %>%
+  SplitObject("subtype")
+
+plan(multisession, workers = min(length(deg_so), 8))
+
+degs_2 <- deg_so %>%
+  future_imap_dfr(~ {
+    res <- .x %>%
       wilcoxauc(group_by = "Ag_group")
 
     if (nrow(res) == 0) return(NULL)
@@ -1154,9 +1162,11 @@ degs_2 <- unique(lec_so$subtype) %>%
         padj < 0.05, logFC > 0.25,
         !grepl("^(mt-|R[pls])", feature)
       ) %>%
-      mutate(subtype = .x) %>%
+      mutate(subtype = .y) %>%
       arrange(padj)
   })
+
+rm(deg_so)
 
 # Identify markers for subtype and mouse
 degs_3 <- lec_so@meta.data %>%
@@ -1185,13 +1195,12 @@ degs <- bind_rows(degs_1, degs_2, degs_3) %>%
   distinct(feature, group)
 
 # Format RF data
-dat_col   <- "Ag_class"
+dat_col   <- "Ag_group"
 cat_feats <- c("tm", "mouse", "subtype")
 feats     <- unique(degs$feature)
 
 rf_dat <- lec_so %>%
   FetchData(c(dat_col, cat_feats, feats)) %>%
-  mutate(!!sym(dat_col) := fct_relevel(!!sym(dat_col), "high", "low")) %>%
   rename_with(~ str_replace_all(.x, "-", "_")) %>%
   rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
   rename_with(~ str_c("x", .x), matches("^[0-9]"))
@@ -1237,17 +1246,17 @@ tune_rf <- function(dat_df, dat_col, param_lst, return_best = TRUE) {
 }
 
 param_lst <- list(
-  mtry            = seq(1, ncol(rf_train), 50),
+  mtry            = seq(1, ncol(rf_train), 100),
   min.node.size   = c(1:3, 5, 10)
 )
 
 rf_params <- rf_train %>%
   tune_rf(
-    dat_col   = "Ag_class",
+    dat_col   = "Ag_group",
     param_lst = param_lst
   )
 
-# Fit RF
+# Fit model
 rf_mod <- pmap(rf_params, ~ {
   ranger(
     Ag_class ~ .,
