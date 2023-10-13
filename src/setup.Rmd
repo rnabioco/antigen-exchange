@@ -550,6 +550,135 @@ cd45pos_so <- cd45pos_so %>%
   )
 ```
 
+
+
+```{r "Ag-high", eval = FALSE}
+# Format data for clustering based on Ag scores
+# The strategy is to identify Ag-high/low cells for all datasets together
+# One might expect that changes in gene expression will depend on absolute
+# levels of Ag taken up by the cell, and so it would make the most sense to
+# use a consistent cutoff for Ag-high cells across all cell types and datasets.
+# This should work since Ag scores are corrected based on background T/B signal.
+clust_dat <- all_meta %>%
+  filter(Ag_score > 0)
+
+# Downsample samples
+# This ensures that larger samples do not skew the clustering
+sam_size <- min(table(clust_dat$mouse))
+
+set.seed(42)
+  
+clust_dat <- clust_dat %>%
+  group_by(mouse) %>%
+  slice_sample(n = sam_size) %>%
+  ungroup()
+
+# Identify threshold for Ag-high/low cells
+ag_threshold <- clust_dat %>%
+  # filter(cell_type %in% c("LEC", "BEC")) %>%
+  mutate(km_class = kmeans(Ag_score, centers = 2)$cluster) %>%
+  group_by(km_class) %>%
+  summarize(Ag_score = max(Ag_score)) %>%
+  pull(Ag_score) %>%
+  min()
+
+# Set Ag-high/low classifications
+all_meta <- all_meta %>%
+  mutate(
+    Ag_class = ifelse(
+      Ag_score >= ag_threshold,
+      "high", "low"
+    )
+  )
+
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    Ag_class = ifelse(
+      Ag_score >= ag_threshold,
+      "high", "low"
+    )
+  )
+
+
+# # Plot Ag-low/high grous
+# x %>%
+#   filter(Ag_score > 0) %>%
+#   ggplot(aes(Ag_score, ..count.. + 1, fill = Ag_class)) +
+#   geom_histogram() +
+#   facet_grid(mouse ~ subtype) +
+#   djvdj_theme() +
+#   scale_y_log10()
+```
+
+```{r "Ag-group", eval = FALSE}
+# Format data for clustering based on Ag scores
+# The strategy is to identify Ag-high/low cells for all datasets together
+# One might expect that changes in gene expression will depend on absolute
+# levels of Ag taken up by the cell, and so it would make the most sense to
+# use a consistent cutoff for Ag-high cells across all cell types and datasets.
+# This should work since Ag scores are corrected based on background T/B signal.
+clust_dat <- all_meta %>%
+  filter(Ag_score > 0)
+
+# Downsample samples
+# This ensures that larger samples do not skew the clustering
+sam_size <- min(table(clust_dat$mouse))
+
+set.seed(42)
+  
+clust_dat <- clust_dat %>%
+  group_by(mouse) %>%
+  slice_sample(n = sam_size) %>%
+  ungroup()
+
+# Identify threshold for Ag-high/low cells
+set.seed(42)
+
+ag_threshold <- clust_dat %>%
+  mutate(km_class = kmeans(Ag_score, centers = 3)$cluster) %>%
+  group_by(km_class) %>%
+  summarize(n = n(), Ag_score = min(Ag_score)) %>%
+  arrange(desc(Ag_score)) %>%
+  mutate(km_class = row_number())
+
+ag_threshold <- set_names(ag_threshold$Ag_score, ag_threshold$km_class)
+
+# Set Ag-high/low classifications
+all_meta <- all_meta %>%
+  mutate(
+    Ag_group = case_when(
+      Ag_score >= ag_threshold[1] ~ 1,
+      Ag_score >= ag_threshold[2] ~ 2,
+      Ag_score >= ag_threshold[3] ~ 3,
+      TRUE                        ~ 4
+    )
+  )
+
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    Ag_group = case_when(
+      Ag_score >= ag_threshold[1] ~ 1,
+      Ag_score >= ag_threshold[2] ~ 2,
+      Ag_score >= ag_threshold[3] ~ 3,
+      TRUE                        ~ 4
+    )
+  )
+
+
+# # Plot Ag-low/high grous
+# x %>%
+#   filter(Ag_score > 0) %>%
+#   ggplot(aes(Ag_score, ..count.. + 1, fill = Ag_class)) +
+#   geom_histogram() +
+#   facet_grid(mouse ~ subtype) +
+#   djvdj_theme() +
+#   scale_y_log10()
+```
+
+
+
 ```{r "LEC object", eval = create_sobjs}
 # Re-cluster and integrate endothelial cells
 lec_so <- cd45neg_so %>%

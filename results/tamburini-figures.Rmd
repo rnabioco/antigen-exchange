@@ -22,7 +22,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ---
@@ -891,376 +891,95 @@ plt_vars %>%
 
 <br>
 
-```{r "COMPARE NEW/OLD ANNOTATIONS", eval = FALSE}
+## Session info
 
-old_so <- qread("~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/2022-10-28/sobjs/so_lec_new.qs")
-
-old_lecs <- old_so@meta.data %>%
-  as_tibble(rownames = ".cell_id") %>%
-  dplyr::select(.cell_id, orig.ident, subtype, cell_type) %>%
-  mutate(
-    raw_id = str_remove(.cell_id, "_.+$"),
-    orig.ident = recode(orig.ident, "CD45neg_d2" = "d2", "CD45neg_d14" = "d14")
-  ) %>%
-  dplyr::select(-.cell_id)
-
-new_lecs <- cd45neg_so@meta.data %>%
-  as_tibble(rownames = ".cell_id") %>%
-  mutate(raw_id = str_remove(.cell_id, "_.+$"))
-
-all_lecs <- new_lecs %>%
-  left_join(old_lecs, by = c("orig.ident", "raw_id"), suffix = c("", ".old"))
-
-all_lecs %>%
-  filter(subtype.old != "BEC") %>%
-  plot_scatter(
-    "subtype.old", "hUMAP_1", "hUMAP_2",
-    group_col = "mouse",
-    size = 0.1, panel_nrow = 1
-  )
-
-# Add old cell types to new object
-cd45neg_so <- cd45neg_so %>%
-  mutate_meta(~ {
-    .x %>%
-      mutate(raw_id = str_remove(.cell_id, "_.+$")) %>%
-      left_join(old_lecs, by = c("orig.ident", "raw_id"), suffix = c("", ".old"))
-  })
-
-# cd45neg_so %>%
-#   # subset(cell_type.old == "LEC") %>%
-#   # mutate_meta(
-#   #   mutate,
-#   #   subtype.old = ifelse(subtype == "BEC" & subtype.old == "cLEC", "bad_cLEC", subtype.old)
-#   # ) %>%
-#   plot_violin(
-#     "Ackr4",
-#     "subtype", group_col = "mouse",
-#     method = "boxplot"
-#   )
-# 
-# cd45neg_so %>%
-#   # subset(cell_type.old == "LEC") %>%
-#   # mutate_meta(
-#   #   mutate,
-#   #   subtype.old = ifelse(subtype == "BEC" & subtype.old == "cLEC", "bad_cLEC", subtype.old)
-#   # ) %>%
-#   plot_scatter(
-#     "subtype.old",
-#     "hUMAP_1", "hUMAP_2", group_col = "mouse",
-#     size = 0.1, panel_nrow = 1, top = c("cLEC", "Collecting")
-#   ) +
-#   theme(aspect.ratio = 0.9)
-
-cd45neg_so@meta.data %>%
-  filter(
-    subtype == "BEC" & subtype.old != "BEC"
-  ) %>%
-  pull(subtype.old) %>%
-  table()
-
-
-# Check cell barcode overlap between new/old annotations
-clmn <- "cell_type"
-
-typs <- intersect(unique(new_lecs[[clmn]]), unique(old_lecs[[clmn]]))
-
-typs %>%
-  map_dfr(~ {
-    new <- new_lecs %>%
-      filter(!!sym(clmn) == .x)
-    
-    old <- old_lecs %>%
-      filter(!!sym(clmn) == .x)
-    
-    int <- length(intersect(new$raw_id, old$raw_id))
-    un <- length(union(new$raw_id, old$raw_id))
-    
-    tibble(
-      subtype = .x,
-      n_new = nrow(new),
-      n_old = nrow(old),
-      int   = int,
-      un    = un,
-      ovlp  = int / un
-    )
-  })
-
+```{r "session info"}
+sessionInfo()
 ```
 
-```{r "cLEC AG SCORE TEST", eval = FALSE}
+```{r "RF TEST 1", eval = FALSE}
+# GOALS
+# 1. train model for LEC subsets (~80% accuracy for cLECs)
+# 2. train general model for all LECs (~60-90% for all subsets)
 
-ann_so <- lec_so %>%
-  mutate_meta(
-    mutate,
-    subtype = ifelse(cell_type == "LEC" & r < 0.75, "unassigned", subtype)
-  )
-  
-
-
-ann_so <- lec_so %>%
-  classify_markers(
-    "Prox1",
-    Prox1 < 1.5,
-    clst_col = "RNA_snn_res.10",
-    type_label = "BEC",
-    type_col = "subtype"
-  ) %>%
-  classify_markers(
-    c("Ackr4", "Prox1", "r"),
-    Prox1 > 0.5 & r < 0.8 & Ackr4 < 2,
-    clst_col = "RNA_snn_res.10",
-    type_label = "unassigned",
-    type_col = "subtype"
-  )
-  # classify_markers(
-  #   "Marco",
-  #   Marco > 1,
-  #   clst_col = "RNA_snn_res.10",
-  #   type_label = "Marco_LEC",
-  #   type_col = "subtype"
-  # )
-
-ann_so <- ann_so %>%
-  mutate_meta(
-    mutate,
-    # subtype = ifelse(subtype == "cLEC" & RNA_snn_res.10 == "84", "BEC", subtype)
-    new = ifelse(subtype == "cLEC", str_c(subtype, "-", RNA_snn_res.10), subtype)
-  )
-
-gns <- c(
-  "Ackr4", "Mmrn1", "Mmrn2", "Pdgfa", "Pdgfb", "Jag1", "Edn1"
-)
-
-gns %>%
-  map(~ {
-    ann_so %>%
-      subset(exp == "exp-1" & subtype == "cLEC") %>%
-      plot_violin(
-        .x,
-        cluster_col = "new", group_col = "mouse",
-        method = "boxplot"
-      )
-  })
-
-
-ann_so %>%
-  plot_scatter(
-    # "Marco",
-    # "Ag_6wk_score",
-    # "Prox1",
-    "subtype",
-    # "r",
-    # "RNA_snn_res.10",
-    "hUMAP_1", "hUMAP_2",
-    group_col = "mouse",
-    size = 0.1,
-    plot_colors = c(unassigned = "black")
-    # plot_colors = c("lightblue", "red"),
-    # plot_colors = c("lightblue", "red", BEC = "black"),
-    # plot_lvls = "BEC",
-    # top = c("cLEC-23", "cLEC-84")
-    # top = c("23", "84")
-  )
-
-ann_so@meta.data %>%
-  filter(exp %in% c("exp-0", "exp-1")) %>%
-  ggplot(aes(as.character(tm_6), Ag_score_6, fill = as.character(tm_6), alpha = vaccination)) +
-  geom_boxplot(notch = FALSE) +
-  facet_wrap(~ subtype) +
-  scale_alpha_manual(values = c(single = 0.25, dual = 0.75)) +
-  djvdj_theme()
-
-typ <- "fLEC"
-
-p_dat <- ann_so@meta.data %>%
-  filter(exp == "exp-1", subtype == typ, mouse %in% c("6wk", "6wk-3wk")) %>%
-  split(.$vaccination) %>%
-  map(~ .x$Ag_6wk_score)
-
-t.test(p_dat$single, p_dat$dual, alternative = "less")
-```
-
-```{r "LEC Ag-high markers TEST", eval = FALSE}
-
-# Identify markers for all Ag-high LECs
-x <- lec_so %>%
-  # subset(subtype == "cLEC") %>%
-  subset(mouse != "6wk-3wk") %>%
-  Seurat::SplitObject("Ag_class") %>%
-  map(~ {
-    .x %>%
-      mutate_meta(
-        mutate,
-        Ag_subclass = as.character(ntile(Ag_score, n = 3))
-        # Ag_subclass = recode(as.character(Ag_subclass), "1" = "low", "2" = "high")
-      )
-  })
-
-ag_degs <- x %>%
-  map(~ {
-    Idents(.x) <- .x$Ag_subclass
-    
-    .x %>%
-      FindAllMarkers(only.pos = TRUE)
-  })
-
-gns <- ag_degs$high %>%
-  filter(
-    !gene %in% ag_degs$low$gene,
-    pct.1 > 0.5
-  ) %>%
-  dplyr::slice(11:30) %>%
-  pull(gene)
-
-gns <- ag_degs$high$gene
-
-gns %>%
-  map(~ {
-    gn <- .x
-    
-    x %>%
-      imap(~ {
-        .x %>%
-          mutate_meta(mutate, tm = as.character(tm)) %>%
-          plot_violin(gn, "Ag_subclass", method = "boxplot", plot_lvls = c("2", "14", "21", "42")) +
-          ggtitle(.y) +
-          theme(aspect.ratio = 1.2)
-      }) %>%
-      plot_grid(plotlist = .)
-  }) %>%
-  plot_grid(plotlist = .)
-
-# Identify Ag-high markers for all LECs
-ag_degs <- lec_so %>%
-  subset(tm == 2) %>%
-  # subset(mouse != "6wk-3wk") %>%
-  # subset(subtype == "cLEC") %>%
+# Identify Ag markers for all LECs
+degs_1 <- lec_so %>%
   wilcoxauc(group_by = "Ag_class") %>%
   filter(
-    group == "high",
-    padj < 0.05,
-    # abs(pct_in - pct_out) > 0.5,
-    logFC > 0.25
+    padj < 0.05, logFC > 0.25,
+    !grepl("^(mt-|R[pls])", feature)
   ) %>%
   arrange(padj)
 
-# Identify patterns in expression fold change (high vs low) across timepoints
-# format data
-clst_gns <- ag_degs$feature
-
-clst_so <- lec_so %>%
-  subset(mouse != "6wk-3wk") %>%
-  subset(subtype == "cLEC") %>%
-  mutate_meta(mutate, tm = as.character(tm))
-
-dat <- clst_so %>%
-  FetchData(c("Ag_class", "tm", clst_gns)) %>%
-  as_tibble() %>%
-  pivot_longer(all_of(clst_gns)) %>%
-  group_by(Ag_class, tm, name) %>%
-  summarize(value = median(value), .groups = "drop")
-
-dat <- dat %>%
-  pivot_wider(names_from = "Ag_class", values_from = "value") %>%
-  
-  # mutate(value = high / low) %>%
-  group_by(name) %>%
-  mutate(value = as.numeric(scale(high))) %>%
-  ungroup() %>%
-  
-  dplyr::select(name, tm, value) %>%
-  pivot_wider(names_from = tm, values_from = value) %>%
-  column_to_rownames("name") %>%
-  filter(if_all(.fns = is.finite))
-
-set.seed(42)
-
-clsts <- dat %>%
-  kmeans(centers = 5) %>%
-  .$cluster
-
-clst_res <- dat %>%
-  as_tibble(rownames = "gene") %>%
-  mutate(cluster = clsts[gene]) %>%
-  pivot_longer(all_of(as.character(tms)), names_to = "tm", values_to = "value") %>%
-  mutate(tm = fct_relevel(as.character(tm), as.character(tms))) %>%
-  group_by(tm, cluster) %>%
-  summarize(value = mean(value), n_genes = n_distinct(gene), .groups = "drop") %>%
-  pivot_wider(names_from = tm, values_from = value) %>%
-  arrange(desc(n_genes))
-  # filter(n_genes > 20)
-
-gns <- names(clsts[clsts == 5])
-
-gns[1:20] %>%
-  map(~ {
-    clst_so %>%
-      plot_violin(
-        .x, "tm", "Ag_class",
-        method    = "boxplot",
-        plot_lvls = as.character(tms),
-        n_label   = "corner"
-      ) +
-      theme(aspect.ratio = 1.2)
-  }) %>%
-  plot_grid(plotlist = .)
-
-```
-
-```{r "LEC Ag-high RF TEST", eval = FALSE}
-# Params
-typ <- "Collecting"
-
-# Identify Ag-high markers for day 2 LECs
-ag_degs <- tms %>%
+# Identify Ag markers for subtype
+degs_2 <- unique(lec_so$subtype) %>%
   map_dfr(~ {
-    so <- lec_so %>%
-      subset(subtype == typ)
-    
-    if (!.x %in% so$tm) return(NULL)
-    
-    res <- so %>%
-      subset(tm == .x) %>%
+    res <- lec_so %>%
+      subset(subtype == .x) %>%
       wilcoxauc(group_by = "Ag_class")
-    
+
     if (nrow(res) == 0) return(NULL)
-    
+
     res %>%
       filter(
-        group == "high",
-        padj < 0.05,
-        logFC > 0
+        padj < 0.05, logFC > 0.25,
+        !grepl("^(mt-|R[pls])", feature)
       ) %>%
-      mutate(tm = .x) %>%
+      mutate(subtype = .x) %>%
       arrange(padj)
   })
 
+# Identify markers for subtype and mouse
+degs_3 <- lec_so@meta.data %>%
+  distinct(subtype, mouse) %>%
+  pmap_dfr(~ {
+    res <- lec_so %>%
+      subset(subtype == ..1 & mouse == ..2)
+    
+    if (n_distinct(res$Ag_class) < 2) return(NULL)
+    
+    res <- res %>%
+      wilcoxauc(group_by = "Ag_class")
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      filter(
+        padj < 0.05, logFC > 0.25,
+        !grepl("^(mt-|R[pls])", feature)
+      ) %>%
+      mutate(subtype = ..1, mouse = ..2) %>%
+      arrange(padj)
+  })
+
+degs <- bind_rows(degs_1, degs_2, degs_3) %>%
+  distinct(feature, group)
+
 # Format RF data
-cat_feats <- c("orig.ident", "tm", "subtype", "Ag_class")
-feats     <- c(cat_feats, unique(ag_degs$feature))
-dat_col   <- "Ag_score"
+# cat_feats <- c("tm", "subtype", "Ag_class")
+# dat_col   <- "Ag_score"
+cat_feats <- c("tm", "mouse", "subtype")
+feats     <- unique(degs$feature)
+dat_col   <- "Ag_class"
 
-rf_so <- lec_so %>%
-  subset(mouse != "6wk-3wk") %>%
-  subset(subtype == typ)
-
-rf_dat <- rf_so %>%
-  FetchData(c(dat_col, feats)) %>%
-  filter(Ag_class == "high") %>%
-  # rename_with(~ str_c("X", .x), .cols = dplyr::matches("^[0-9]")) %>%
+rf_dat <- lec_so %>%
+  FetchData(c(dat_col, cat_feats, feats)) %>%
+  mutate(!!sym(dat_col) := fct_relevel(!!sym(dat_col), "high", "low")) %>%
   rename_with(~ str_replace_all(.x, "-", "_")) %>%
-  rename_with(~ str_replace_all(.x, "\\(|\\)", "_"))
+  rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
 
-# set.seed(42)
-# 
-# rf_split <- rf_dat %>%
-#   initial_split(prop = 0.1)
-# 
-# rf_test  <- testing(rf_split)
-# rf_train <- training(rf_split)
+set.seed(42)
 
-# Tune RF
+rf_split <- rf_dat %>%
+  initial_split(prop = 0.1)
+
+rf_test <- testing(rf_split)
+
+rf_train <- training(rf_split) %>%
+  dplyr::select(-all_of(cat_feats))
+
+# Tune model
 tune_rf <- function(dat_df, dat_col, param_lst, return_best = TRUE) {
   
   rf_params <- expand.grid(param_lst)
@@ -1291,31 +1010,56 @@ tune_rf <- function(dat_df, dat_col, param_lst, return_best = TRUE) {
 }
 
 param_lst <- list(
-  # mtry            = c(200, 300, 400),
-  # sample.fraction = 0.8
-  mtry            = seq(1, ncol(rf_train), 25),
-  min.node.size   = seq(3, 9, 2)
+  mtry            = seq(1, ncol(rf_train), 50),
+  min.node.size   = c(1:3, 5, 10)
 )
 
-rf_params <- rf_dat %>%
+rf_params <- rf_train %>%
   tune_rf(
-    dat_col   = "Ag_score",
+    dat_col   = "Ag_class",
     param_lst = param_lst
   )
 
 # Fit RF
 rf_mod <- pmap(rf_params, ~ {
   ranger(
-    # tm ~ .,
-    Ag_score ~ .,
-    data       = rf_dat,
+    Ag_class ~ .,
+    data       = rf_train,
     importance = "impurity",
     ...
   )
 }) %>%
   pluck(1)
 
-# Get top variables
+# Get predictions
+prds <- rf_mod %>%
+  predict(rf_test) %>%
+  predictions()
+
+rf_res <- rf_test %>%
+  as_tibble(rownames = ".cell_id") %>%
+  dplyr::select(.cell_id, subtype, tm, mouse, Ag_class) %>%
+  mutate(
+    prediction = prds,
+    correct    = Ag_class == prediction
+  ) %>%
+  group_by(subtype, mouse) %>%
+  summarize(
+    n       = n(),
+    correct = sum(correct) / n,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(correct))
+
+rf_res %>%
+  mutate(lab = as.character(round(correct, 2))) %>%
+  ggplot(aes(subtype, mouse, fill = correct)) +
+  geom_tile() +
+  geom_text(aes(label = lab)) +
+  scale_fill_gradientn(colours = c("lightblue", "red")) +
+  djvdj_theme()
+
+# Get top regression variables
 rf_marks <- tibble(
   gene   = names(rf_mod$variable.importance),
   impact = rf_mod$variable.importance
@@ -1324,35 +1068,285 @@ rf_marks <- tibble(
     rank = row_number(desc(impact)),
     gene = ifelse(gene %in% cat_feats, gene, str_replace(gene, "_", "-"))
   ) %>%
-  arrange(rank)
+  arrange(rank) %>%
 
-# Plot example genes
-n_gns <- 15
+  left_join(degs, by = c(gene = "feature"))
 
-rf_marks %>%
-  filter(
-    !gene %in% c("Ag-score", "Ag_class", "orig.ident", "tm"),
-    !grepl("^mt-", gene)
-  ) %>%
-  pull(gene) %>%
-  head(n_gns) %>%
-  c("Ag_score", .) %>%
-  map(~ {
-    rf_so %>%
-      subset(subtype == typ) %>%
-      mutate_meta(mutate, tm = as.character(tm)) %>%
-      plot_violin(
-        .x,
-        cluster_col = "tm",
-        group_col   = "Ag_class",
-        method      = "boxplot",
-        plot_lvls   = as.character(tms),
-        n_label     = "corner"
-      ) +
-      theme(aspect.ratio = 1.2)
-  }) %>%
-  plot_grid(plotlist = .)
+# # Create boxplots
+# n_gns <- 50
+# 
+# plt_gns <- rf_marks %>%
+#   filter(!gene %in% c("Ag-score", "Ag_class", "orig.ident", "tm")) %>%
+#   pull(gene) %>%
+#   head(n_gns) %>%
+#   c("Ag_score", .)
+# 
+# plt_dat <- rf_so %>%
+#   subset(subtype == typ) %>%
+#   FetchData(c("tm", "Ag_class", plt_gns)) %>%
+#   pivot_longer(all_of(plt_gns)) %>%
+#   mutate(
+#     tm       = fct_relevel(as.character(tm), tms),
+#     Ag_class = fct_relevel(Ag_class, c("low", "high")),
+#     name     = fct_relevel(name, plt_gns)
+#   )
+#   
+# plt_dat %>%
+#   ggplot(aes(tm, value, fill = name, color = name, alpha = Ag_class)) +
+#   geom_boxplot() +
+#   facet_wrap(~ name, scales = "free_y") +
+#   scale_alpha_manual(values = c(low = 0.25, high = 0.75)) +
+#   djvdj_theme()
+# 
+# # Create scatter plots
+# plt_dat <- rf_so %>%
+#   subset(subtype == typ) %>%
+#   FetchData(c("tm", "Ag_class", plt_gns)) %>%
+#   pivot_longer(all_of(plt_gns[-1])) %>%
+#   mutate(
+#     tm       = fct_relevel(as.character(tm), tms),
+#     Ag_class = fct_relevel(Ag_class, c("low", "high")),
+#     name     = fct_relevel(name, plt_gns)
+#   )
+# 
+# plt_dat %>%
+#   ggplot(aes(Ag_score, value, color = Ag_class)) +
+#   geom_point(size = 0.1) +
+#   facet_wrap(~ name, scales = "free") +
+#   djvdj_theme() +
+#   theme(aspect.ratio = 1)
 ```
+
+```{r "RF TEST 2", eval = FALSE}
+# GOALS
+# 1. train model for LEC subsets for Ag groups (1-4)
+# 2. identify cells in mock that are predicted to take up Ag
+
+# Identify Ag markers for all LECs for each mouse
+degs_1 <- unique(lec_so$mouse) %>%
+  map_dfr(~ {
+    res <- lec_so %>%
+      subset(mouse == .x) %>%
+      wilcoxauc(group_by = "Ag_group")
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      filter(
+        padj < 0.05, logFC > 0.25,
+        !grepl("^(mt-|R[pls])", feature)
+      ) %>%
+      mutate(mouse = .x) %>%
+      arrange(padj)
+  })
+
+# Identify Ag markers for subtype
+degs_2 <- unique(lec_so$subtype) %>%
+  map_dfr(~ {
+    res <- lec_so %>%
+      subset(subtype == .x) %>%
+      wilcoxauc(group_by = "Ag_group")
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      filter(
+        padj < 0.05, logFC > 0.25,
+        !grepl("^(mt-|R[pls])", feature)
+      ) %>%
+      mutate(subtype = .x) %>%
+      arrange(padj)
+  })
+
+# Identify markers for subtype and mouse
+degs_3 <- lec_so@meta.data %>%
+  distinct(subtype, mouse) %>%
+  pmap_dfr(~ {
+    res <- lec_so %>%
+      subset(subtype == ..1 & mouse == ..2)
+    
+    if (n_distinct(res$Ag_class) < 2) return(NULL)
+    
+    res <- res %>%
+      wilcoxauc(group_by = "Ag_group")
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      filter(
+        padj < 0.05, logFC > 0.25,
+        !grepl("^(mt-|R[pls])", feature)
+      ) %>%
+      mutate(subtype = ..1, mouse = ..2) %>%
+      arrange(padj)
+  })
+
+degs <- bind_rows(degs_1, degs_2, degs_3) %>%
+  distinct(feature, group)
+
+# Format RF data
+dat_col   <- "Ag_class"
+cat_feats <- c("tm", "mouse", "subtype")
+feats     <- unique(degs$feature)
+
+rf_dat <- lec_so %>%
+  FetchData(c(dat_col, cat_feats, feats)) %>%
+  mutate(!!sym(dat_col) := fct_relevel(!!sym(dat_col), "high", "low")) %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+
+set.seed(42)
+
+rf_split <- rf_dat %>%
+  initial_split(prop = 0.1)
+
+rf_test <- testing(rf_split)
+
+rf_train <- training(rf_split) %>%
+  dplyr::select(-all_of(cat_feats))
+
+# Tune model
+tune_rf <- function(dat_df, dat_col, param_lst, return_best = TRUE) {
+  
+  rf_params <- expand.grid(param_lst)
+  
+  res <- pmap_dfr(rf_params, ~ {
+    res <- ranger(
+      as.formula(str_c(dat_col, " ~ .")),
+      data       = dat_df,
+      importance = "impurity",
+      seed       = 42,
+      ...
+    )
+    
+    err <- sqrt(res$prediction.error)
+    
+    tibble(..., oob_rmse = err)
+  })
+  
+  if (return_best) {
+    res <- res %>%
+      dplyr::filter(oob_rmse == min(oob_rmse)) %>%
+      dplyr::select(-oob_rmse) %>%
+      head(1) %>%
+      as.list()
+  }
+  
+  res
+}
+
+param_lst <- list(
+  mtry            = seq(1, ncol(rf_train), 50),
+  min.node.size   = c(1:3, 5, 10)
+)
+
+rf_params <- rf_train %>%
+  tune_rf(
+    dat_col   = "Ag_class",
+    param_lst = param_lst
+  )
+
+# Fit RF
+rf_mod <- pmap(rf_params, ~ {
+  ranger(
+    Ag_class ~ .,
+    data       = rf_train,
+    importance = "impurity",
+    ...
+  )
+}) %>%
+  pluck(1)
+
+# Get predictions
+prds <- rf_mod %>%
+  predict(rf_test) %>%
+  predictions()
+
+rf_res <- rf_test %>%
+  as_tibble(rownames = ".cell_id") %>%
+  dplyr::select(.cell_id, subtype, tm, mouse, Ag_class) %>%
+  mutate(
+    prediction = prds,
+    correct    = Ag_class == prediction
+  ) %>%
+  group_by(subtype, mouse) %>%
+  summarize(
+    n       = n(),
+    correct = sum(correct) / n,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(correct))
+
+rf_res %>%
+  mutate(lab = as.character(round(correct, 2))) %>%
+  ggplot(aes(subtype, mouse, fill = correct)) +
+  geom_tile() +
+  geom_text(aes(label = lab)) +
+  scale_fill_gradientn(colours = c("lightblue", "red")) +
+  djvdj_theme()
+
+# Get top regression variables
+rf_marks <- tibble(
+  gene   = names(rf_mod$variable.importance),
+  impact = rf_mod$variable.importance
+) %>%
+  mutate(
+    rank = row_number(desc(impact)),
+    gene = ifelse(gene %in% cat_feats, gene, str_replace(gene, "_", "-"))
+  ) %>%
+  arrange(rank) %>%
+
+  left_join(degs, by = c(gene = "feature"))
+
+
+
+# # Create boxplots
+# n_gns <- 50
+# 
+# plt_gns <- rf_marks %>%
+#   filter(!gene %in% c("Ag-score", "Ag_class", "orig.ident", "tm")) %>%
+#   pull(gene) %>%
+#   head(n_gns) %>%
+#   c("Ag_score", .)
+# 
+# plt_dat <- rf_so %>%
+#   subset(subtype == typ) %>%
+#   FetchData(c("tm", "Ag_class", plt_gns)) %>%
+#   pivot_longer(all_of(plt_gns)) %>%
+#   mutate(
+#     tm       = fct_relevel(as.character(tm), tms),
+#     Ag_class = fct_relevel(Ag_class, c("low", "high")),
+#     name     = fct_relevel(name, plt_gns)
+#   )
+#   
+# plt_dat %>%
+#   ggplot(aes(tm, value, fill = name, color = name, alpha = Ag_class)) +
+#   geom_boxplot() +
+#   facet_wrap(~ name, scales = "free_y") +
+#   scale_alpha_manual(values = c(low = 0.25, high = 0.75)) +
+#   djvdj_theme()
+# 
+# # Create scatter plots
+# plt_dat <- rf_so %>%
+#   subset(subtype == typ) %>%
+#   FetchData(c("tm", "Ag_class", plt_gns)) %>%
+#   pivot_longer(all_of(plt_gns[-1])) %>%
+#   mutate(
+#     tm       = fct_relevel(as.character(tm), tms),
+#     Ag_class = fct_relevel(Ag_class, c("low", "high")),
+#     name     = fct_relevel(name, plt_gns)
+#   )
+# 
+# plt_dat %>%
+#   ggplot(aes(Ag_score, value, color = Ag_class)) +
+#   geom_point(size = 0.1) +
+#   facet_wrap(~ name, scales = "free") +
+#   djvdj_theme() +
+#   theme(aspect.ratio = 1)
+```
+
+
 
 ```{r "COMPARISON OF EMPTY DROPS", eval = FALSE}
 # Paths to raw matrices to use for normalization factors
@@ -1543,1306 +1537,4 @@ dat %>%
   geom_abline(slope = 1, intercept = 0) +
   scale_x_log10() +
   scale_y_log10()
-```
-
-```{r "CLEAN UP OBJECT", eval = FALSE}
-# Cleaned up meta.data columns
-clmns <- c(
-  ".cell_id", "orig.ident", "exp", "tm", "vaccination", "mouse",
-  "nCount_RNA", "nFeature_RNA", "nCount_ADT", "nFeature_ADT", "Percent_mito",
-  str_c("RNA_snn_res.", 1:5),
-  "Ag_score", "Ag_class", "Ag_3wk", "Ag_6wk", "adt_ovalbumin",
-  "cell_type", "subtype",
-  "hUMAP_1", "hUMAP_2"
-)
-
-lec_so_clean <- lec_so %>%
-  mutate_meta(dplyr::select, all_of(clmns))
-
-lec_so_clean %>%
-  qsave(here(params$so_dir, "results/2022-10-28/sobjs/so_lec.qs"))
-```
-
-```{r "LEC Ag-high RF TEST", eval = FALSE}
-# Params
-typ <- "Collecting"
-
-# Identify Ag-high markers for day 2 LECs
-ag_degs <- tms %>%
-  map_dfr(~ {
-    so <- lec_so %>%
-      subset(subtype == typ)
-    
-    if (!.x %in% so$tm) return(NULL)
-    
-    res <- so %>%
-      subset(tm == .x) %>%
-      wilcoxauc(group_by = "Ag_class")
-    
-    if (nrow(res) == 0) return(NULL)
-    
-    res %>%
-      filter(
-        group == "high",
-        padj < 0.05,
-        logFC > 0
-      ) %>%
-      mutate(tm = .x) %>%
-      arrange(padj)
-  })
-
-# Format RF data
-cat_feats <- c("orig.ident", "tm", "subtype", "Ag_class")
-feats     <- c(cat_feats, unique(ag_degs$feature))
-dat_col   <- "Ag_score"
-
-rf_so <- lec_so %>%
-  subset(mouse != "6wk-3wk") %>%
-  subset(subtype == typ)
-
-rf_dat <- rf_so %>%
-  FetchData(c(dat_col, feats)) %>%
-  filter(Ag_class == "high") %>%
-  # rename_with(~ str_c("X", .x), .cols = dplyr::matches("^[0-9]")) %>%
-  rename_with(~ str_replace_all(.x, "-", "_")) %>%
-  rename_with(~ str_replace_all(.x, "\\(|\\)", "_"))
-
-# set.seed(42)
-# 
-# rf_split <- rf_dat %>%
-#   initial_split(prop = 0.1)
-# 
-# rf_test  <- testing(rf_split)
-# rf_train <- training(rf_split)
-
-# Tune RF
-tune_rf <- function(dat_df, dat_col, param_lst, return_best = TRUE) {
-  
-  rf_params <- expand.grid(param_lst)
-  
-  res <- pmap_dfr(rf_params, ~ {
-    res <- ranger(
-      as.formula(str_c(dat_col, " ~ .")),
-      data       = dat_df,
-      importance = "impurity",
-      seed       = 42,
-      ...
-    )
-    
-    err <- sqrt(res$prediction.error)
-    
-    tibble(..., oob_rmse = err)
-  })
-  
-  if (return_best) {
-    res <- res %>%
-      dplyr::filter(oob_rmse == min(oob_rmse)) %>%
-      dplyr::select(-oob_rmse) %>%
-      head(1) %>%
-      as.list()
-  }
-  
-  res
-}
-
-param_lst <- list(
-  # mtry            = c(200, 300, 400),
-  # sample.fraction = 0.8
-  mtry            = seq(1, ncol(rf_train), 25),
-  min.node.size   = seq(3, 9, 2)
-)
-
-rf_params <- rf_dat %>%
-  tune_rf(
-    dat_col   = "Ag_score",
-    param_lst = param_lst
-  )
-
-# Fit RF
-rf_mod <- pmap(rf_params, ~ {
-  ranger(
-    # tm ~ .,
-    Ag_score ~ .,
-    data       = rf_dat,
-    importance = "impurity",
-    ...
-  )
-}) %>%
-  pluck(1)
-
-# Get top variables
-rf_marks <- tibble(
-  gene   = names(rf_mod$variable.importance),
-  impact = rf_mod$variable.importance
-) %>%
-  mutate(
-    rank = row_number(desc(impact)),
-    gene = ifelse(gene %in% cat_feats, gene, str_replace(gene, "_", "-"))
-  ) %>%
-  arrange(rank)
-
-# Plot example genes
-n_gns <- 15
-
-rf_marks %>%
-  filter(
-    !gene %in% c("Ag-score", "Ag_class", "orig.ident", "tm"),
-    !grepl("^mt-", gene)
-  ) %>%
-  pull(gene) %>%
-  head(n_gns) %>%
-  c("Ag_score", .) %>%
-  map(~ {
-    rf_so %>%
-      subset(subtype == typ) %>%
-      mutate_meta(mutate, tm = as.character(tm)) %>%
-      plot_violin(
-        .x,
-        cluster_col = "tm",
-        group_col   = "Ag_class",
-        method      = "boxplot",
-        plot_lvls   = as.character(tms),
-        n_label     = "corner"
-      ) +
-      theme(aspect.ratio = 1.2)
-  }) %>%
-  plot_grid(plotlist = .)
-```
-
-```{r "LEC DEGs TEST", eval = FALSE}
-# Pull top 1000 genes
-gns <- rowSums(lec_so@assays$RNA@counts)
-gns <- sort(gns, decreasing = TRUE)
-gns <- gns[1:1000]
-gns <- names(gns)
-
-# Get expression data
-gns <- lec_so %>%
-  subset(mouse != "6wk-3wk")
-
-gns <- gns@assays$RNA@data %>%
-  as.data.frame() %>%
-  t()
-  
-key <- lec_so %>%
-  subset(mouse != "6wk-3wk") %>%
-  FetchData(c("subtype", "tm"))
-
-gns <- cbind(key, gns)
-gns <- split(gns, ~ subtype)
-
-# Calculate correlations
-res <- gns %>%
-  future_imap_dfr(~ {
-    res <- .x %>%
-      dplyr::select(-subtype)
-    
-    typ <- .y
-    
-    colnames(res) %>%
-      map_dfr(~ {
-        tibble(
-          gene = .x,
-          type = typ,
-          corr = cor(res$tm, res[[.x]], method = "spearman")
-        )
-      })
-  })
-  
-# Filter top genes
-top_gns <- res %>%
-  group_by(gene) %>%
-  mutate(mean_cor = mean(abs(corr))) %>%
-  ungroup() %>%
-  filter(gene != "tm") %>%
-  arrange(desc(mean_cor)) %>%
-  distinct(gene, mean_cor) %>% 
-  head(20) %>%
-  pull(gene)
-  
-top_gns <- res %>%
-  group_by(gene) %>%
-  mutate(mean_cor = mean(abs(corr))) %>%
-  ungroup() %>%
-  filter(gene != "tm") %>%
-  filter(corr < 0) %>%
-  arrange(desc(mean_cor)) %>%
-  distinct(gene, mean_cor) %>%
-  head(20) %>%
-  pull(gene)
-  
-# Plot genes
-top_gns %>%
-  map(~ {
-    lec_so %>%
-      plot_violin(
-        .x,
-        "mouse",
-        group_col = "subtype",
-        method = "boxplot",
-        plot_lvls = c("d2", "d14", "3wk", "6wk", "6wk-3wk")
-      )
-  })
-
-# Lars2
-# Ptp4a1
-# Marcks
-```
-
-
-## Session info
-
-```{r "session info"}
-sessionInfo()
-```
-
-
-
-```{r "ICAM1 EXPRESSION", fig.width = 10, fig.height = 5, eval = FALSE}
-
-# Data for plotting
-dat <- bx_so %>%
-  subset(cell_type == "LEC") %>%
-  FetchData(c("subtype", "Ag_class", "mouse", "Icam1")) %>%
-  mutate(
-    Ag_class = fct_relevel(Ag_class, c("low", "high")),
-    mouse    = fct_relevel(mouse, names(m_clrs))
-  )
-
-# Table of cell numbers
-n_cells <- dat %>%
-  group_by(subtype, Ag_class, mouse) %>%
-  summarize(n = n(), .groups = "drop") %>%
-  pivot_wider(names_from = Ag_class, values_from = n)
-
-# Calculate p-values
-p_dat <- dat %>%
-  pivot_wider(names_from = Ag_class, values_from = Icam1, values_fn = list) %>%
-  group_by(subtype, mouse) %>%
-  summarize(
-    p = map2_dbl(low, high, ~ wilcox.test(.x, .y)$p.value),
-    .groups = "drop"
-  ) %>%
-  mutate(padj = p.adjust(p, method = "bonferroni")) %>%
-  rowwise() %>%
-  mutate(plab = .format_pvalue(padj)) %>%
-  ungroup()
-
-# Compare Icam1 expression for Ag-low/high
-dat %>%
-  ggplot(aes(mouse, Icam1, fill = mouse, alpha = Ag_class)) +
-  geom_boxplot(outlier.alpha = 1, outlier.size = 0.4, key_glyph = draw_key_point) +
-  geom_text(
-    aes(y = Inf, label = plab, fill = NULL),
-    data  = filter(p_dat, padj < 0.05),
-    alpha = 1,
-    vjust = 1.2,
-    size  = 8 / .pt,
-    parse = TRUE
-  ) +
-  facet_wrap(~ subtype) +
-  scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
-  scale_alpha_manual(values = c(low = 0.25, high = 0.75)) +
-  scale_fill_manual(values = clrs) +
-  guides(
-    alpha = guide_legend(override.aes = list(shape = 22, fill = "black", size = 4)),
-    fill  = guide_legend(override.aes = list(shape = 22, size = 4))
-  ) +
-  djvdj_theme() +
-  theme(
-    axis.title.x = element_blank()
-  )
-
-ggsave(
-  here("results/2022-10-28/Icam1_expression.pdf"),
-  device = "pdf",
-  width  = 10,
-  height = 5
-)
-
-```
-
-```{r "DC Ag-exchange plots", fig.height = 7, fig.width = 6, eval = FALSE}
-
-# Format plot data
-ag_dat <- sobjs[c("r1_dc", "r2_dc")] %>%
-  map_dfr(~ .x@meta.data)
-
-ag_dat <- sobjs$orig_lec@meta.data %>%
-  mutate(sample = mouse) %>%
-  bind_rows(ag_dat)
-  # mutate(
-  #   Ag_score = case_when(
-  #     grepl("d[0-9]+$", mouse) ~ Ag_score,
-  #     grepl("^3wk", mouse)     ~ Ag_3wk_score,
-  #     grepl("^6wk", mouse)     ~ Ag_6wk_score
-  #   )
-  # )
-
-# Plot levels
-lvls <- c(
-  "d2", "d14",
-  "3wk_r1", "3wk_r2", "3wk",
-  "6wk_r1", "6wk",
-  "6wk-3wk_r1", "6wk-3wk_r2", "6wk-3wk", "6wk_3wk"
-)
-
-lvls_3 <- c("6wk", "3wk", "6wk_3wk")
-
-# Create boxplots
-plt_args <- list(
-  exp      = c("exp-1", "exp-1", "exp-2", "exp-2"),
-  data_col = c("Ag_3wk_score", "Ag_6wk_score", "Ag_3wk_score", "Ag_6wk_score"),
-  lvls     = list(lvls_3, lvls, lvls_3, lvls) 
-)
-
-plts <- plt_args %>%
-  pmap(~ {
-    args <- list(...)
-    
-    # Format plot data
-    dat <- ag_dat %>%
-      filter(
-        cell_type == "DC",
-        subtype   != "unassigned",
-        exp       == args$exp
-      )
-    
-    # Calculate p-values
-    pvars <- last(args$lvls[args$lvls %in% unique(dat$mouse)], 2)
-    
-    pvals <- dat %>%
-      filter(mouse %in% pvars) %>%
-      mutate(vals = !!sym(args$data_col)) %>%
-      group_by(subtype) %>%
-      summarize(
-        wilcox = tidy(wilcox.test(vals[mouse %in% pvars[1]], vals[mouse %in% pvars[2]]))$p.value,
-        n1     = length(vals[mouse %in% pvars[1]]),
-        n2     = length(vals[mouse %in% pvars[2]])
-      ) %>%
-      ungroup() %>%
-      mutate(
-        wilcox = p.adjust(wilcox),
-        p = case_when(
-          wilcox < 0.001 ~ "***",
-          wilcox < 0.01  ~ "**",
-          wilcox < 0.05  ~ "*",
-          TRUE           ~ ""
-        ),
-        mouse = ""
-      )
-    
-    # Create boxplots
-    dat %>%
-      plot_violin(
-        data_col    = args$data_col,
-        cluster_col = "mouse",
-        group_col   = "subtype",
-        method      = "boxplot",
-        plot_lvls   = args$lvls,
-        n_label     = "legend",
-        panel_nrow  = 1
-        # notch       = TRUE,
-      ) +
-      geom_text(
-        aes(2.5, Inf, label = p),
-        data  = pvals,
-        color = "black",
-        vjust = 1.5,
-        size  = 20 / .pt
-      ) +
-      scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
-      labs(title = str_c(args$exp, " ", str_extract(args$data_col, "[0-9]+wk"))) +
-      theme(
-        plot.margin = margin(5, 5, 30, 5),
-        plot.title = element_text(face = "bold")
-      )
-  })
-
-# Create final figure
-plts %>%
-  plot_grid(
-    plotlist = .,
-    ncol     = 1,
-    align    = "v",
-    axis     = "rl"
-  )
-
-```
-
-
-
-```{r "empty drops vs B/T signal", eval = FALSE}
-
-# Create data.frame with raw and filtered UMI counts
-# use this to assess background signal in empty drops and compare with T cell
-# signal
-counts_df <- mat_dir %>%
-  imap_dfr(~ {
-    d <- .y
-    
-    .x %>%
-      imap_dfr(~ {
-        sam_dir <- .x
-        sam     <- .y
-        
-        res <- c(raw = "raw_feature_bc_matrix", filt = "filtered_feature_bc_matrix") %>%
-          imap_dfr(~ {
-            res_dir <- params$res_dir[[d]]
-            
-            counts <- here(res_dir, sam_dir, "outs", .x) %>%
-              Read10X() %>%
-              .$`Antibody Capture` %>%
-              rowSums()
-            
-            tibble(
-              dataset = d,
-              sample  = sam,
-              type    = .y,
-              Ag      = names(counts),
-              counts  = unname(counts)
-            )
-          })
-        
-        res
-      })
-  })
-
-# Format QC data for plotting
-# calculate percent of counts in empty drops
-# add correct labels for merging with counts for T/B cells
-ag_keys <- str_c("^", names(params$ag_key))
-
-qc_dat <- counts_df %>%
-  pivot_wider(names_from = "type", values_from = "counts") %>%
-  mutate(pct_empty = (raw - filt) / raw) %>%
-  mutate(
-    Ag = map2_chr(dataset, Ag, ~ {
-      ag_key <- params$ag_key[str_detect(.x, ag_keys)]
-      
-      if (length(ag_key) > 1)  cli::cli_abort("Sample matches multiple keys")
-      if (length(ag_key) == 0) return(.y)
-      
-      ag_key[[1]][[.y]]
-    }),
-    
-    mouse = mouse_key[orig.ident],
-  ) %>%
-  
-  # For single vaccination samples only include data for the Ag-tag that was
-  # injected
-  filter(
-    (dataset != "orig_lec" | Ag == "ovalbumin"),
-    (dataset == "orig_lec" | mouse == "6wk-3wk" | Ag == mouse)
-  ) %>%
-  mutate(
-    Ag = str_c("Ag-", Ag),
-    
-    Ag_mouse = ifelse(
-      mouse == "6wk-3wk",
-      str_c(mouse, "_", Ag),
-      as.character(mouse)
-    )
-  )
-
-# Merge raw/filtered counts summary with counts for each cell type
-# use this to compare empty drop signal with T/B signal
-# expect that datasets with higher T/B signal will also have higher empty drop
-# signal
-qc_dat <- clust_dat %>%
-  mutate(Ag_counts = case_when(
-    exp == "exp-0"          ~ adt_ovalbumin,
-    grepl("3wk$", Ag_mouse) ~ Ag_3wk,
-    grepl("6wk$", Ag_mouse) ~ Ag_6wk
-  )) %>%
-  group_by(orig.ident, mouse, Ag_mouse, cell_type) %>%
-  summarize(
-    Ag_counts = sum(Ag_counts),
-    # Ag_cpm   = median(Ag_cpm),
-    # Ag_score = median(clust_score),
-    .groups = "drop"
-  ) %>%
-  left_join(qc_dat, by = c("orig.ident", "Ag_mouse", "mouse")) %>%
-  
-  # Normalize summed counts by total raw counts
-  mutate(Ag_frac = Ag_counts / filt)
-
-# Create scatter plots
-# Results are inconclusive
-# do not see any substantial correlation
-# may need to approximate empty drop signal using a different approach
-qc_dat %>%
-  ggplot(aes(pct_empty, Ag_frac, color = orig.ident)) + 
-  geom_point() +
-  facet_wrap(~ cell_type, scales = "free") +
-  scale_y_log10() +
-  djvdj_theme() +
-  theme(aspect.ratio = 1)
-
-```
-
-```{r "Ag-exchange d2 d14", fig.height = 4.7, fig.width = 7, eval = FALSE}
-
-# Create boxplots
-plt_args <- list(
-  exp = c("exp-1", "exp-2")
-)
-
-plts <- plt_args %>%
-  pmap(~ {
-    args <- list(...)
-    
-    # Format plot data
-    dat <- ag_dat %>%
-      filter(
-        cell_type == "LEC",
-        !subtype %in% c("Marco_LEC", "BEC"),
-        !mouse   %in% c("6wk_3wk", "6wk-3wk"),
-        subtype   != "unassigned",
-        exp       %in% c(args$exp, "exp-0"),
-        
-        (exp != "exp-2" | mouse != "3wk")
-      ) %>%
-      mutate(
-        Ag_score = case_when(
-          grepl("d[0-9]+$", mouse) ~ Ag_score,
-          grepl("^3wk$", mouse)    ~ Ag_3wk_score,
-          grepl("^6wk$", mouse)    ~ Ag_6wk_score,
-          grepl("^6wk[-_]", mouse) ~ Ag_score
-        )
-      )
-    
-    # Create boxplots
-    dat %>%
-      plot_violin(
-        data_col    = "Ag_score",
-        cluster_col = "mouse",
-        group_col   = "subtype",
-        method      = "boxplot",
-        plot_lvls   = lvls,
-        n_label     = "none",
-        panel_nrow  = 1,
-        panel_scales = "free_y"
-      ) +
-      labs(
-        title = str_c(args$exp, " ", str_extract(args$data_col, "[0-9]+wk"))
-      )
-  })
-
-# Create final figure
-plts %>%
-  plot_grid(
-    plotlist = .,
-    ncol     = 1,
-    align    = "v",
-    axis     = "rl"
-  )
-
-```
-
-```{r "Ag-exchange d2 d14 with 6wk_3wk", fig.height = 5.5, fig.width = 8, eval = FALSE}
-
-# Format data for plotting
-# want to plot both the 6wk and 3wk signal for the 6wk_3wk samples
-plt_dat <- c("6wk", "3wk") %>%
-  map(~ {
-    ag_dat %>%
-      filter(grepl("^6wk[-_]", mouse)) %>%
-      mutate(
-        Ag_score = !!sym(str_c("Ag_", .x, "_score")),
-        mouse    = str_c(mouse, " -- Ag-", .x)
-      ) %>%
-      as_tibble(rownames = "cell_id")
-  })
-
-plt_dat <- ag_dat %>%
-  filter(!grepl("^6wk[-_]", mouse)) %>%
-  bind_rows(bind_rows(plt_dat))
-
-# Create boxplots
-plt_args <- list(
-  exp = c("exp-1", "exp-2")
-)
-
-plts <- plt_args %>%
-  pmap(~ {
-    args <- list(...)
-    
-    # Format plot data
-    dat <- plt_dat %>%
-      filter(
-        cell_type == "LEC",
-        !subtype %in% c("Marco_LEC", "BEC"),
-        # !mouse   %in% c("6wk_3wk", "6wk-3wk"),
-        subtype   != "unassigned",
-        exp       %in% c(args$exp, "exp-0"),
-        
-        (exp != "exp-2" | mouse != "3wk")
-      ) %>%
-      mutate(
-        Ag_score = case_when(
-          grepl("d[0-9]+$", mouse) ~ Ag_score,
-          grepl("^3wk$", mouse)    ~ Ag_3wk_score,
-          grepl("^6wk$", mouse)    ~ Ag_6wk_score,
-          grepl("^6wk[-_]", mouse) ~ Ag_score
-        )
-      )
-    
-    # Create boxplots
-    dat %>%
-      plot_violin(
-        data_col    = "Ag_score",
-        cluster_col = "mouse",
-        group_col   = "subtype",
-        method      = "boxplot",
-        plot_lvls   = lvls,
-        n_label     = "none",
-        panel_nrow  = 1,
-        panel_scales = "free_y",
-        
-        notch = TRUE
-      ) +
-      labs(
-        title = str_c(args$exp, " ", str_extract(args$data_col, "[0-9]+wk"))
-      ) +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1))
-  })
-
-# Create final figure
-plts %>%
-  plot_grid(
-    plotlist = .,
-    ncol     = 1,
-    align    = "v",
-    axis     = "rl"
-  )
-
-```
-
-```{r "Ag-exchange plots", fig.height = 7, fig.width = 6, eval = FALSE}
-
-# Convert timepoints into days
-tms <- c(
-  d2    = 2,
-  d14   = 14,
-  `3wk` = 21,
-  `6wk` = 42
-)
-
-# Format plot data
-# Ag score for each dataset
-# Set separate columns for 3wk and 6wk scores for 6wk-3wk mouse
-ag_dat <- sobjs[c("r1_lec", "r2_lec")] %>%
-  map_dfr(~ .x@meta.data)
-
-ag_dat <- sobjs$orig_lec@meta.data %>%
-  mutate(sample = mouse) %>%
-  bind_rows(ag_dat) %>%
-  mutate(
-    mouse = fct_relevel(mouse, c(names(tms), "6wk-3wk")),
-    
-    vaccination = ifelse(mouse == "6wk-3wk", "dual", "single"),
-    vaccination = fct_relevel(vaccination, c("single", "dual")),
-    
-    Ag_score = case_when(
-      grepl("d[0-9]+$", mouse) ~ Ag_score,
-      grepl("^3wk$", mouse)    ~ Ag_3wk_score,
-      grepl("^6wk$", mouse)    ~ Ag_6wk_score
-    ),
-    
-    Ag_score_3  = ifelse(vaccination == "dual", Ag_3wk_score, Ag_score),
-    Ag_score_6  = ifelse(vaccination == "dual", Ag_6wk_score, Ag_score),
-    
-    tm   = tms[mouse],
-    tm_3 = ifelse(vaccination == "dual", tms[["3wk"]], tm),
-    tm_6 = ifelse(vaccination == "dual", tms[["6wk"]], tm)
-  )
-
-# Plot levels
-reps <- na.omit(unique(ag_dat$rep))
-reps <- str_c("_", reps)
-
-lvls <- c(
-  "d2", "d14",
-  str_c("3wk", c("", reps)),
-  str_c("6wk", c("", reps)),
-  str_c("6wk-3wk", c("", reps))
-)
-
-# Colors
-# clrs <- as.character(met.brewer("Austria", 8))
-# clrs <- clrs[c(1, 2, 3, 6, 8)]
-clrs <- colorblindr::palette_OkabeIto
-clrs[4] <- "#D54444"
-
-m_clrs <- set_names(
-  clrs[1:(length(tms) + 1)],
-  c(names(tms), "6wk-3wk")
-)
-
-tm_clrs <- set_names(
-  clrs[seq_along(tms)],
-  unname(tms)
-)
-
-
-
-
-# # Create boxplots
-# plt_args <- list(
-#   exp      = c("exp-1", "exp-1", "exp-2"),
-#   data_col = c("Ag_3wk_score", "Ag_6wk_score", "Ag_6wk_score"),
-#   lvls     = list(c("6wk", "3wk", "6wk_3wk"), lvls, lvls) 
-# )
-# 
-# plts <- plt_args %>%
-#   pmap(~ {
-#     args <- list(...)
-#     
-#     # Format plot data
-#     dat <- ag_dat %>%
-#       filter(
-#         cell_type == "LEC",
-#         subtype   != "unassigned",
-#         exp       == args$exp
-#       )
-#     
-#     # Calculate p-values
-#     pvars <- last(args$lvls[args$lvls %in% unique(dat$mouse)], 2)
-#     
-#     pvals <- dat %>%
-#       filter(mouse %in% pvars) %>%
-#       mutate(vals = !!sym(args$data_col)) %>%
-#       group_by(subtype) %>%
-#       summarize(
-#         wilcox = tidy(wilcox.test(vals[mouse %in% pvars[1]], vals[mouse %in% pvars[2]]))$p.value,
-#         n1     = length(vals[mouse %in% pvars[1]]),
-#         n2     = length(vals[mouse %in% pvars[2]])
-#       ) %>%
-#       ungroup() %>%
-#       mutate(
-#         wilcox = p.adjust(wilcox),
-#         p = case_when(
-#           wilcox < 0.001 ~ "***",
-#           wilcox < 0.01  ~ "**",
-#           wilcox < 0.05  ~ "*",
-#           TRUE           ~ ""
-#         ),
-#         mouse = ""
-#       )
-#     
-#     # Create boxplots
-#     dat %>%
-#       plot_violin(
-#         data_col    = args$data_col,
-#         cluster_col = "mouse",
-#         group_col   = "subtype",
-#         method      = "boxplot",
-#         plot_lvls   = args$lvls,
-#         n_label     = "legend",
-#         panel_nrow  = 1
-#         # notch       = TRUE,
-#       ) +
-#       geom_text(
-#         aes(2.5, Inf, label = p),
-#         data  = pvals,
-#         color = "black",
-#         vjust = 1.5,
-#         size  = 20 / .pt
-#       ) +
-#       scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
-#       labs(title = str_c(args$exp, " ", str_extract(args$data_col, "[0-9]+wk"))) +
-#       theme(
-#         plot.margin = margin(5, 5, 30, 5),
-#         plot.title = element_text(face = "bold")
-#       )
-#   })
-# 
-# # Create final figure
-# plts %>%
-#   plot_grid(
-#     plotlist = .,
-#     ncol     = 1,
-#     align    = "v",
-#     axis     = "rl"
-#   )
-
-```
-
-
-
-```{r "QUANTILE NORMALIZATION", eval = FALSE, echo = FALSE}
-
-# PLOT AG SCORES
-# Merge r1 and r2 objects
-# lec_dat <- bind_rows(so_r1@meta.data, so_lec@meta.data)
-# 
-# lec_dat %>%
-#   filter(
-#     cell_type == "LEC",
-#     sample != "3wk"
-#   ) %>%
-#   mutate(
-#     Ag_score = ifelse(grepl("6wk", sample), Ag_6wk_score, Ag_3wk_score)
-#   ) %>%
-#   plot_violin(
-#     "Ag_score",
-#     cluster_col = "sample",
-#     group_col   = "cell_type",
-#     method      = "boxplot",
-#     notch       = TRUE
-#   )
-
-# QUANTILE-QUANTILE NORMALIZATION
-# res <- so_lec@meta.data %>%
-#   group_by(orig.ident, cell_type) %>%
-#   mutate(
-#     p = pnbinom(Ag_6wk, mu = Ag6wk_norm, size = 10, log.p = TRUE),
-#     Ag6wk_cor = qnbinom(p, mu = Ag6wk_norm_n2, size = 10, log.p = TRUE),
-#     Ag6wk_cor = Ag6wk_cor / (n_facs[orig.ident] / 1e6)
-#   )
-# 
-# orig <- dat$Ag_6wk
-# old  <- dat$Ag6wk_norm
-# new  <- dat$Ag6wk_norm_n2
-# 
-# p <- pnbinom(orig, mu = old, size = 10, log.p = TRUE)
-# q <- qnbinom(p, mu = new, size = 10, log.p = TRUE)
-
-```
-
-```{r "TEST AG SCORES", eval = FALSE, echo = FALSE}
-
-obj <- so_dc
-
-norm_factors <- obj@meta.data %>%
-  rownames_to_column(".cell_id") %>%
-  group_by(sample) %>%
-  filter(
-    con_grp
-    # Ag_6wk > 0
-  ) %>%
-  summarize(
-    # norm = exp(mean(log(Ag_6wk + Ag_3wk)))  # prod() overflows to Inf
-    # norm = mean(c(Ag_6wk + Ag_3wk))
-    
-    norm = quantile(Ag_6wk, 0.95) + 1,
-    norm = quantile(Ag_3wk, 0.95) + 1
-    
-    # norm = median(Ag_6wk) + 1
-  )
-
-norm_factors <- set_names(norm_factors$norm, norm_factors$sample)
-
-obj <- obj %>%
-  mutate_meta(~ {
-    .x %>%
-      group_by(sample) %>%
-      mutate(
-        # ag_6wk_new = (Ag_6wk + norm_factors[sample]) / norm_factors[sample],
-        # ag_3wk_new = (Ag_3wk + norm_factors[sample]) / norm_factors[sample],
-        norm = norm_factors[sample],
-        
-        new6 = (Ag_6wk) / norm,
-        new3 = (Ag_3wk) / norm,
-        new6 = new6 + 1,
-        new3 = new3 + 1,
-        
-        # new6 = Ag_6wk / sum(Ag_6wk),
-        
-        # new6 = Ag_3wk + 1
-        # new6 = Ag_6wk + 1
-        new6 = new6 + (min(new6[new6 > 0])),
-        # new3 = new3 + (min(new3[new3 > 0]))
-      )
-  })
-
-obj %>%
-  plot_violin(
-    "new6",
-    # "new3",
-    cluster_col = "cell_type",
-    group_col   = "sample",
-    method      = "boxplot",
-    trans       = "log10"
-  )
-```
-
-```{r "TEST AMBIENT RNA", eval = FALSE}
-
-library(DropletUtils)
-library(scran)
-
-# Load data for empty droplets
-sam     <- "LEC-P4-P2"
-raw_mat <- here(params$res_dir, params$sobjs[[sam]], "outs/raw_feature_bc_matrix")
-sce     <- read10xCounts(raw_mat, col.names = TRUE)
-
-# Estimate empty droplets
-set.seed(42)
-
-sce_e <- emptyDrops(counts(sce))
-sce   <- sce[, which(sce_e$FDR <= 0.001)]
-
-# Normalize
-# clusters <- quickCluster(sce)
-# sce      <- computeSumFactors(sce, cluster = clusters)
-# sce      <- logNormCounts(sce)
-
-# Identify highly variable genes
-# sce_dec <- modelGeneVarByPoisson(sce)
-# sce_var <- getTopHVGs(sce_dec, prop=0.1)
-
-# Dimensionality reduction
-# sce <- denoisePCA(sce, subset.row = sce_var, technical = sce_dec)
-# sce <- runTSNE(sce, dimred = "PCA")
-# sce <- runUMAP(sce, dimred = "PCA")
-
-# Format data for correcting counts
-grps <- so_lec@meta.data %>%
-  filter(orig.ident == sam) %>%
-  select(cell_type)
-
-grps <- set_names(grps$cell_type, rownames(grps))
-
-bc_sfx <- names(grps) %>%
-  str_extract("_[0-9]+$") %>%
-  unique()
-
-names(grps) <- names(grps) %>%
-  str_remove(bc_sfx)
-
-grps <- grps[names(grps) %in% colnames(sce)]
-  
-amb      <- metadata(sce_e)$ambient[, 1]
-stripped <- sce[names(amb), names(grps)]
-
-rm(so_lec, so_lec_sub, so_dc, so_dc_sub)  # Remove unneeded objects
-
-# Correct for ambient RNA
-sce_corrected <- removeAmbience(
-  y       = counts(stripped),
-  ambient = amb,
-  groups  = grps
-)
-
-.remove_ambience(
-  y       = counts(stripped),
-  ambient = amb,
-  groups  = grps
-)
-
-
-
-# y <- counts(stripped)
-# 
-# summed <- sumCountsAcrossCells(y, grps, store.number = NULL)
-# 
-# old.means <- assay(summed)
-# 
-# profile <- ambientContribMaximum(old.means, ambient = amb, mode = "profile")
-# 
-# new.means <- old.means - profile
-# new.means[new.means < 0] <- 0
-
-
-
-# Add corrected counts to object
-so_lec <- qread(file.path("~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/2022-10-28/sobjs/so_lec.qs"))
-
-cor_counts <- ag_key %>%
-  imap_dfc(~ {
-    nm   <- .x[1]
-    idx  <- grep(nm, rownames(stripped))
-    rnms <- str_c(colnames(stripped), bc_sfx)
-    res  <- data.frame(sce_corrected[idx, ], row.names = rnms)
-    
-    colnames(res) <- str_c("Ag_", .y, "_cor")
-    
-    res
-  })
-
-so_lec <- AddMetaData(so_lec, cor_counts)
-
-
-# e.out   <- e.out$`Antibody Capture`
-# 
-# cell_bcs <- so_lec@meta.data %>%
-#   rownames_to_column(".cell_id") %>%
-#   filter(orig.ident == sam) %>%
-#   pull(.cell_id) %>%
-#   str_remove("_[0-9]+$")
-# 
-# e.out <- e.out[, !colnames(e.out) %in% cell_bcs]
-# 
-# # Estimate ambient RNA contamination
-# res <- so_lec@assays$ADT@counts %>%
-#   removeAmbience(
-#     ambient = e.out
-#   )
-
-
-
-
-# EXAMPLE DATA
-library(DropletTestFiles)
-
-raw.path <- getTestFile("tenx-2.1.0-pbmc4k/1.0.0/raw.tar.gz")
-out.path <- file.path(tempdir(), "pbmc4k")
-untar(raw.path, exdir=out.path)
-
-fname <- file.path(out.path, "raw_gene_bc_matrices/GRCh38")
-sce.pbmc <- read10xCounts(fname, col.names=TRUE)
-
-set.seed(100)
-e.out <- emptyDrops(counts(sce.pbmc))
-sce.pbmc <- sce.pbmc[,which(e.out$FDR <= 0.001)]
-
-set.seed(1000)
-clusters <- quickCluster(sce.pbmc)
-sce.pbmc <- computeSumFactors(sce.pbmc, cluster=clusters)
-sce.pbmc <- logNormCounts(sce.pbmc)
-
-set.seed(1001)
-dec.pbmc <- modelGeneVarByPoisson(sce.pbmc)
-top.pbmc <- getTopHVGs(dec.pbmc, prop=0.1)
-
-set.seed(10000)
-sce.pbmc <- denoisePCA(sce.pbmc, subset.row=top.pbmc, technical=dec.pbmc)
-
-set.seed(100000)
-sce.pbmc <- runTSNE(sce.pbmc, dimred="PCA")
-
-set.seed(1000000)
-sce.pbmc <- runUMAP(sce.pbmc, dimred="PCA")
-
-# Not all genes are reported in the ambient profile from emptyDrops,
-# as genes with counts of zero across all droplets are just removed.
-# So for convenience, we will restrict our analysis to genes with 
-# non-zero counts in at least one droplet (empty or otherwise).
-amb <- metadata(e.out)$ambient[,1]
-stripped <- sce.pbmc[names(amb),]
-
-out <- removeAmbience(counts(stripped), ambient=amb, groups=colLabels(stripped))
-dim(out)
-
-counts(sce.pbmc) %>% .["ENSG00000279457", ] %>% sum()
-
-```
-
-```{r "TEST LIBRA-seq SCORES", eval = FALSE}
-
-# https://github.com/Iglab-repo/LIBRA-seq-with-ligand-blocking/blob/1b76c0889ee29d9915d7924d5ed83a988c9858fe/LIBRAseq_analysis_IMGT_part2.R
-dat_dir <- file.path(params$res_dir, "stromal_P4_P2-JH300_3/outs")
-
-# read in cellranger antigen count matrix
-ag.counts <- Read10X(file.path(dat_dir, "filtered_feature_bc_matrix"))
-ag.counts <- t(as.matrix(ag.counts$`Antibody Capture`))
-ag.counts <- ag.counts[rowSums(ag.counts) > 0, ]
-
-# normalize unfiltered antigen count data
-ag.geomean <- apply(ag.counts, 1, function(x) prod(x + 1)^(1 / ncol(ag.counts)))
-ag.clr <- log((ag.counts + 1) / ag.geomean)
-ag.clr.z <- apply(ag.clr, 2, function(x) (x - mean(x)) / sd(x))
-
-for(i in 1:ncol(ag.clr.z)) {ag.clr.z[ag.counts[, i] == 0, i] <- min(ag.clr.z[, i])}
-
-```
-
-
-
-```{r "TYPE FEAT EXPRESSION", eval = FALSE}
-feats <- c(
-  "cell_type", "Cd3e",
-  "Cd4", "Cd8a",
-  "Cd19", "Cd79a",
-  "Pecam1", "Cd14",
-  "Itgam", "Itgb2"
-)
-
-feats <- c(
-  "cell_type", "Fcgr1",
-  "Cd68", "Tfrc"
-)
-
-feats <- c(
-  "cell_type", "Pdpn",
-  "Pecam1", "Acta2",
-  "Itga7", "Cspg4"
-)
-
-feats %>%
-  map(~ {
-    so_lec %>%
-      plot_features(
-        feature = .x,
-        size    = 0.5
-      )
-  }) %>%
-  plot_grid(
-    plotlist = .,
-    align = "vh",
-    axis  = "trbl"
-  )
-```
-
-```{r "MIG DC GENES", eval = FALSE}
-# DC data
-so_dc_sub <- qread("results/2022-03-11/sobjs/so_dc_sub.qs")
-
-# Genes to plot
-genes <- c(
-  "Xcr1",
-  "Itgam",  # Cd11b
-  "Mrc1",   # Cd206
-  "Cd207",  # langerin
-  "Sirpa",
-  "Cd8a",
-  "Itgae",  # Cd103
-  "Epcam",
-  "Cx3cr1",
-  "Ccr7",
-  "Cxcr3",
-  "H2-Aa",
-  "Itgax"
-)
-
-# Data for boxplots
-dat <- so_dc_sub %>%
-  FetchData(c("orig.ident", "sub_type", genes)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(genes))
-
-# Create boxplots
-dat %>%
-  ggplot(aes(sub_type, value, fill = sub_type)) + 
-  geom_boxplot(outlier.size = 0.5) +
-  facet_wrap(orig.ident ~ name, scales = "free", ncol = length(genes)) +
-  theme_cowplot(font_size = 10) +
-  theme(
-    legend.position = "none",
-    legend.title = element_blank(),
-    axis.title   = element_blank(),
-    axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5)
-  )
-
-# UMAPs
-# genes %>%
-#   map(~ {
-#     so_dc_sub %>%
-#       plot_features(feature = .x)
-#   }) %>%
-#   plot_grid(plotlist = .)
-```
-
-```{r "SOUPX TEST", eval = FALSE}
-library(SoupX)
-
-dtst <- "BT_GEX_6-BT_ADT_6"
-
-soup_mats <- list(
-  raw  = here("results/2022-03-11", dtst, "outs/raw_feature_bc_matrix"),
-  filt = here("results/2022-03-11", dtst, "outs/filtered_feature_bc_matrix")
-)
-
-soup_mats <- soup_mats %>%
-  map(Read10X)
-
-ag_mats <- soup_mats %>%
-  map(~ .x$`Antibody Capture`)
-
-# Clusters
-clsts <- so_dc %>%
-  subset(sample == "6wk_3wk_r1") %>%
-  FetchData("RNA_snn_res.1")
-
-clsts <- set_names(clsts$RNA_snn_res.1, rownames(clsts))
-
-names(clsts) <- names(clsts) %>%
-  str_remove("_[0-9]+$")
-
-ag_mats$filt <- ag_mats$filt[, names(clsts)]
-
-# Soup channel
-sc  <- SoupChannel(ag_mats$raw, ag_mats$filt)
-sc  <- setClusters(sc, clsts)
-sc  <- autoEstCont(sc, tfidfMin = 0.1)
-out <- adjustCounts(sc)
-```
-
-```{r "BARCODE RANKS", eval = FALSE}
-# DC1_DC2 matrix
-# dat_dir <- here("results/2022-03-11/BT_GEX_6-BT_ADT_6/outs/raw_feature_bc_matrix")
-# dat_dir <- here("results/2022-03-11/BT_GEX_1-BT_ADT_1/outs/raw_feature_bc_matrix")
-dat_dir <- here("results/2022-03-11/BT_GEX_2-BT_ADT_2/outs/raw_feature_bc_matrix")
-mat     <- Read10X(dat_dir)
-
-# Ag matrices
-Ags <- c("ABPS2", "ABPS4")
-
-Ag_mats <- set_names(Ags) %>%
-  map(~ mat$`Antibody Capture`[.x, ])
-
-# gex matrix
-gex_mat <- colSums(mat$`Gene Expression`)
-
-mats <- append(list(gex = gex_mat), Ag_mats)
-
-# Seurat object
-so <- qread("results/2022-03-11/sobjs/so_dc.qs")
-# so <- qread("results/2022-03-11/sobjs/so_lec.qs")
-
-bcs <- so@meta.data %>%
-  # filter(orig.ident == "DC-1_DC-2_r1") %>%
-  # filter(orig.ident == "LEC-1_LEC-2_r1") %>%
-  filter(orig.ident == "LEC-1_LEC-2_r2") %>%
-  rownames() %>%
-  str_remove("_[0-9]+$")
-
-# ABPS2 positive cells
-ag2_bcs <- names(mats$ABPS2[mats$ABPS2 > 1])
-ag4_bcs <- names(mats$ABPS4[mats$ABPS4 > 1])
-
-# Create data.frame
-knee_dat <- mats %>%
-  imap_dfr(~ {
-    dat <- .x[.x != 0]
-    dat <- sort(dat, decreasing = TRUE)
-    bcs <- names(dat)
-    tibble(
-      .cell_id = bcs,
-      key      = .y,
-      count    = dat,
-      rank     = seq_along(dat),
-      is_cell  = .cell_id %in% bcs,
-      ag2_pos  = .cell_id %in% ag2_bcs,
-      ag4_pos  = .cell_id %in% ag4_bcs
-    )
-  })
-
-knee_dat %>%
-  group_by(key, is_cell) %>%
-  summarize(n = n(), sum = sum(count))
-
-# Create barcode rank plots
-clr_key <- c("is_cell", "ag2_pos", "ag4_pos")
-
-plt <- clr_key %>%
-  map(~ {
-    knee_dat %>%
-      mutate(trace = !!sym(.x)) %>%
-      ggplot(aes(rank, count + 1, fill = key)) + 
-      geom_step_trace(
-        trace_position = trace,
-        color    = NA,
-        background_params = list(color = NA, fill = "grey80"),
-        size = 1
-      ) +
-      facet_wrap(~ key, scales = "free") +
-      ggtitle(.x) +
-      scale_x_log10() +
-      scale_y_log10() +
-      base_theme
-  }) %>%
-  plot_grid(plotlist = ., align = "vh", axis = "trbl", ncol = 1)
 ```
