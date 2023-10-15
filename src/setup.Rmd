@@ -611,6 +611,47 @@ lec_so <- lec_so %>%
 #   scale_y_log10()
 ```
 
+```{r "Ag-high 2", eval = FALSE}
+# Try splitting into Ag-low/high separately for each cell type
+lec_so <- lec_so %>%
+  subset(mouse != "d2") %>%
+  mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
+  cluster_signal(
+    data_column  = "Ag_score",
+    grp_column   = "mouse_type",
+    clust_column = "Ag_class_2",
+    method       = "km"
+  )
+
+# Set Ag-high/low classifications
+all_meta <- all_meta %>%
+  mutate(
+    Ag_class = ifelse(
+      Ag_score >= ag_threshold,
+      "high", "low"
+    )
+  )
+
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    Ag_class = ifelse(
+      Ag_score >= ag_threshold,
+      "high", "low"
+    )
+  )
+
+
+# # Plot Ag-low/high grous
+# x %>%
+#   filter(Ag_score > 0) %>%
+#   ggplot(aes(Ag_score, ..count.. + 1, fill = Ag_class)) +
+#   geom_histogram() +
+#   facet_grid(mouse ~ subtype) +
+#   djvdj_theme() +
+#   scale_y_log10()
+```
+
 ```{r "Ag-group", eval = FALSE}
 # Format data for clustering based on Ag scores
 # The strategy is to identify Ag-high/low cells for all datasets together

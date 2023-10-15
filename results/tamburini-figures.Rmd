@@ -1355,6 +1355,1077 @@ rf_marks <- tibble(
 #   theme(aspect.ratio = 1)
 ```
 
+```{r "RF TEST 3", eval = FALSE}
+# GOALS
+# 1. train model for LEC subsets for Ag groups (1-4)
+# 2. identify cells in mock that are predicted to take up Ag
+
+# Identify DEGs ----
+# Identify Ag markers for all LECs for each mouse
+grp <- "Ag_class"
+fc  <- 0
+
+deg_so <- lec_so %>%
+  SplitObject("mouse")
+
+degs_1 <- deg_so %>%
+  imap_dfr(~ {
+    res <- .x %>%
+      wilcoxauc(group_by = grp)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = "all", mouse = .y) %>%
+      arrange(padj)
+  })
+
+# Identify Ag markers for subtype
+deg_so <- lec_so %>%
+  SplitObject("subtype")
+
+degs_2 <- deg_so %>%
+  imap_dfr(~ {
+    res <- .x %>%
+      wilcoxauc(group_by = grp)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = .y, mouse = "all") %>%
+      arrange(padj)
+  })
+
+rm(deg_so)
+
+# Identify markers for subtype and mouse
+degs_3 <- lec_so@meta.data %>%
+  distinct(subtype, mouse) %>%
+  pmap_dfr(~ {
+    res <- lec_so %>%
+      subset(subtype == ..1 & mouse == ..2)
+    
+    if (n_distinct(res$Ag_class) < 2) return(NULL)
+    
+    res <- res %>%
+      wilcoxauc(group_by = grp)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = ..1, mouse = ..2) %>%
+      arrange(padj)
+  })
+
+degs <- bind_rows(degs_1, degs_2, degs_3) %>%
+  filter(
+    padj < 0.05, logFC > fc,
+    !grepl("^(mt-|R[pls])", feature)
+  )
+
+# Format data ----
+# dat_col    <- "Ag_group"
+dat_col    <- "Ag_class_2"
+feats      <- unique(degs$feature)
+other_vars <- NULL
+
+feats <- degs %>%
+  filter(subtype == "cLEC", mouse == "d14") %>%
+  pull(feature) %>%
+  unique()
+
+other_info <- c("tm", "subtype", "mouse")
+
+rf_dat <- lec_so %>%
+  subset(subtype == "cLEC" & mouse == "d14") %>%
+
+  FetchData(unique(c(dat_col, other_info, other_vars, feats))) %>%
+  
+  # mutate(across(all_of(feats), ~ as.numeric(scale(.x)))) %>%
+  # mutate(!!sym(dat_col) := factor(!!sym(dat_col))) %>%
+  # mutate(
+  #   across(all_of(c(dat_col, other_vars)), ~ as.numeric(factor(.x)))
+  # ) %>%
+  
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+
+# Adjust groups so they are balanced
+sam_sz <- rf_dat %>%
+  group_by(!!sym(dat_col), mouse) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  pull(n)
+
+# sam_sz <- max(100, min(sam_sz))
+sam_sz <- 135
+
+# Split into train/test data
+# rf_split <- initial_split(rf_dat, prop = 0.5)
+# rf_train <- training(rf_split)
+# rf_test  <- testing(rf_split)
+
+rf_train <- rf_dat %>%
+  rownames_to_column(".cell_id") %>%
+  group_by(!!sym(dat_col), mouse) %>%
+  filter(n() >= sam_sz) %>%
+  dplyr::sample_n(sam_sz) %>%
+  ungroup() %>%
+  dplyr::select(-all_of(other_info[!other_info %in% other_vars])) %>%
+  column_to_rownames(".cell_id")
+
+rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
+
+# Tune RF model ----
+tune_rf <- function(dat_df, dat_col, param_lst, return_best = TRUE) {
+  
+  rf_params <- expand.grid(param_lst)
+  
+  res <- pmap_dfr(rf_params, ~ {
+    res <- ranger(
+      as.formula(str_c("factor(", dat_col, ") ~ .")),
+      data       = dat_df,
+      importance = "impurity",
+      seed       = 42,
+      ...
+    )
+    
+    err <- sqrt(res$prediction.error)
+    
+    tibble(..., oob_rmse = err)
+  })
+  
+  if (return_best) {
+    res <- res %>%
+      dplyr::filter(oob_rmse == min(oob_rmse)) %>%
+      dplyr::select(-oob_rmse) %>%
+      head(1) %>%
+      as.list()
+  }
+  
+  res
+}
+
+param_lst <- list(
+  # mtry          = c(10, 50, 200, 300),
+  mtry          = seq(10, 60, 10),
+  min.node.size = c(1, 2, 5),
+  num.trees     = 1000
+)
+
+rf_params <- rf_train %>%
+  tune_rf(
+    dat_col   = dat_col,
+    param_lst = param_lst
+  )
+
+# rf_params <- list(
+#   mtry = 10,
+#   min.node.size = 1,
+#   num.trees = 1000
+#   # max.depth = 5
+# )
+
+# Fit RF model
+rf_mod <- pmap(rf_params, ~ {
+  ranger(
+    as.formula(str_c("factor(", dat_col, ") ~ .")),
+    data       = rf_train,
+    importance = "impurity",
+    ...
+  )
+}) %>%
+  pluck(1)
+
+# Identify top features and re-fit
+top_feats <- importance(rf_mod) %>%
+  sort(decreasing = TRUE)
+
+top_feats <- top_feats[top_feats > 0]
+
+rf_params$mtry <- min(length(top_feats), rf_params$mtry)
+
+rf_mod_top <- pmap(rf_params, ~ {
+  ranger(
+    as.formula(str_c("factor(", dat_col, ") ~ .")),
+    data       = rf_train[, c(dat_col, names(top_feats))],
+    importance = "impurity",
+    ...
+  )
+}) %>%
+  pluck(1)
+
+# prds <- rf_mod_top %>%
+prds <- rf_mod %>%
+  predict(rf_test) %>%
+  predictions()
+
+# Try logit regression ----
+logit_mod <- rf_train %>%
+  mutate(
+    Ag_class = ifelse(Ag_class == "high", 1, 0),
+    Ag_class = factor(Ag_class)
+  ) %>%
+  glm(
+    data = .,
+    # as.factor(Ag_class) ~ Cav1 + Marcks | as.numeric(as.factor(mouse)),
+    # as.factor(Ag_class) ~ Cav1 + Marcks,
+    Ag_class ~ .,
+    control = glm.control(maxit = 200),
+    family = binomial
+  )
+
+prob <- logit_mod %>%
+  predict(newdata = rf_test, type = "response")
+
+prds <- vector("character", length(prob))
+prds[prob > 0.7] <- "high"
+prds[prob <= 0.7] <- "low"
+
+# Try glmer ----
+# library(lme4)
+# 
+# logit_mod <- rf_train %>%
+#   mutate(
+#     Ag_class = ifelse(Ag_class == "high", 1, 0),
+#     Ag_class = factor(Ag_class)
+#   ) %>%
+#   glmer(
+#     data = .,
+#     # as.factor(Ag_class) ~ Cav1 + Marcks | as.numeric(as.factor(mouse)),
+#     # as.factor(Ag_class) ~ Cav1 + Marcks,
+#     # Ag_class ~ (. | factor(mouse)),
+#     # control = glm.control(maxit = 200),
+#     Ag_class ~ (. | factor(exp)),
+#     family = binomial
+#   )
+# 
+# prob <- logit_mod %>%
+#   predict(newdata = rf_test, type = "response")
+# 
+# prds <- vector("character", length(prob))
+# prds[prob > 0.5] <- "high"
+# prds[prob <= 0.5] <- "low"
+
+
+# Get predictions ----
+rf_res <- rf_test %>%
+  as_tibble(rownames = ".cell_id") %>%
+  dplyr::select(.cell_id, subtype, all_of(c(dat_col, other_vars, other_info))) %>%
+  mutate(
+    prediction = prds,
+    correct    = !!sym(dat_col) == prediction
+  ) %>%
+  # group_by(subtype, !!sym(other_vars)) %>%
+  group_by(!!!syms(c(other_info, dat_col))) %>%
+  summarize(
+    n       = n(),
+    correct = sum(correct) / n,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(correct))
+
+# Plot results
+rf_res %>%
+  mutate(lab = as.character(round(correct, 2))) %>%
+  ggplot(aes(subtype, mouse, fill = correct)) +
+  geom_tile() +
+  geom_text(aes(label = lab)) +
+  facet_wrap(~ Ag_class_2) +
+  scale_fill_gradientn(colours = c("lightblue", "red")) +
+  djvdj_theme()
+
+# Get top regression variables
+rf_marks <- tibble(
+  gene   = names(rf_mod$variable.importance),
+  impact = rf_mod$variable.importance
+) %>%
+  mutate(
+    rank = row_number(desc(impact)),
+    gene = ifelse(gene %in% cat_feats, gene, str_replace(gene, "_", "-"))
+  ) %>%
+  arrange(rank) %>%
+
+  left_join(degs, by = c(gene = "feature"))
+
+
+
+# # Create boxplots
+# n_gns <- 50
+# 
+# plt_gns <- rf_marks %>%
+#   filter(!gene %in% c("Ag-score", "Ag_class", "orig.ident", "tm")) %>%
+#   pull(gene) %>%
+#   head(n_gns) %>%
+#   c("Ag_score", .)
+# 
+# plt_dat <- rf_so %>%
+#   subset(subtype == typ) %>%
+#   FetchData(c("tm", "Ag_class", plt_gns)) %>%
+#   pivot_longer(all_of(plt_gns)) %>%
+#   mutate(
+#     tm       = fct_relevel(as.character(tm), tms),
+#     Ag_class = fct_relevel(Ag_class, c("low", "high")),
+#     name     = fct_relevel(name, plt_gns)
+#   )
+#   
+# plt_dat %>%
+#   ggplot(aes(tm, value, fill = name, color = name, alpha = Ag_class)) +
+#   geom_boxplot() +
+#   facet_wrap(~ name, scales = "free_y") +
+#   scale_alpha_manual(values = c(low = 0.25, high = 0.75)) +
+#   djvdj_theme()
+# 
+# # Create scatter plots
+# plt_dat <- rf_so %>%
+#   subset(subtype == typ) %>%
+#   FetchData(c("tm", "Ag_class", plt_gns)) %>%
+#   pivot_longer(all_of(plt_gns[-1])) %>%
+#   mutate(
+#     tm       = fct_relevel(as.character(tm), tms),
+#     Ag_class = fct_relevel(Ag_class, c("low", "high")),
+#     name     = fct_relevel(name, plt_gns)
+#   )
+# 
+# plt_dat %>%
+#   ggplot(aes(Ag_score, value, color = Ag_class)) +
+#   geom_point(size = 0.1) +
+#   facet_wrap(~ name, scales = "free") +
+#   djvdj_theme() +
+#   theme(aspect.ratio = 1)
+```
+
+```{r "RF d14 TEST", eval = FALSE}
+# GOALS
+# 1. train model for LEC subsets for Ag groups (1-4)
+# 2. identify cells in mock that are predicted to take up Ag
+
+# Identify DEGs ----
+# Identify Ag markers for all LECs for each mouse
+grp <- "Ag_class_2"
+fc  <- 0
+
+deg_so <- lec_so %>%
+  SplitObject("mouse")
+
+degs_1 <- deg_so %>%
+  imap_dfr(~ {
+    res <- .x %>%
+      wilcoxauc(group_by = grp)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = "all", mouse = .y) %>%
+      arrange(padj)
+  })
+
+# Identify Ag markers for subtype
+deg_so <- lec_so %>%
+  SplitObject("subtype")
+
+degs_2 <- deg_so %>%
+  imap_dfr(~ {
+    res <- .x %>%
+      wilcoxauc(group_by = grp)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = .y, mouse = "all") %>%
+      arrange(padj)
+  })
+
+rm(deg_so)
+
+# Identify markers for subtype and mouse
+degs_3 <- lec_so@meta.data %>%
+  distinct(subtype, mouse) %>%
+  pmap_dfr(~ {
+    res <- lec_so %>%
+      subset(subtype == ..1 & mouse == ..2)
+    
+    if (n_distinct(res[[grp]]) < 2) return(NULL)
+    
+    res <- res %>%
+      wilcoxauc(group_by = grp)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = ..1, mouse = ..2) %>%
+      arrange(padj)
+  })
+
+degs <- bind_rows(degs_1, degs_2, degs_3) %>%
+  filter(
+    padj < 0.05, logFC > fc,
+    !grepl("^(mt-|R[pls])", feature),
+    feature != "Malat1"
+  )
+
+degs %>%
+  write_tsv(here(params$so_dir, "ag-high_degs_Ag_class_2.tsv.gz"))
+
+# Most common degs
+top_degs <- degs %>%
+  group_by(subtype, feature, group) %>%
+  summarize(n = n_distinct(mouse), .groups = "drop") %>%
+  arrange(desc(n)) %>%
+  filter(n > 1) %>%
+  filter(!subtype %in% c("all", "BEC", "unassigned")) %>%
+  group_by(feature, group) %>%
+  summarize(n_typ = n_distinct(subtype), .groups = "drop") %>%
+  arrange(desc(n_typ)) %>%
+  filter(n_typ > 1)
+
+# Format data ----
+dat_col    <- "Ag_class_2"
+feats      <- unique(degs$feature)
+other_vars <- NULL
+
+# feats <- degs %>%
+#   filter(subtype == "cLEC", mouse == "d14") %>%
+#   pull(feature) %>%
+#   unique()
+feats <- unique(top_degs$feature)
+
+other_info <- c("tm", "subtype", "mouse")
+
+rf_dat <- rf_so %>%
+  # subset(subtype != "BEC" & subtype == "cLEC") %>%
+  subset(subtype == "cLEC" & mouse == "d14") %>%
+
+  FetchData(unique(c(dat_col, other_info, other_vars, feats))) %>%
+  
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+
+# Adjust groups so they are balanced
+# Split into train/test data
+sam_sz <- 135
+
+rf_train <- rf_dat %>%
+  rownames_to_column(".cell_id") %>%
+  group_by(!!sym(dat_col), subtype, mouse) %>%
+  filter(n() >= sam_sz) %>%
+  dplyr::sample_n(sam_sz) %>%
+  ungroup() %>%
+  dplyr::select(-all_of(other_info[!other_info %in% other_vars])) %>%
+  column_to_rownames(".cell_id")
+
+rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
+
+# Tune RF model ----
+tune_rf <- function(dat_df, dat_col, param_lst, return_best = TRUE) {
+  
+  rf_params <- expand.grid(param_lst)
+  
+  res <- pmap_dfr(rf_params, ~ {
+    res <- ranger(
+      as.formula(str_c("factor(", dat_col, ") ~ .")),
+      data       = dat_df,
+      importance = "impurity",
+      seed       = 42,
+      ...
+    )
+    
+    err <- sqrt(res$prediction.error)
+    
+    tibble(..., oob_rmse = err)
+  })
+  
+  if (return_best) {
+    res <- res %>%
+      dplyr::filter(oob_rmse == min(oob_rmse)) %>%
+      dplyr::select(-oob_rmse) %>%
+      head(1) %>%
+      as.list()
+  }
+  
+  res
+}
+
+param_lst <- list(
+  mtry          = seq(2, length(feats), 5),
+  min.node.size = c(1, 2, 5),
+  num.trees     = 1000
+)
+
+rf_params <- rf_train %>%
+  tune_rf(
+    dat_col   = dat_col,
+    param_lst = param_lst
+  )
+
+# Fit RF model
+rf_mod <- pmap(rf_params, ~ {
+  ranger(
+    as.formula(str_c("factor(", dat_col, ") ~ .")),
+    data       = rf_train,
+    importance = "impurity",
+    ...
+  )
+}) %>%
+  pluck(1)
+
+# Identify top features and re-fit
+top_feats <- importance(rf_mod) %>%
+  sort(decreasing = TRUE)
+
+top_feats <- top_feats[top_feats > 0]
+
+rf_params$mtry <- min(length(top_feats), rf_params$mtry)
+
+rf_mod_top <- pmap(rf_params, ~ {
+  ranger(
+    as.formula(str_c("factor(", dat_col, ") ~ .")),
+    data       = rf_train[, c(dat_col, names(top_feats))],
+    importance = "impurity",
+    ...
+  )
+}) %>%
+  pluck(1)
+
+# prds <- rf_mod %>%
+  # predict(rf_dat) %>%
+prds <- rf_mod_top %>%
+  predict(rf_test) %>%
+  predictions()
+
+# Get predictions ----
+# rf_res <- rf_test %>%
+rf_res <- rf_dat %>%
+  as_tibble(rownames = ".cell_id") %>%
+  dplyr::select(.cell_id, subtype, all_of(c(dat_col, other_vars, other_info))) %>%
+  mutate(
+    prediction = prds,
+    correct    = !!sym(dat_col) == prediction
+  ) %>%
+  group_by(!!!syms(c(other_info, dat_col))) %>%
+  summarize(
+    n       = n(),
+    correct = sum(correct) / n,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(correct))
+
+# Plot results
+rf_res %>%
+  mutate(lab = as.character(round(correct, 2))) %>%
+  ggplot(aes(subtype, mouse, fill = correct)) +
+  geom_tile() +
+  geom_text(aes(label = lab)) +
+  facet_wrap(~ Ag_class_2) +
+  scale_fill_gradientn(colours = c("lightblue", "red")) +
+  djvdj_theme()
+
+# Get top regression variables
+rf_marks <- tibble(
+  gene   = names(rf_mod$variable.importance),
+  impact = rf_mod$variable.importance
+) %>%
+  mutate(
+    rank = row_number(desc(impact)),
+    gene = ifelse(gene %in% cat_feats, gene, str_replace(gene, "_", "-"))
+  ) %>%
+  arrange(rank) %>%
+
+  left_join(degs, by = c(gene = "feature"))
+
+# Create boxplots
+n_gns <- 50
+
+plt_gns <- rf_marks %>%
+  filter(!gene %in% c("Ag_score", dat_col, "orig.ident", "tm")) %>%
+  pull(gene) %>%
+  unique() %>%
+  head(n_gns) %>%
+  c("Ag_score", .) %>%
+  str_remove("^x")
+
+plt_dat <- lec_so %>%
+  subset(subtype == typ) %>%
+  FetchData(c("tm", dat_col, plt_gns)) %>%
+  pivot_longer(all_of(plt_gns)) %>%
+  mutate(
+    tm         = fct_relevel(as.character(tm), tms),
+    Ag_class_2 = fct_relevel(Ag_class_2, c("low", "high")),
+    name       = fct_relevel(name, plt_gns)
+  )
+
+plt_dat %>%
+  ggplot(aes(tm, value, fill = name, color = name, alpha = Ag_class_2)) +
+  geom_boxplot() +
+  facet_wrap(~ name, scales = "free_y") +
+  scale_alpha_manual(values = c(low = 0.25, high = 0.75)) +
+  djvdj_theme()
+
+# # Create scatter plots
+# plt_dat <- rf_so %>%
+#   subset(subtype == typ) %>%
+#   FetchData(c("tm", "Ag_class", plt_gns)) %>%
+#   pivot_longer(all_of(plt_gns[-1])) %>%
+#   mutate(
+#     tm       = fct_relevel(as.character(tm), tms),
+#     Ag_class = fct_relevel(Ag_class, c("low", "high")),
+#     name     = fct_relevel(name, plt_gns)
+#   )
+# 
+# plt_dat %>%
+#   ggplot(aes(Ag_score, value, color = Ag_class)) +
+#   geom_point(size = 0.1) +
+#   facet_wrap(~ name, scales = "free") +
+#   djvdj_theme() +
+#   theme(aspect.ratio = 1)
+```
+
+```{r "RF FUNCTIONALIZE", eval = FALSE}
+# GOALS
+# 1. train model for LEC subsets for Ag groups (1-4)
+# 2. identify cells in mock that are predicted to take up Ag
+
+# Identify DEGs ----
+# Identify Ag markers for all LECs for each mouse
+grp <- "Ag_class_2"
+fc  <- 0
+
+deg_so <- lec_so %>%
+  SplitObject("mouse")
+
+degs_1 <- deg_so %>%
+  imap_dfr(~ {
+    res <- .x %>%
+      wilcoxauc(group_by = grp)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = "all", mouse = .y) %>%
+      arrange(padj)
+  })
+
+# Identify Ag markers for subtype
+deg_so <- lec_so %>%
+  SplitObject("subtype")
+
+degs_2 <- deg_so %>%
+  imap_dfr(~ {
+    res <- .x %>%
+      wilcoxauc(group_by = grp)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = .y, mouse = "all") %>%
+      arrange(padj)
+  })
+
+rm(deg_so)
+
+# Identify markers for subtype and mouse
+degs_3 <- lec_so@meta.data %>%
+  distinct(subtype, mouse) %>%
+  pmap_dfr(~ {
+    res <- lec_so %>%
+      subset(subtype == ..1 & mouse == ..2)
+    
+    if (n_distinct(res[[grp]]) < 2) return(NULL)
+    
+    res <- res %>%
+      wilcoxauc(group_by = grp)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = ..1, mouse = ..2) %>%
+      arrange(padj)
+  })
+
+degs <- bind_rows(degs_1, degs_2, degs_3) %>%
+  filter(
+    padj < 0.05, logFC > fc,
+    !grepl("^(mt-|R[pls])", feature),
+    feature != "Malat1"
+  )
+
+degs %>%
+  write_tsv(here(params$so_dir, "ag-high_degs_Ag_class_2.tsv.gz"))
+
+# # Most common degs
+# top_degs <- degs %>%
+#   group_by(subtype, feature, group) %>%
+#   summarize(n = n_distinct(mouse), .groups = "drop") %>%
+#   arrange(desc(n))
+#   filter(n > 1)
+
+# Functions ----
+
+# Function to predict
+rf_predict <- function(mod, dat, data_clmn, return_stats = TRUE) {
+  
+  prds <- mod %>%
+    predict(dat) %>%
+    predictions()
+  
+  res <- dat %>%
+    as_tibble(rownames = ".cell_id") %>%
+    dplyr::select(.cell_id, all_of(data_clmn)) %>%
+    mutate(
+      pred = prds,
+      correct = !!sym(data_clmn) == pred
+    ) %>%
+    group_by(!!sym(data_clmn)) %>%
+    mutate(frac_correct = sum(correct) / n()) %>%
+    ungroup()
+  
+  if (!return_stats) return(column_to_rownames(res, ".cell_id"))
+  
+  res <- res %>%
+    distinct(!!sym(data_clmn), frac_correct) %>%
+    pivot_wider(names_from = all_of(data_clmn), values_from = frac_correct)
+  
+  res
+}
+
+run_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
+                   feat_p = 0.05, min_feats = 20, sample_info = NULL) {
+  
+  # Format train/test data
+  rf_dat <- df_in %>%
+    rename_with(~ str_replace_all(.x, "-", "_")) %>%
+    rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+    rename_with(~ str_c("x", .x), matches("^[0-9]"))
+  
+  # Adjust groups so they are balanced
+  # Split into train/test data
+  sam_sz <- min(sample_size, min(table(rf_dat[[data_clmn]])))
+  min_sz <- 40
+  
+  if (sam_sz < min_sz) {
+    cli::cli_abort("All groups must have at least {min_sz} cells")
+    
+  } else if (sam_sz < sample_size) {
+    cli::cli_warn(
+      "{sample_size} is too large for the number of cells,
+       a sample size of {sam_sz} was used"
+    )
+  }
+  
+  rf_train <- rf_dat %>%
+    rownames_to_column(".cell_id") %>%
+    group_by(!!sym(data_clmn))
+  
+  set.seed(42)
+  
+  rf_train <- rf_train %>%
+    dplyr::sample_n(sam_sz) %>%
+    ungroup() %>%
+    dplyr::select(-any_of(sample_info)) %>%
+    column_to_rownames(".cell_id")
+  
+  rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
+  
+  # Train models
+  rf_params <- expand.grid(param_lst)
+  
+  res <- pmap_dfr(rf_params, ~ {
+    args <- list(...)
+    
+    if (args$mtry > (ncol(rf_train) - 1)) return(NULL)
+    
+    args$formula    <- as.formula(str_c("factor(", data_clmn, ") ~ ."))
+    args$data       <- rf_train
+    args$importance <- "impurity_corrected"
+    args$seed       <- 42
+    
+    set.seed(42)
+    
+    raw_mod <- lift_dl(ranger)(args)
+    
+    raw_err <- raw_mod$prediction.error
+
+    # Feature selection
+    key_feats <- raw_mod %>%
+      importance_pvalues() %>%
+      .[, "pvalue"] %>%
+      sort()
+    
+    max_p <- key_feats %>%
+      head(min_feats) %>%
+      max()
+    
+    feat_p <- max(max_p, feat_p)
+    
+    key_feats <- key_feats[key_feats < feat_p] %>%
+      names()
+    
+    n_feats <- length(key_feats)
+    
+    # Re-train model
+    args$mtry       <- min(args$mtry, n_feats)
+    args$data       <- rf_train[, c(data_clmn, key_feats)]
+    args$importance <- "none"
+    
+    set.seed(42)
+    
+    mod <- lift_dl(ranger)(args)
+    
+    err <- mod$prediction.error
+    
+    # Test model    
+    prds <- mod %>%
+      rf_predict(
+        dat = rf_test,
+        data_clmn = data_clmn
+      )
+                                         # only used for continuous
+    # err <- sqrt(res$prediction.error)  # response variables
+    
+    # Format output table
+    tibble(
+      raw_mod   = list(raw_mod),
+      mod       = list(mod),
+      feats     = list(key_feats),
+      n_train   = nrow(rf_train),
+      n_test    = nrow(rf_test),
+      # train_bcs = list(rownames(rf_train)),
+      # test_bcs  = list(rownames(rf_test)),
+      ...,
+      n_feats = length(key_feats),
+      oob_raw = raw_err,
+      oob     = err
+    ) %>%
+      bind_cols(prds)
+  })
+  
+  res
+}
+
+# Train models
+# use all cLEC features
+dat_col <- "Ag_class_2"
+
+feats <- degs %>%
+  filter(subtype == "cLEC") %>%
+  # filter(subtype == "cLEC", mouse == "d14") %>%
+  pull(feature) %>%
+  unique()
+
+other_info <- c("subtype", "mouse")
+
+rf_dat <- lec_so %>%
+  subset(subtype == "cLEC" & mouse == "d14") %>%
+  FetchData(unique(c(dat_col, other_info, feats)))
+
+param_lst <- list(
+  mtry          = seq(2, length(feats), 10),
+  min.node.size = c(1:10),
+  num.trees     = seq(50, 1000, 50)
+)
+
+rf_res <- rf_dat %>%
+  run_rf(
+    data_clmn   = dat_col,
+    param_lst   = param_lst,
+    sample_info = other_info,
+    sample_size = 135
+  ) %>%
+  # arrange(desc(high), desc(low))
+  arrange(desc(low), desc(high))
+
+# Pull best model
+best_mod <- rf_res %>%
+  head(1) %>%
+  pull(mod) %>%
+  .[[1]]
+
+best_feats <- rf_res %>%
+  head(1) %>%
+  pull(feats) %>%
+  unlist()
+
+# Predict for other timepoints
+tm_dat <- lec_so %>%
+  subset(subtype == "cLEC") %>%
+  FetchData(unique(c(dat_col, other_info, feats))) %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]")) %>%
+  split(.$mouse)
+
+preds <- tm_dat %>%
+  imap_dfr(~ {
+    best_mod %>%
+      rf_predict(.x, data_clmn = dat_col, return_stats = FALSE) %>%
+      mutate(mouse = .y)
+  })
+
+# Plot predicted classifications
+pred_meta <- preds %>%
+  dplyr::select(pred, correct)
+
+lec_so <- lec_so %>%
+  AddMetaData(pred_meta)
+
+lec_so %>%
+  plot_scatter(
+    "pred", "hUMAP_1", "hUMAP_2",
+    group_col = "mouse",
+    size = 0.1,
+    panel_nrow = 1
+  ) +
+  theme(aspect.ratio = 0.9)
+
+# Fraction predicted in each mouse
+plt_dat <- lec_so %>%
+  subset(subtype == "cLEC") %>%
+  AddModuleScore(features = best_feats, name = "Ag_module") %>%
+  mutate_meta(
+    mutate,
+    pred_grp = case_when(
+      Ag_class_2 == "high" ~ Ag_class_2,
+      pred       == "high" ~ "high-predicted",
+      TRUE                 ~ Ag_class_2
+    ),
+    mouse = fct_relevel(mouse, mice)
+  )
+
+plt_dat %>%
+  plot_frequency("pred_grp", cluster_col = "mouse")
+
+# Module scores for each prediction group
+# expect that these genes will be highest expressed in high, high-predicted,
+# lowest in low
+# 3wk sample shows opposite
+plt_dat@meta.data %>%
+  # ggplot(aes(mouse, Ag_module1, fill = Ag_class_2)) +
+  ggplot(aes(mouse, Ag_module1, fill = pred_grp)) +
+  # geom_violin(scale = "width", draw_quantiles = c(0.25, 0.75, 0.5)) +
+  geom_boxplot() +
+  djvdj_theme()
+  
+
+```
+
+```{r "COMPARE WITH MOCK DATA", eval = FALSE, fig.width = 18, fig.height = 15}
+
+# Plot top features across data
+plt_feats <- degs %>%
+  group_by(subtype, feature, group) %>%
+  summarize(n = n_distinct(mouse), .groups = "drop") %>%
+  arrange(desc(n)) %>%
+  filter(n > 1) %>%
+  filter(group == "high") %>%
+  split(.$subtype) %>%
+  map(pull, feature)
+
+# plt_feats <- top_degs %>%
+#   split(.$group)
+
+clmns <- str_c(names(plt_feats), seq_along(plt_feats))
+
+plt_dat <- lec_so %>%
+  Seurat::AddModuleScore(features = list(plt_feats$high$feature)) %>%
+  # Seurat::AddModuleScore(features = plt_feats, name = names(plt_feats)) %>%
+  FetchData(c("Ag_class_2", "Cluster1", "orig.ident", "mouse", "tm", "subtype"))
+
+plt_dat %>%
+  mutate(Ag_class_2 = fct_relevel(Ag_class_2, c("low", "high"))) %>%
+  ggplot(aes(mouse, Cluster1, fill = mouse, alpha = Ag_class_2)) +
+  geom_boxplot() +
+  scale_alpha_manual(values = c(high = 0.75, low = 0.25)) +
+  facet_wrap(~ subtype) +
+  djvdj_theme()
+
+# Load mock data
+chikv_so <- qread("~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs/so_merge.qs")
+
+# Calculate module score
+chikv_dat <- chikv_so %>%
+  Seurat::AddModuleScore(features = plt_feats, name = names(plt_feats)) %>%
+  FetchData(c("orig.ident", "lec_type", "tm", "cell_type", "rep", "cell_type_2", "treatment", clmns, "subtype"))
+
+# Calculate mean signal
+all_gns <- unique(unlist(plt_feats))
+
+chikv_dat <- chikv_so %>%
+  FetchData(c(
+    "orig.ident", "lec_type", "tm", "cell_type",
+    "rep", "cell_type_2", "treatment", "subtype",
+    all_gns
+  ))
+
+# Plot example genes
+chikv_so %>%
+  FetchData(c("treatment", "tm", "lec_type", "rep", "Ctsd", "cell_type_2")) %>%
+  filter(cell_type_2 == "LEC" | lec_type == "BEC") %>%
+  mutate(
+    treat_rep = str_c(treatment, "-", rep),
+    treatment = fct_relevel(treatment, c("mock", "CHIKV"))
+  ) %>%
+  ggplot(aes(lec_type, Ctsd, fill = treatment, alpha = rep)) +
+  geom_boxplot(outlier.size = 0.1) +
+  scale_alpha_manual(values = c(0.2, 0.4, 0.6)) +
+  facet_wrap(~ tm) +
+  djvdj_theme() +
+  theme(
+    aspect.ratio = 0.4,
+    axis.title.x = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1)
+  )
+
+# # Plot mean list expression
+# plt_dat <- chikv_dat %>%
+#   pivot_longer(any_of(all_gns)) %>%
+#   filter(cell_type_2 == "LEC" | lec_type == "BEC")
+# 
+#   mutate(
+#     treat_rep = str_c(treatment, "-", rep),
+#     treatment = fct_relevel(treatment, c("mock", "CHIKV"))
+#   ) %>%
+#   ggplot(aes(lec_type, Ctsd, fill = treatment, alpha = rep)) +
+#   geom_boxplot(outlier.size = 0.1) +
+#   scale_alpha_manual(values = c(0.2, 0.4, 0.6)) +
+#   facet_wrap(~ tm) +
+#   djvdj_theme() +
+#   theme(
+#     aspect.ratio = 0.4,
+#     axis.title.x = element_blank(),
+#     axis.text.x  = element_text(angle = 45, hjust = 1)
+#   )
+
+# Plot module scores
+plt <- clmns %>%
+  map(~ {
+    chikv_dat %>%
+      filter(cell_type_2 == "LEC" | lec_type == "BEC") %>%
+      mutate(
+        treat_rep = str_c(treatment, "-", rep),
+        treatment = fct_relevel(treatment, c("mock", "CHIKV"))
+      ) %>%
+      ggplot(aes(lec_type, !!sym(.x), fill = treatment, alpha = rep)) +
+      geom_boxplot(outlier.size = 0.01, outlier.alpha = 1, size = 0.4) +
+      scale_alpha_manual(values = c(0.2, 0.4, 0.6)) +
+      facet_wrap(~ tm, nrow = 1) +
+      guides(alpha = FALSE) +
+      djvdj_theme() +
+      theme(
+        aspect.ratio = 0.4,
+        axis.title.x = element_blank(),
+        axis.text.x  = element_text(angle = 45, hjust = 1),
+        legend.position = "top"
+      )
+  }) %>%
+  plot_grid(plotlist = ., ncol = 2)
+
+ggsave(
+  here(params$so_dir, "ag_markers_chikv.png"),
+  plot = plt,
+  width = 18, height = 15
+)
+```
 
 
 ```{r "COMPARISON OF EMPTY DROPS", eval = FALSE}
