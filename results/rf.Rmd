@@ -1,0 +1,889 @@
+---
+title: "Antigen Tracking Figures"
+author: "Ryan Sheridan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc:            true
+    toc_float:      true
+    toc_depth:      4
+    df_print:       "paged"
+    code_folding:   "hide"
+    self_contained: true
+    highlight:      "kate"
+params:
+  template_dir:  "src"                                                                      # Directory containing template Rmarkdowns
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs" # Directory for loading/saving Seurat objects
+  ref_dir:       "ref"                                                                      # Directory to use for loading/saving clustifyr references
+  sample_info:   "sample_info.xlsx"
+  res_dir:                                                
+    value:
+      exp-0: "~/Projects/antigen-tracking/results"
+      exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
+      exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
+editor_options: 
+  chunk_output_type: console
+---
+
+---
+
+<br>
+
+```{r "setup"}
+knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
+
+# Data column to use
+dat_clmn <- "Ag_class_2"
+```
+
+
+
+```{r "identify Ag DEGs"}
+# Identify Ag markers for all LECs for each mouse
+fc  <- 0
+
+deg_so <- lec_so %>%
+  SplitObject("mouse")
+
+degs_1 <- deg_so %>%
+  imap_dfr(~ {
+    res <- .x %>%
+      wilcoxauc(group_by = dat_clmn)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = "all", mouse = .y) %>%
+      arrange(padj)
+  })
+
+# Identify Ag markers for subtype
+deg_so <- lec_so %>%
+  SplitObject("subtype")
+
+degs_2 <- deg_so %>%
+  imap_dfr(~ {
+    res <- .x %>%
+      wilcoxauc(group_by = dat_clmn)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = .y, mouse = "all") %>%
+      arrange(padj)
+  })
+
+rm(deg_so)
+
+# Identify markers for subtype and mouse
+degs_3 <- lec_so@meta.data %>%
+  distinct(subtype, mouse) %>%
+  pmap_dfr(~ {
+    res <- lec_so %>%
+      subset(subtype == ..1 & mouse == ..2)
+    
+    if (n_distinct(res[[dat_clmn]]) < 2) return(NULL)
+    
+    res <- res %>%
+      wilcoxauc(group_by = dat_clmn)
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = ..1, mouse = ..2) %>%
+      arrange(padj)
+  })
+
+degs <- bind_rows(degs_1, degs_2, degs_3) %>%
+  filter(
+    padj < 0.05, logFC > fc,
+    !grepl("^(mt-|R[pls])", feature),
+    feature != "Malat1"
+  )
+
+# degs %>%
+#   write_tsv(here(params$so_dir, "ag-high_degs_Ag_class_2.tsv.gz"))
+
+# # Most common degs
+# top_degs <- degs %>%
+#   group_by(subtype, feature, group) %>%
+#   summarize(n = n_distinct(mouse), .groups = "drop") %>%
+#   arrange(desc(n))
+#   filter(n > 1)
+```
+
+```{r "RF functions"}
+# Function to predict
+rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE) {
+  
+  prds <- mod %>%
+    predict(dat, seed = 42) %>%
+    ranger::predictions()
+  
+  res <- dat %>%
+    as_tibble(rownames = ".cell_id") %>%
+    mutate(pred = prds)
+  
+  if (is.null(data_clmn)) return(res)
+  
+  res <- res %>%
+    dplyr::select(.cell_id, all_of(data_clmn), pred) %>%
+    mutate(correct = pred == !!sym(data_clmn)) %>%
+    group_by(pred) %>%
+    mutate(frac_correct = sum(correct) / n()) %>%
+    ungroup()
+  
+  if (!return_stats) return(column_to_rownames(res, ".cell_id"))
+  
+  res <- res %>%
+    distinct(pred, frac_correct) %>%
+    pivot_wider(names_from = pred, values_from = frac_correct)
+  
+  res
+}
+
+#' Generate RF models using given data and parameters
+#' 
+#' @param df_in data.frame containing features as columns and observations as
+#' rows
+#' @param data_clmn column in df_in containing response variable
+#' @param param_lst list of RF parameters to expand and test
+#' @param sample_size number of cells to use for each group in data_clmn, want
+#' number of cells in each group to be equal when training model
+#' @param feat_p p-value cutoff for selecting best features
+#' @param min_feats minimum number of features to allow after feature selection
+#' @param min_cells minimum number of cells required for each group in data_clmn
+#' @param scale_data Should independent variables be scaled
+#' @param select_feats should features be filtered based on p-value
+#' @param df_list list of data.frames containing data for each mouse to use for
+#' comparing the fraction of predicted Ag-high cells. Want a model where the
+#' fraction of predicted Ag-high cells is roughly the same for all samples.
+#' @param frac_grp group in data_clmn that should be used for calculating and
+#' comparing fractions using data in df_list
+#' @param balance_groups downsample so groups have the same number of cells
+#' @param sample_info addition columns to include in data
+#' @param degs data.frame of DEGs, used to determine which DEGs are markers
+#' for each group, this is used to balance the features equally between groups
+#' @param ... additional parameters to pass to ranger::ranger()
+train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
+                     feat_p = 0.05, min_feats = 20, min_cells = 30,
+                     scale_data = FALSE, select_feats = TRUE, df_list = NULL,
+                     frac_grp = "high", balance_groups = TRUE,
+                     group_prop = NULL, sample_info = NULL, degs = NULL, ...) {
+  
+  # Format train/test data
+  rf_dat <- df_in %>%
+    dplyr::select(
+      all_of(c(data_clmn, sample_info)),
+      where(~ !all(.x == 0))
+    ) %>%
+    mutate(!!sym(data_clmn) := factor(!!sym(data_clmn))) %>%
+    rename_with(~ str_replace_all(.x, "-", "_")) %>%
+    rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+    rename_with(~ str_c("x", .x), matches("^[0-9]"))
+  
+  # # Reverse class weights to account for imbalanced data
+  # # class_weights <- class_weights / sum(class_weights)
+  # class_weights <- table(rf_dat[[data_clmn]])
+  # class_weights <- class_weights / min(class_weights)
+  # 
+  # lvls <- levels(rf_dat[[data_clmn]])
+  # 
+  # class_weights <- set_names(
+  #   rev(class_weights),
+  #   lvls
+  # )
+  
+  # Scale data
+  if (scale_data) {
+    rf_dat <- rf_dat %>%
+      mutate(
+        across(-any_of(c(data_clmn, sample_info)), ~ as.numeric(scale(.x)))
+      )
+  }
+  
+  # Adjust groups so they are balanced
+  # Split into train/test data
+  # sam_sz <- min(sample_size, min(table(rf_dat[[data_clmn]])))
+  if (balance_groups) {
+    if (any(sample_size < min_cells)) {
+      cli::cli_abort("All groups must have at least {min_cells} cells")
+    }
+    
+    rf_train <- rf_dat %>%
+      rownames_to_column(".cell_id") %>%
+      split(.[[data_clmn]]) %>%
+      imap_dfr(~ {
+        sz <- sample_size[[.y]] 
+        
+        set.seed(42)
+        
+        .x %>%
+          dplyr::sample_n(sz) %>%
+          column_to_rownames(".cell_id")
+      })
+    
+    rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
+    
+  } else {
+    set.seed(42)
+    
+    rf_split <- initial_split(rf_dat, prop = 0.5)
+    rf_train <- training(rf_split)
+    rf_test  <- testing(rf_split)
+  }
+  
+  rf_train <- rf_train %>%
+    dplyr::select(-any_of(sample_info))
+  
+  # Train models
+  rf_params <- expand.grid(param_lst)
+  rf_params <- bind_cols(rf_params, list(...))
+  
+  res <- pmap_dfr(rf_params, ~ {
+    args <- list(...)
+    
+    if (args$mtry > (ncol(rf_train) - 1)) return(NULL)
+    
+    args$formula       <- as.formula(str_c(data_clmn, " ~ ."))
+    args$data          <- rf_train
+    args$importance    <- args$importance %||% "impurity_corrected"
+    args$seed          <- 42
+    # args$class.weights <- args$class.weights %||% class_weights
+    # args$class.weights <- c(high = 1, low = 200)
+    
+    set.seed(42)
+    
+    raw_mod <- mod <- lift_dl(ranger)(args)
+    
+    raw_err   <- raw_mod$prediction.error
+    key_feats <- importance(raw_mod)
+    
+    # Feature selection
+    if (select_feats) {
+      key_feats <- raw_mod %>%
+        importance_pvalues() %>%
+        .[, "pvalue"] %>%
+        sort()
+      
+      max_p <- key_feats %>%
+        head(min_feats) %>%
+        max()
+      
+      feat_p <- max(max_p, feat_p)
+      
+      key_feats <- key_feats[key_feats < feat_p] %>%
+        names()
+      
+      n_feats <- length(key_feats)
+      
+      # Re-train model
+      args$mtry       <- min(args$mtry, n_feats)
+      args$data       <- rf_train[, c(data_clmn, key_feats)]
+      args$importance <- "none"
+      
+      set.seed(42)
+      
+      mod <- lift_dl(ranger)(args)
+    }
+    
+    err <- mod$prediction.error
+    
+    # Compare fraction predicted groups with ground truth from training data
+    frac_stats <- df_list %>%
+      imap_dfr(~ {
+        mod %>%
+          rf_predict(.x, data_clmn = data_clmn, return_stats = FALSE) %>%
+          mutate(sample = .y)
+      }) %>%
+      group_by(sample) %>%
+      summarize(
+        frac_high = sum(pred == frac_grp) / n(),
+        .groups   = "drop"
+      ) %>%
+      summarize(
+        frac_mean = mean(frac_high),
+        frac_sd   = sd(frac_high)
+      )
+    
+    # Test model
+    prds <- mod %>%
+      rf_predict(
+        dat          = rf_test,
+        data_clmn    = data_clmn,
+        return_stats = TRUE
+      )
+                                         # only used for continuous
+    # err <- sqrt(res$prediction.error)  # response variables
+    
+    # Format output table
+    tibble(
+      raw_mod   = list(raw_mod),
+      mod       = list(mod),
+      feats     = list(key_feats),
+      n_train   = nrow(rf_train),
+      n_test    = nrow(rf_test),
+      # train_bcs = list(rownames(rf_train)),
+      # test_bcs  = list(rownames(rf_test)),
+      ...,
+      n_feats = length(key_feats),
+      oob_raw = raw_err,
+      oob     = err
+    ) %>%
+      bind_cols(frac_stats) %>%
+      bind_cols(prds)
+  })
+  
+  res <- res %>%
+    arrange(oob)
+  
+  res
+}
+
+run_rf <- function(df_in, df_list, data_clmn, param_lst, sam_size = 135) {
+  
+  other_info <- c("subtype", "mouse")
+
+  # Train models
+  res <- df_in %>%
+    train_rf(
+      data_clmn   = data_clmn,
+      param_lst   = param_lst,
+      sample_info = other_info,
+      sample_size = sam_size,
+      df_list     = df_list,
+      scale_data  = TRUE
+    ) %>%
+    arrange(oob, desc(low), desc(high))
+  
+  res
+}
+```
+
+```{r "train RF models"}
+# Params for RF
+dat_clmn   <- "Ag_class_2"
+ms         <- "d14"
+other_info <- c("subtype", "mouse")
+
+# Select LEC subsets
+typs <- lec_so@meta.data %>%
+  filter(mouse == ms) %>%
+  group_by(subtype, Ag_class_2) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  group_by(subtype) %>%
+  filter(all(n > 60)) %>%
+  ungroup() %>%
+  pull(subtype) %>%
+  unique()
+
+# Train models for each LEC subtype
+type_mods <- typs %>%
+  map_dfr(~ {
+    rf_dat <- lec_so %>%
+      subset(subtype == .x & mouse == ms) %>%
+      FetchData(unique(c(dat_clmn, other_info, feats)))
+    
+    all_dat <- lec_so %>%
+      subset(subtype == .x) %>%
+      FetchData(unique(c(dat_clmn, other_info, feats))) %>%
+      rename_with(~ str_replace_all(.x, "-", "_")) %>%
+      rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+      rename_with(~ str_c("x", .x), matches("^[0-9]")) %>%
+      split(.$mouse)
+    
+    group_size  <- table(rf_dat[[dat_clmn]])
+    target_frac <- group_size[["high"]] / sum(group_size)
+    sam_size    <- floor(min(group_size) / 2)
+    
+    sam_size <- set_names(
+      rep(sam_size, length(group_size)),
+      names(group_size)
+    )
+    
+    # Select features
+    # calculate proportion of features identified for each group
+    feats <- degs %>%
+      filter(subtype == .x)
+    
+    feat_frac <- table(feats$group)
+    feat_frac <- feat_frac / sum(feat_frac)
+    
+    feats <- feats %>%
+      pull(feature) %>%
+      unique()
+    
+    # Set RF params
+    param_lst <- list(
+      mtry          = seq(1, length(feats), floor(length(feats) / 15)),
+      # min.node.size = 1:10,
+      # num.trees     = seq(50, 1000, 100)
+      min.node.size = c(1, 3, 5),
+      num.trees     = c(50, 400, 1000)
+    )
+    
+    # Train model
+    res <- rf_dat %>%
+      train_rf(
+        data_clmn   = dat_clmn,
+        param_lst   = param_lst,
+        sample_info = other_info,
+        group_prop  = feat_frac,
+        df_list     = all_dat[names(all_dat) != ms],
+        scale_data  = FALSE,
+        sample_size = sam_size
+      )
+
+    # Identify best models
+    res <- res %>%
+      arrange(
+        desc(frac_mean < target_frac + 0.05 & frac_mean > target_frac - 0.05),
+        desc(frac_mean < target_frac + 0.1 & frac_mean > target_frac - 0.1),
+        desc(frac_sd < 0.1),
+        oob,
+        desc(low),
+        desc(high)
+      ) %>%
+      mutate(
+        subtype = .x,
+        rank = row_number()
+      )
+      
+    res
+  })
+
+# type_mods <- qread(here(params$so_dir, "lec_rf_mods.qs"))
+
+# Identify best models
+# type_mods %>%
+#   arrange(desc(frac_sd < 0.1)) %>%
+#   arrange(desc(frac_mean < target_frac + 0.1 & frac_mean > target_frac - 0.1)) %>%
+#   filter(high > 0.5, low > 0.5) %>%
+#   arrange(desc(high), desc(low), oob) %>%
+#   slice(1:5) %>%
+#   print(n = 30)
+best_mods <- type_mods %>%
+  arrange(desc(low), desc(high)) %>%
+  group_by(subtype) %>%
+  slice(1)
+
+# Pull best features
+best_feats <- best_mods %>%
+  pmap(~ {
+    args <- list(...)
+    
+    fts <- args$feats %>%
+      unlist(use.names = FALSE) %>%
+      str_replace_all("_", "-") %>%
+      str_remove("^x")
+    
+    degs %>%
+      filter(feature %in% fts) %>%
+      mutate(label_rank = case_when(
+        subtype == args$subtype & mouse == ms ~ 1,
+        subtype == args$subtype               ~ 2,
+        mouse   == ms                         ~ 3,
+        TRUE                                  ~ 4
+      )) %>%
+      group_by(feature) %>%
+      filter(label_rank == min(label_rank)) %>%
+      ungroup() %>%
+      split(.$group) %>%
+      map(~ unique(pull(.x, feature)))
+  })
+
+names(best_feats) <- best_mods$subtype
+
+all_feats <- best_feats %>%
+  unlist(use.names = FALSE) %>%
+  unique()
+```
+
+```{r "predict Ag class"}
+# Predict Ag class
+pred_dat <- lec_so %>%
+  FetchData(unique(c(dat_clmn, other_info, all_feats))) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]")) %>%
+  column_to_rownames(".cell_id")
+
+type_preds <- best_mods %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    
+    dat <- pred_dat %>%
+      filter(subtype == args$subtype) %>%
+      split(.$mouse)
+    
+    dat %>%
+      imap_dfr(~ {
+        rf_predict(
+          mod          = args$mod,
+          dat          = .x,
+          data_clmn    = dat_clmn,
+          return_stats = FALSE
+        ) %>%
+          dplyr::select(pred, correct)
+      })
+  })
+
+lec_so <- lec_so %>%
+  AddMetaData(type_preds, col.name = c("type_pred", "type_correct"))
+```
+
+```{r "plot fraction Ag-high"}
+# Format prediction labels
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    pred_grp = case_when(
+      Ag_class_2 == "high" ~ Ag_class_2,
+      type_pred  == "high" ~ "high-predicted",
+      TRUE                 ~ Ag_class_2
+    ),
+    mouse = fct_relevel(mouse, mice)
+  )
+
+# Add module scores
+best_feats %>%
+  iwalk(~ {
+    clmn_nms <- str_c(.y, "_", names(.x))
+
+    lec_so <<- lec_so %>%
+      AddModuleScore(
+        features = .x,
+        name     = clmn_nms
+      )
+  })
+
+# Plot fraction predicted groups
+plt_typs <- c("cLEC", "Collecting", "Ptx3_LEC")
+
+lec_so@meta.data %>%
+  filter(subtype %in% plt_typs) %>%
+  ggplot(aes(mouse, fill = type_pred, alpha = type_correct)) +
+  geom_bar(position = "fill") +
+  scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
+  facet_grid(~ subtype) +
+  djvdj_theme()
+
+lec_so@meta.data %>%
+  filter(subtype %in% plt_typs) %>%
+  ggplot(aes(mouse, fill = pred_grp)) +
+  geom_bar(position = "fill") +
+  facet_grid(~ subtype) +
+  djvdj_theme()
+
+# lec_so@meta.data %>%
+#   filter(subtype == "cLEC") %>%
+#   ggplot(aes(mouse, fill = pred, alpha = correct)) +
+#   geom_bar(position = "fill") +
+#   scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
+#   facet_grid(~ subtype) +
+#   djvdj_theme()
+# 
+# lec_so@meta.data %>%
+#   filter(subtype == "cLEC") %>%
+#   ggplot(aes(mouse, fill = pred, alpha = correct)) +
+#   geom_bar(position = "fill") +
+#   scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
+#   facet_grid(~ subtype) +
+#   djvdj_theme()
+```
+
+```{r "top features module scores"}
+# Boxplots
+modules <- c("cLEC_low2", "cLEC_high1")
+
+lec_so@meta.data %>%
+  ggplot(aes(mouse, !!sym(modules[1]), fill = pred_grp)) +
+  geom_boxplot() +
+  facet_wrap(~ subtype) +
+  djvdj_theme()
+
+# Example genes
+gns <- best_feats$cLEC$low
+
+lec_so %>%
+  FetchData(c("mouse", "subtype", "pred_grp", gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(subtype == "cLEC") %>%
+  pivot_longer(all_of(gns)) %>%
+  mutate(
+    name = fct_relevel(name, gns),
+    # pred_grp = recode(pred_grp, `high-predicted` = "high")
+  ) %>%
+  
+  group_by(name) %>%
+  filter(
+    n_distinct(mouse[value > 0]) == 4
+  ) %>%
+  ungroup() %>%
+  
+  # group_by(name) %>%
+  # summarize(n = n_distinct(mouse))
+  # filter(n_distinct(mouse) == 4) %>%
+  
+  group_by(name, mouse, subtype, pred_grp) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  
+  # group_by(name, subtype) %>%
+  group_by(name, mouse, subtype) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  
+  ggplot(aes(pred_grp, name, fill = value)) +
+  geom_tile(color = "white") +
+  # scale_fill_gradientn(colours = c("lightblue", "white", "red")) +
+  scale_fill_gradientn(colours = c("white", "red")) +
+  facet_grid(~ mouse) +
+  djvdj_theme()
+```
+
+```{r "CHIKV RF", eval = FALSE}
+# Load CHIKV data
+chikv_so <- qread("~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs/so_merge.qs")
+
+# Format RF data
+# need to add zeros for missing genes
+clmns <- c(
+  "orig.ident", "rep", "treatment", "tm",
+  "cell_type_2", "cell_type", "lec_type", "subtype",
+  "UMAP_1", "UMAP_2"
+)
+
+chikv_rf_dat <- chikv_so %>%
+  FetchData(c(clmns, best_feats)) %>%
+  mutate(across(any_of(best_feats), ~ as.numeric(scale(.x))))
+
+missing_gns <- best_feats[!best_feats %in% colnames(chikv_rf_dat)]
+
+chikv_rf_dat[, missing_gns] <- 0
+
+chikv_rf_dat <- chikv_rf_dat %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+
+# Predict for CHIKV data
+chikv_preds <- best_mod %>%
+  rf_predict(dat = chikv_rf_dat) %>%
+  dplyr::select(.cell_id, pred) %>%
+  column_to_rownames(".cell_id")
+
+chikv_so <- chikv_so %>%
+  AddMetaData(chikv_preds) %>%
+  AddModuleScore(features = best_feats_lst, name = names(best_feats_lst))
+
+# Plot fraction predicted archiving capable
+chikv_so@meta.data %>%
+  filter(cell_type_2 == "LEC") %>%
+  ggplot(aes(orig.ident, fill = pred)) +
+  geom_bar(position = "fill") +
+  facet_grid(tm ~ lec_type) +
+  djvdj_theme() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Module scores for each prediction group
+chikv_so@meta.data %>%
+  ggplot(aes(orig.ident, high1, fill = pred)) +
+  geom_boxplot() +
+  facet_wrap(tm ~ lec_type, scales = "free_y") +
+  djvdj_theme()
+
+chikv_so@meta.data %>%
+  ggplot(aes(orig.ident, low2, fill = treatment)) +
+  geom_boxplot() +
+  facet_wrap(tm ~ lec_type, scales = "free_y") +
+  djvdj_theme()
+```
+
+---
+
+<br>
+
+<br>
+
+## Session info
+```{r "session info"}
+sessionInfo()
+```
+
+
+
+```{r "RF MOUSE DEGS", eval = FALSE}
+# Identify mouse markers for subtype
+deg_so <- lec_so %>%
+  SplitObject("subtype")
+
+ms_degs <- deg_so %>%
+  imap_dfr(~ {
+    res <- .x %>%
+      wilcoxauc(group_by = "mouse")
+
+    if (nrow(res) == 0) return(NULL)
+
+    res %>%
+      mutate(subtype = .y) %>%
+      arrange(padj)
+  })
+
+rm(deg_so)
+
+ms_degs <- ms_degs %>%
+  filter(padj < 0.05, logFC > 1)
+```
+
+```{r "RF PARAMS OLD", eval = FALSE}
+# dat_clmn <- "Ag_class_2"
+# typ      <- "cLEC"
+# ms       <- "d14"
+# 
+# # Select features
+# # use cLEC DEGs from all timepoints 
+# feats <- degs %>%
+#   filter(subtype == typ) %>%
+#   pull(feature) %>%
+#   unique()
+# 
+# # Format data
+# # use all cLEC features
+# other_info <- c("subtype", "mouse")
+# 
+# rf_dat <- lec_so %>%
+#   subset(subtype == typ & mouse == ms) %>%
+#   FetchData(unique(c(dat_clmn, other_info, feats)))
+# 
+# all_dat <- lec_so %>%
+#   subset(subtype == typ) %>%
+#   FetchData(unique(c(dat_clmn, other_info, feats))) %>%
+#   rename_with(~ str_replace_all(.x, "-", "_")) %>%
+#   rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+#   rename_with(~ str_c("x", .x), matches("^[0-9]"))
+# 
+# group_size  <- table(rf_dat[[dat_clmn]])
+# target_frac <- group_size[["high"]] / sum(group_size)
+# sam_size    <- floor(min(group_size) / 2)
+# 
+# # Parameters for RF
+# param_lst <- list(
+#   mtry          = seq(1, length(feats), floor(length(feats) / 15)),
+#   min.node.size = c(1, 3, 5),
+#   num.trees     = c(50, 400, 1000)
+# )
+```
+
+```{r "RF MOUSE OLD", eval = FALSE}
+# Format data
+other_info <- c("subtype", "mouse")
+
+rf_dat <- lec_so %>%
+  subset(subtype == typ) %>%
+  FetchData(unique(c(dat_clmn, other_info, feats)))
+
+# Identify features top features that correlate with mouse
+rf_ms <- rf_dat %>%
+  train_rf(
+    data_clmn    = "mouse",
+    param_lst    = param_lst,
+    sample_size  = 107
+  )
+
+ms_feats <- rf_ms %>%
+  arrange(oob) %>%
+  head(1) %>%
+  pull(feats) %>%
+  unlist()
+```
+
+```{r "RF MODELS OLD", eval = FALSE}
+# Train models
+rf_res <- rf_dat %>%
+  train_rf(
+    data_clmn   = dat_clmn,
+    param_lst   = param_lst,
+    sample_info = other_info,
+    sample_size = 135,
+    df_list     = all_dat[names(all_dat) != ms],
+    scale_data  = TRUE
+  ) %>%
+  arrange(desc(low), desc(high))
+
+# Pull best model
+best_mod <- rf_res %>%
+  arrange(oob, desc(low), desc(high)) %>%
+  filter(
+    frac_mean < target_frac + 0.05,
+    frac_mean > target_frac - 0.05
+  ) %>%
+  head(1)
+
+best_feats <- best_mod %>%
+  pull(feats) %>%
+  unlist() %>%
+  str_replace_all("_", "-") %>%
+  str_remove("^x")
+
+best_feats_lst <- degs %>%
+  filter(
+    subtype == typ,
+    feature %in% best_feats
+  ) %>%
+  split(.$group) %>%
+  map(~ unique(pull(.x, feature)))
+
+best_mod <- best_mod$mod[[1]]
+```
+
+```{r "RF PREDICTION OLD", eval = FALSE}
+# Predict for other timepoints
+preds <- all_dat %>%
+  imap_dfr(~ {
+    best_mod %>%
+      rf_predict(.x, data_clmn = dat_clmn, return_stats = FALSE) %>%
+      mutate(mouse = .y)
+  })
+
+# Plot predicted classifications
+pred_meta <- preds %>%
+  dplyr::select(pred, correct)
+
+lec_so <- lec_so %>%
+  AddMetaData(pred_meta)
+
+lec_so %>%
+  plot_scatter(
+    "pred", "hUMAP_1", "hUMAP_2",
+    group_col = "mouse",
+    size = 0.1,
+    panel_nrow = 1
+  ) +
+  theme(aspect.ratio = 0.9)
+
+# Fraction predicted in each mouse
+plt_dat <- lec_so %>%
+  subset(subtype == typ) %>%
+  AddModuleScore(features = best_feats_lst, name = names(best_feats_lst)) %>%
+  mutate_meta(
+    mutate,
+    pred_grp = case_when(
+      Ag_class_2 == "high" ~ Ag_class_2,
+      pred       == "high" ~ "high-predicted",
+      TRUE                 ~ Ag_class_2
+    ),
+    mouse = fct_relevel(mouse, mice)
+  )
+
+plt_dat %>%
+  plot_frequency("pred_grp", cluster_col = "mouse")
+
+# Module scores for each prediction group
+# expect that these genes will be highest expressed in high, high-predicted,
+# lowest in low
+# 3wk sample shows opposite
+plt_dat@meta.data %>%
+  ggplot(aes(mouse, high1, fill = pred_grp)) +
+  geom_boxplot() +
+  djvdj_theme()
+```
