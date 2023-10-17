@@ -22,7 +22,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ---
@@ -35,8 +35,6 @@ knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 # Data column to use
 dat_clmn <- "Ag_class_2"
 ```
-
-
 
 ```{r "identify Ag DEGs"}
 # Identify Ag markers for all LECs for each mouse
@@ -340,21 +338,249 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
   res
 }
 
-run_rf <- function(df_in, df_list, data_clmn, param_lst, sam_size = 135) {
+create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10) {
   
-  other_info <- c("subtype", "mouse")
-
-  # Train models
-  res <- df_in %>%
-    train_rf(
-      data_clmn   = data_clmn,
-      param_lst   = param_lst,
-      sample_info = other_info,
-      sample_size = sam_size,
-      df_list     = df_list,
-      scale_data  = TRUE
+  # Format data
+  n_mice <- n_distinct(so_in$mouse)
+  
+  gn_dat <- so_in %>%
+    FetchData(c("mouse", "subtype", "pred_grp", gns)) %>%
+    as_tibble(rownames = ".cell_id") %>%
+    pivot_longer(all_of(gns)) %>%
+    mutate(name = fct_relevel(name, gns))
+  
+  plt_dat <- gn_dat %>%
+    group_by(name, mouse, subtype, pred_grp) %>%
+    summarize(
+      med = median(value),
+      q1  = quantile(value, 0.25),
+      q3  = quantile(value, 0.75),
+      .groups = "drop"
     ) %>%
-    arrange(oob, desc(low), desc(high))
+    mutate(pred_grp = fct_relevel(pred_grp, names(plt_clrs))) %>%
+    group_by(name, mouse, subtype) %>%
+    
+    filter(sum(med) > 0) %>%
+    mutate(cor = cor(as.numeric(pred_grp), med)) %>%
+    
+    group_by(name) %>%
+    filter(n_distinct(mouse) == n_mice) %>%
+    ungroup()
+  
+  # Calculate p-values
+  clmn2 <- names(pred_clrs[2])
+  clmn3 <- names(pred_clrs[3])
+  
+  p_clmns <- c(clmn2, clmn3)
+  
+  p_dat <- gn_dat %>%
+    group_by(mouse, subtype, pred_grp, name) %>%
+    mutate(y = quantile(value, 0.75)) %>%
+    group_by(mouse, subtype, name) %>%
+    summarize(
+      y = max(y),
+      
+      !!sym(clmn2) := wilcox.test(
+        value[pred_grp == clmn2], value[pred_grp == "low"],
+        alternative = p_alt
+      )$p.value,
+      !!sym(clmn3) := wilcox.test(
+        value[pred_grp == clmn3], value[pred_grp == "low"],
+        alternative = p_alt
+      )$p.value,
+      .groups = "drop"
+    ) %>%
+    group_by(name) %>%
+    mutate(y = max(y)) %>%
+    
+    group_by(mouse, subtype) %>%
+    mutate(across(all_of(p_clmns), ~ p.adjust(.x, method = "bonferroni"))) %>%
+    ungroup() %>%
+    
+    pivot_longer(all_of(p_clmns), names_to = "pred_grp", values_to = "p") %>%
+    filter(p < 0.05)
+  
+  # Rank genes by number of significant p-values
+  gns <- p_dat %>%
+    group_by(name) %>%
+    summarize(n = n()) %>%
+    filter(name %in% plt_dat$name) %>%
+    arrange(desc(n)) %>%
+    head(n_gns) %>%
+    pull(name) %>%
+    as.character()
+  
+  # Create plots
+  res <- plt_dat %>%
+    filter(name %in% gns) %>%
+    mutate(name = fct_relevel(name, gns)) %>%
+    ggplot(aes(pred_grp, med, color = mouse)) +
+    geom_segment(
+      aes(x = pred_grp, xend = pred_grp, y = q1, yend = q3),
+      linewidth = 1, color = ln_col
+    ) +
+    geom_point(aes(size = pred_grp)) +
+    geom_smooth(
+      aes(x = as.numeric(as.factor(pred_grp))),
+      method = "lm", linewidth = 0.25, linetype = 2,
+      se = FALSE, formula = y ~ x
+    ) +
+    geom_point(
+      aes(y = y),
+      data = filter(p_dat, name %in% gns),
+      position = position_nudge(y = 0.2),
+      color = "black", shape = 6, size = 1
+    ) +
+    facet_grid(name ~ mouse, scales = "free_y", switch = "y") +
+    scale_size_manual(values = c(1, 1.25, 1.25)) +
+    scale_color_manual(values = m_clrs) +
+    scale_y_continuous(breaks = ~ c(ceiling(min(.x)), floor(max(.x)))) +
+    djvdj_theme() +
+    theme(
+      aspect.ratio    = 1,
+      legend.position = "none",
+      axis.title      = element_blank(),
+      axis.text.x     = element_text(angle = 45, hjust = 1),
+      strip.placement = "outside"
+    )
+  
+  res
+}
+
+create_sig_umap <- function(so_in, dat_col, clrs) {
+  res <- so_in %>%
+    plot_scatter(
+      dat_col,
+      "hUMAP_1", "hUMAP_2",
+      group_col   = "mouse",
+      outline     = TRUE,
+      plot_colors = clrs,
+      panel_nrow  = 1,
+      size        = 0.15,
+      stroke      = 0.6
+    ) +
+    guides(fill = guide_colorbar(
+      ticks = FALSE, title.position = "top",
+      barheight = unit(6, "pt"), barwidth = unit(120, "pt"), 
+    )) +
+    djvdj_theme() +
+    theme(
+      plot.margin     = margin(),
+      plot.title      = element_text(size = ttl_pt2),
+      legend.margin   = margin(),
+      legend.position = "bottom",
+      legend.title    = element_blank(),
+      axis.title      = element_blank(),
+      axis.ticks      = element_blank(),
+      axis.text       = element_blank(),
+      aspect.ratio    = 0.9
+    )
+  
+  res
+}
+
+create_grp_umap <- function(so_in, dat_col, clrs) {
+  so_in %>%
+    plot_scatter(
+      dat_col,
+      "hUMAP_1", "hUMAP_2",
+      group_col   = "mouse",
+      outline     = TRUE,
+      plot_colors = clrs,
+      plot_lvls   = c("high-pred", "low", "high", "other"),
+      panel_nrow  = 1,
+      size        = 0.25,
+      stroke      = 0.8,
+      color = ln_col,
+      trace_position = "bottom"
+    ) +
+    guides(fill = guide_legend(
+      label.position = "bottom", reverse = TRUE,
+      override.aes = list(size = 4)
+    )) +
+    djvdj_theme() +
+    theme(
+      plot.margin     = margin(),
+      plot.title      = element_text(size = ttl_pt2),
+      legend.margin   = margin(),
+      legend.position = "bottom",
+      legend.title    = element_blank(),
+      axis.title      = element_blank(),
+      axis.ticks      = element_blank(),
+      axis.text       = element_blank(),
+      aspect.ratio    = 0.9
+    )
+}
+
+create_heats <- function(so_in, gns, sort_gns = "up", lvls = names(pred_clrs),
+                         plt_clrs = c("lightblue", "white", "#D7301F")) {
+  
+  # Format data
+  n_mice <- n_distinct(so_in$mouse)
+  
+  heat_dat <- so_in %>%
+    FetchData(c("mouse", "subtype", "pred_grp", gns)) %>%
+    as_tibble(rownames = ".cell_id") %>%
+    pivot_longer(all_of(gns)) %>%
+    mutate(name = fct_relevel(name, gns)) %>%
+    
+    group_by(name) %>%
+    filter(n_distinct(mouse[value > 0]) == n_mice) %>%
+    ungroup() %>%
+    
+    group_by(name, mouse, subtype, pred_grp) %>%
+    summarize(value = mean(value), .groups = "drop") %>%
+    mutate(pred_grp = fct_relevel(pred_grp, lvls))
+  
+  # Sort genes
+  gn_lvls <- heat_dat %>%
+    pivot_wider(names_from = "pred_grp", values_from = value) %>%
+    mutate(
+      fc_1 = !!sym(lvls[2]) / !!sym(lvls[1]),
+      fc_2 = !!sym(lvls[3]) / !!sym(lvls[1])
+    ) %>%
+    group_by(name) %>%
+    summarize(
+      across(c(fc_1, fc_2), ~ sum(.x > 1), .names = "{.col}_up"),
+      across(c(fc_1, fc_2), ~ sum(.x < 1), .names = "{.col}_dwn"),
+      .groups = "drop"
+    ) %>%
+    arrange(name)
+  
+  if (identical(sort_gns, "up")) {
+    gn_lvls <- gn_lvls %>%
+      arrange(fc_1_up, fc_2_up, name)
+
+  } else if (identical(sort_gns, "down")) {
+    gn_lvls <- gn_lvls %>%
+      arrange(fc_1_dwn, fc_2_dwn, name)
+  }
+  
+  gn_lvls <- gn_lvls %>%
+    pull(name) %>%
+    as.character()
+  
+  # Create heatmaps
+  res <- heat_dat %>%
+    group_by(name, mouse, subtype) %>%
+    mutate(
+      value = as.numeric(scale(value)),
+      name = fct_relevel(name, gn_lvls)
+    ) %>%
+    
+    ggplot(aes(pred_grp, name, fill = value)) +
+    geom_tile(color = "white") +
+    scale_fill_gradientn(colours = plt_clrs) +
+    facet_grid(~ mouse) +
+    guides(fill = guide_colorbar(ticks = FALSE, barwidth = unit(10, "pt"))) +
+    djvdj_theme() +
+    theme(
+      legend.title = element_blank(),
+      axis.title   = element_blank(),
+      axis.text.x  = element_text(angle = 45, hjust = 1),
+      panel.border = element_rect(color = "black"),
+      aspect.ratio = length(gn_lvls) / n_mice * 0.6
+    )
   
   res
 }
@@ -531,16 +757,14 @@ type_preds <- best_mods %>%
 
 lec_so <- lec_so %>%
   AddMetaData(type_preds, col.name = c("type_pred", "type_correct"))
-```
 
-```{r "plot fraction Ag-high"}
 # Format prediction labels
 lec_so <- lec_so %>%
   mutate_meta(
     mutate,
     pred_grp = case_when(
       Ag_class_2 == "high" ~ Ag_class_2,
-      type_pred  == "high" ~ "high-predicted",
+      type_pred  == "high" ~ "high-pred",
       TRUE                 ~ Ag_class_2
     ),
     mouse = fct_relevel(mouse, mice)
@@ -557,89 +781,357 @@ best_feats %>%
         name     = clmn_nms
       )
   })
+```
+
+## Classifying Ag-high
+
+Ag-low and -high cells were identified by separatly clustering each LEC subset
+for each sample into two groups based on Ag-score. Ag-low/high classifications
+are shown below.
+
+```{r "plotting params"}
+pred_clrs <- c(
+  low         = "#6A51A3",
+  `high-pred` = "#E69F00",
+  high        = "#D7301F"
+)
+```
+
+```{r "Ag signal", fig.width = 8, fig.height = 4}
+plt_typs <- c("cLEC", "Collecting", "fLEC", "Ptx3_LEC")
+
+clmn <- "Ag_class_2"
+
+plt_dat <- lec_so@meta.data %>%
+  filter(subtype %in% plt_typs)
+
+plt_labs <- plt_dat %>%
+  group_by(subtype, mouse, !!sym(clmn)) %>%
+  summarize(
+    n = label_comma()(n()),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n = str_c(!!sym(clmn), ": ", n, " cells"),
+    !!sym(clmn) := fct_relevel(!!sym(clmn), names(pred_clrs))
+  ) %>%
+  group_by(subtype, mouse) %>%
+  arrange(!!sym(clmn)) %>%
+  mutate(n = str_c(n, collapse = "\n"))
+  
+plt_dat %>%
+  ggplot(aes(Ag_score, after_stat(count) + 1, fill = mouse, alpha = !!sym(clmn))) +
+  geom_histogram(bins = 30) +
+  geom_text(
+    aes(Inf, Inf, label = n),
+    data = plt_labs,
+    check_overlap = TRUE,
+    alpha = 1,
+    hjust = 1.1,
+    vjust = 1.1,
+    size  = txt_pt1 / .pt * 0.65
+  ) +
+  facet_grid(subtype ~ mouse, scales = "free") +
+  guides(fill = "none", alpha = guide_legend(title = "Ag group")) +
+  scale_alpha_manual(values = c(low = 0.25, high = 0.75)) +
+  scale_fill_manual(values = m_clrs) +
+  scale_y_log10(expand = expansion(c(0.05, 0.2))) +
+  labs(x = "Ag-score", y = "number of cells") +
+  djvdj_theme() +
+  theme(
+    aspect.ratio = 0.7
+  )
+```
+
+<br>
+
+The fraction of cells belonging to each predicted Ag group is shown on the left
+for cLECs from each sample.
+The fraction of cells incorrectly predicted to be Ag high (high-pred) is shown
+on the right for each sample.
+
+Since we are training the model to identify gene signatures that are expressed
+in naive mice and should continue to be expressed in our later timepoints after
+Ag levels have fallen, we expect to observe an increasing fraction of false
+positives for the later timepoints.
+
+```{r "fraction Ag-high", fig.width = 8, fig.height = 4}
+# Format data
+plt_typs <- "cLEC"
+
+bar_dat <- lec_so@meta.data %>%
+  filter(subtype %in% plt_typs) %>%
+  rename(prediction = type_pred, correct = type_correct) %>%
+  mutate(correct = fct_relevel(as.character(correct), c("TRUE", "FALSE")))
+
+bar_thm <- djvdj_theme() +
+  theme(axis.title.y = element_blank())
 
 # Plot fraction predicted groups
-plt_typs <- c("cLEC", "Collecting", "Ptx3_LEC")
-
-lec_so@meta.data %>%
-  filter(subtype %in% plt_typs) %>%
-  ggplot(aes(mouse, fill = type_pred, alpha = type_correct)) +
+bar_1 <- bar_dat %>%
+  ggplot(aes(mouse, fill = prediction, alpha = correct)) +
   geom_bar(position = "fill") +
   scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
+  scale_fill_manual(values = pred_clrs) +
   facet_grid(~ subtype) +
-  djvdj_theme()
+  bar_thm
 
-lec_so@meta.data %>%
-  filter(subtype %in% plt_typs) %>%
+bar_2 <- bar_dat %>%
   ggplot(aes(mouse, fill = pred_grp)) +
-  geom_bar(position = "fill") +
+  geom_bar(position = "fill", alpha = 0.85) +
   facet_grid(~ subtype) +
-  djvdj_theme()
+  scale_fill_manual(values = pred_clrs) +
+  bar_thm +
+  theme(legend.title = element_blank())
 
-# lec_so@meta.data %>%
-#   filter(subtype == "cLEC") %>%
-#   ggplot(aes(mouse, fill = pred, alpha = correct)) +
-#   geom_bar(position = "fill") +
-#   scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
-#   facet_grid(~ subtype) +
-#   djvdj_theme()
-# 
-# lec_so@meta.data %>%
-#   filter(subtype == "cLEC") %>%
-#   ggplot(aes(mouse, fill = pred, alpha = correct)) +
-#   geom_bar(position = "fill") +
-#   scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
-#   facet_grid(~ subtype) +
-#   djvdj_theme()
+plot_grid(
+  bar_1, bar_2, 
+  nrow = 1,
+  align = "tb",
+  axis  = "trbl"
+)
 ```
 
-```{r "top features module scores"}
+---
+
+<br>
+
+<br>
+
+## Ag modules
+
+The top positive (top) and negative (bottom) gene modules are shown below for
+each sample. We see a notable correlation between the expression of these genes
+and the Ag class. False positive Ag high cells (high-pred) show
+intermediate levels of expression that falls roughly between the true Ag-low and
+true Ag-high cells.
+
+This suggests that the false positive Ag high cells are potentially cells that
+are archiving competent but have now lost/released most Ag at the later
+timepoints.
+
+```{r "modules", fig.width = 10, fig.height = 6}
 # Boxplots
-modules <- c("cLEC_low2", "cLEC_high1")
+modules <- c(
+  cLEC_high1 = "cLEC Ag-high module",
+  cLEC_low2  = "cLEC Ag-low module"
+)
 
-lec_so@meta.data %>%
-  ggplot(aes(mouse, !!sym(modules[1]), fill = pred_grp)) +
-  geom_boxplot() +
-  facet_wrap(~ subtype) +
-  djvdj_theme()
+plt_typs <- c("cLEC", "Collecting", "fLEC", "Ptx3_LEC")
 
-# Example genes
-gns <- best_feats$cLEC$low
-
-lec_so %>%
-  FetchData(c("mouse", "subtype", "pred_grp", gns)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  filter(subtype == "cLEC") %>%
-  pivot_longer(all_of(gns)) %>%
-  mutate(
-    name = fct_relevel(name, gns),
-    # pred_grp = recode(pred_grp, `high-predicted` = "high")
-  ) %>%
-  
-  group_by(name) %>%
-  filter(
-    n_distinct(mouse[value > 0]) == 4
-  ) %>%
-  ungroup() %>%
-  
-  # group_by(name) %>%
-  # summarize(n = n_distinct(mouse))
-  # filter(n_distinct(mouse) == 4) %>%
-  
-  group_by(name, mouse, subtype, pred_grp) %>%
-  summarize(value = mean(value), .groups = "drop") %>%
-  
-  # group_by(name, subtype) %>%
-  group_by(name, mouse, subtype) %>%
-  mutate(value = as.numeric(scale(value))) %>%
-  
-  ggplot(aes(pred_grp, name, fill = value)) +
-  geom_tile(color = "white") +
-  # scale_fill_gradientn(colours = c("lightblue", "white", "red")) +
-  scale_fill_gradientn(colours = c("white", "red")) +
-  facet_grid(~ mouse) +
-  djvdj_theme()
+modules %>%
+  imap(~ {
+    lec_so %>%
+      FetchData(c("subtype", "mouse", "pred_grp", .y)) %>%
+      filter(subtype %in% plt_typs) %>%
+      mutate(
+        subtype = fct_relevel(subtype, plt_typs),
+        pred_grp = fct_relevel(pred_grp, names(pred_clrs))
+      ) %>%
+      ggplot(aes(mouse, !!sym(.y), fill = pred_grp)) +
+      geom_boxplot(outlier.size = 0.1, key_glyph = draw_key_point) +
+      scale_fill_manual(values = pred_clrs) +
+      facet_wrap(~ subtype, nrow = 1) +
+      ggtitle(.x) +
+      guides(fill = guide_legend(override.aes = list(shape = 22, size = 4))) +
+      djvdj_theme() +
+      theme(
+        aspect.ratio = 0.75,
+        legend.title = element_blank(),
+        axis.title.y = element_blank()
+      )
+  }) %>%
+  wrap_plots(guides = "collect", ncol = 1) &
+  theme(legend.position = "bottom")
 ```
+
+<br>
+
+UMAP projections show Ag-high module expression for each sample, the main cLEC
+cluster is circled.
+
+```{r "module scores", fig.width = 10, fig.height = 4}
+# Plot module scores
+circ_dat <- lec_so@meta.data %>%
+  filter(subtype == "cLEC") %>%
+  group_by(mouse) %>%
+  summarize(across(c(hUMAP_1, hUMAP_2), mean))
+
+ag_mod_u <- mice[mice %in% lec_so$mouse] %>%
+  imap(~ {
+    lec_so %>%
+      subset(mouse == .x) %>%
+      create_sig_umap(
+        dat_col = "cLEC_high1",
+        clrs = c("lightblue", "white", pred_clrs[["high"]])
+      ) +
+      geom_circle(
+        aes(x0 = hUMAP_1, y0 = hUMAP_2, fill = NULL, color = NULL, r = 2),
+        data = filter(circ_dat, mouse == .x),
+        linetype = 2
+      )
+  }) %>%
+  wrap_plots(nrow = 1) +
+  plot_annotation(
+    title = "cLEC Ag-high module",
+    theme = theme(
+      plot.title = element_text(hjust = 0.5, size = ttl_pt2)
+    )
+  )
+
+ag_mod_u
+```
+
+<br>
+
+UMAP projections show true Ag-low and true Ag-high cLECs. Ag-high cells occupy
+the far right portion of the cluster which coincides with highest expression of
+the Ag-high gene module.
+
+```{r "low vs high", fig.width = 10, fig.height = 5}
+# Plot Ag-low vs Ag-high
+clrs <- rev(pred_clrs)
+clrs[c("low", "high-pred")] <- "#56B4E9"
+clrs["other"]               <- "white"
+
+u_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    pred_grp  = ifelse(subtype == "cLEC", pred_grp, "other"),
+    pred_grp1 = ifelse(pred_grp %in% c("high", "low"), pred_grp, "other"),
+    pred_grp2 = ifelse(pred_grp %in% c("high", "high-pred"), pred_grp, "other")
+  )
+
+ag_low_u <- mice[mice %in% lec_so$mouse] %>%
+  imap(~ {
+    u_so %>%
+      subset(mouse == .x) %>%
+      create_grp_umap(
+        dat_col = "pred_grp1",
+        clrs    = clrs
+      )
+  }) %>%
+  wrap_plots(nrow = 1) +
+  plot_annotation(
+    title = "Ag-low vs Ag-high",
+    theme = theme(
+      plot.title = element_text(hjust = 0.5, size = ttl_pt2)
+    )
+  )
+
+ag_low_u
+```
+
+<br>
+
+UMAP projections show false positive Ag-high and true Ag-high cLECs. False
+positive Ag-high cells overlap true Ag-high cells on the projection.
+
+```{r "high-pred vs high", fig.width = 10, fig.height = 5}
+# Plot Ag-high vs predicted Ag-high
+ag_high_u <- mice[mice %in% lec_so$mouse] %>%
+  imap(~ {
+    u_so %>%
+      subset(mouse == .x) %>%
+      create_grp_umap(
+        dat_col = "pred_grp2",
+        clrs    = clrs
+      )
+  }) %>%
+  wrap_plots(nrow = 1) +
+  plot_annotation(
+    title = "Ag-high predicted vs Ag-high",
+    theme = theme(
+      plot.title = element_text(hjust = 0.5, size = ttl_pt2)
+    )
+  )
+
+# Create final figure
+plot_grid(
+  ag_mod_u, ag_low_u, ag_high_u,
+  ncol = 1,
+  align = "vh",
+  axis  = "trbl"
+)
+
+ag_high_u
+```
+
+---
+
+<br>
+
+<br>
+
+## Ag features
+
+```{r "top features heatmaps"}
+# Heatmap
+heats <- best_feats$cLEC %>%
+  imap(~ {
+    lec_so %>%
+      subset(subtype == "cLEC") %>%
+      create_heats(
+        gns = .x,
+        sort_gns = switch(.y, high = "up", low = "down")
+      ) +
+      theme(
+        panel.border = element_rect(color = "grey30")
+      )
+  })
+```
+
+```{r "top features examples", fig.height = 8, fig.width = 8}
+plt_args <- list(
+  gns   = best_feats$cLEC,
+  p_alt = c("greater", "less"),
+  n_gns = c(10, 7)
+)
+gn_plots <- plt_args %>%
+  pmap(~ {
+    args <- list(...)
+    lec_so %>%
+      subset(subtype == "cLEC") %>%
+      create_gn_plots(
+        gns      = args$gns,
+        plt_clrs = pred_clrs,
+        p_alt    = args$p_alt,
+        n_gns    = args$n_gns
+      ) +
+      theme(
+        panel.border = element_rect(color = "grey75")
+      )
+  })
+```
+
+Mean expression is shown on the left for genes from the Ag-high module for
+true Ag-low, true Ag-high, and false positive Ag-high (high-pred) cells.
+Expression is shown on the right for select top features.
+
+Points show median expression, grey bars show interquartile range, dotted line
+shows the trend, and diamonds indicate the gene is significantly up or down
+regulated when compared to Ag-low cells.
+
+```{r "Ag-high examples", fig.height = 8, fig.width = 10}
+plot_grid(heats[[1]], gn_plots[[1]])
+```
+
+<br>
+
+Mean expression is shown on the left for genes from the Ag-low module as
+described above.
+
+```{r "Ag-low examples", fig.height = 6, fig.width = 10}
+plot_grid(heats[[2]], gn_plots[[2]])
+```
+
+---
+
+<br>
+
+<br>
+
+## Ag archiving in CHIKV
 
 ```{r "CHIKV RF", eval = FALSE}
 # Load CHIKV data
