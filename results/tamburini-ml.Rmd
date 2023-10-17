@@ -418,7 +418,7 @@ create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10)
     scale_size_manual(values = c(1, 1.25, 1.25)) +
     scale_color_manual(values = m_clrs) +
     scale_y_continuous(breaks = ~ c(ceiling(min(.x)), floor(max(.x)))) +
-    djvdj_theme() +
+    base_theme +
     theme(
       aspect.ratio    = 1,
       legend.position = "none",
@@ -447,7 +447,7 @@ create_sig_umap <- function(so_in, dat_col, clrs) {
       ticks = FALSE, title.position = "top",
       barheight = unit(6, "pt"), barwidth = unit(120, "pt"), 
     )) +
-    djvdj_theme() +
+    base_theme +
     theme(
       plot.margin     = margin(),
       plot.title      = element_text(size = ttl_pt2),
@@ -482,7 +482,7 @@ create_grp_umap <- function(so_in, dat_col, clrs) {
       label.position = "bottom", reverse = TRUE,
       override.aes = list(size = 4)
     )) +
-    djvdj_theme() +
+    base_theme +
     theme(
       plot.margin     = margin(),
       plot.title      = element_text(size = ttl_pt2),
@@ -557,7 +557,7 @@ create_heats <- function(so_in, gns, sort_gns = "up", lvls = names(pred_clrs),
     scale_fill_gradientn(colours = plt_clrs) +
     facet_grid(~ mouse) +
     guides(fill = guide_colorbar(ticks = FALSE, barwidth = unit(10, "pt"))) +
-    djvdj_theme() +
+    base_theme +
     theme(
       legend.title = element_blank(),
       axis.title   = element_blank(),
@@ -614,7 +614,7 @@ create_chikv_heats <- function(so_in, gns, lvls = names(pred_clrs),
     scale_fill_gradientn(colours = plt_clrs) +
     facet_grid(~ lec_type) +
     guides(fill = guide_colorbar(ticks = FALSE, barwidth = unit(10, "pt"))) +
-    djvdj_theme() +
+    base_theme +
     theme(
       legend.title = element_blank(),
       axis.title   = element_blank(),
@@ -645,7 +645,7 @@ create_chikv_boxes <- function(df_in, dat_col, ttl = NULL) {
     ) +
     scale_fill_manual(values = pred_clrs) +
     labs(title = ttl) +
-    djvdj_theme() +
+    base_theme +
     theme(
       aspect.ratio    = 1.2,
       plot.title      = element_text(size = ttl_pt2, hjust = 0.5),
@@ -1043,11 +1043,11 @@ plt_dat %>%
   ) +
   facet_grid(subtype ~ mouse, scales = "free") +
   guides(fill = "none", alpha = guide_legend(title = "Ag group")) +
-  scale_alpha_manual(values = c(low = 0.25, high = 0.75)) +
+  scale_alpha_manual(values = c(low = 0.35, high = 1)) +
   scale_fill_manual(values = m_clrs) +
   scale_y_log10(expand = expansion(c(0.05, 0.2))) +
   labs(x = "Ag-score", y = "number of cells") +
-  djvdj_theme() +
+  base_theme +
   theme(aspect.ratio = 0.7)
 ```
 
@@ -1078,7 +1078,7 @@ bar_dat <- lec_so@meta.data %>%
   rename(prediction = type_pred, correct = type_correct) %>%
   mutate(correct = fct_relevel(as.character(correct), c("TRUE", "FALSE")))
 
-bar_thm <- djvdj_theme() +
+bar_thm <- base_theme +
   theme(
     aspect.ratio = 1.4,
     axis.title.y = element_blank()
@@ -1152,7 +1152,7 @@ modules %>%
       facet_wrap(~ subtype, nrow = 1) +
       ggtitle(.x) +
       guides(fill = guide_legend(override.aes = list(shape = 22, size = 4))) +
-      djvdj_theme() +
+      base_theme +
       theme(
         aspect.ratio = 0.75,
         plot.title   = element_text(hjust = 0.5),
@@ -1422,7 +1422,7 @@ bar_dat %>%
   scale_alpha_manual(values = rep(1, n_reps)) +
   scale_fill_manual(values = treat_clrs) +
   labs(y = "fraction predicted Ag-high") +
-  djvdj_theme() +
+  base_theme +
   theme(
     aspect.ratio    = 1.25, 
     legend.position = "none",
