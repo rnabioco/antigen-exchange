@@ -599,16 +599,6 @@ lec_so <- lec_so %>%
       "high", "low"
     )
   )
-
-
-# # Plot Ag-low/high grous
-# x %>%
-#   filter(Ag_score > 0) %>%
-#   ggplot(aes(Ag_score, ..count.. + 1, fill = Ag_class)) +
-#   geom_histogram() +
-#   facet_grid(mouse ~ subtype) +
-#   djvdj_theme() +
-#   scale_y_log10()
 ```
 
 ```{r "Ag-high 2", eval = FALSE}
