@@ -1,5 +1,5 @@
 ---
-title: "Antigen Tracking Figures"
+title: "Predicting Ag-archiving Capacity"
 author: "Ryan Sheridan"
 date: "`r Sys.Date()`"
 output:
@@ -43,9 +43,10 @@ editor_options:
 * There is a reduction in archiving-competent cLECs in CHIKV-infected mice and
   a broad downregulation of the Ag-archiving gene program
 * The central goal for this project is to optimize the model
-  (and expand to other cell types) and use it to assess archiving capacity in
-  public LN datasets to identify perturbations/treatments etc that are predicted
-  to impair archiving
+  (e.g. expand to other cell types)
+  and use it to assess archiving capacity in samples that did not receive an
+  Ag-tag (e.g. other published datasets). We can then identify
+  perturbations/treatments etc that are predicted to impair archiving.
 
 ```{r "setup", include = FALSE}
 # Default chunk options
@@ -999,8 +1000,9 @@ chikv_preds %>%
 
 ## Classifying Ag-high
 
-Ag-low and -high cells were identified by separatly clustering each LEC subset
-for each sample into two groups based on Ag-score. Ag-low/high classifications
+Ag-low and -high cells were identified by separately clustering each LEC subset
+for each sample into two groups based on Ag-score. For the 6wk-3wk sample,
+the 3wk Ag score is used. Ag-low/high classifications
 used for the analysis are shown below.
 
 ```{r "Ag signal", fig.width = 10, fig.height = 5}
@@ -1058,8 +1060,8 @@ then used to predict Ag-high cells in the other Ag datasets.
 
 The fraction of cells belonging to each predicted Ag group is shown on the left
 for cLECs from each sample.
-The fraction of cells incorrectly predicted to be Ag high (high-pred) is shown
-on the right for each sample.
+The fraction of true Ag-low, true Ag-high, and false-positive Ag-high cells
+(high-pred) is shown on the right.
 
 * The model is fairly accurate in predicting Ag-high cells in the training and
   test data (d14 cLECs), but does not perform as well when predicting Ag-low
@@ -1117,8 +1119,8 @@ plot_grid(
 
 ## Ag modules
 
-The top positive (top) and negative (bottom) gene modules that are most
-predictive of Ag signal are shown below.
+Expression of the top upregulated (top) and downregulated (bottom) gene modules
+that are most predictive of Ag signal are shown below.
 
 * There is a notable correlation between the expression of these genes
   and the Ag class
@@ -1374,7 +1376,7 @@ plt_dat <- plt_dat %>%
 ```
 
 The fraction of cells predicted to be Ag-high (i.e. archiving competent) is
-shown below for each cell type. p-values < 0.05 are shown.
+shown below for each biological replicate. p-values < 0.05 are shown.
 
 * There is a reduction in archiving-competent cells in CHIKV-infected LN samples
 
