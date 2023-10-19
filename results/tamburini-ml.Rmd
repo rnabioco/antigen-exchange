@@ -96,11 +96,21 @@ run_rf <- !file.exists(here(params$mod_dir, "ag-high_preds.tsv.gz"))
 
 ```{r "RF functions"}
 # Function to predict
-rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE) {
+rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
+                       prob = FALSE) {
   
   prds <- mod %>%
     predict(dat, seed = 42) %>%
     ranger::predictions()
+  
+  if (prob) {
+    classes <- colnames(prds)
+    
+    prds <- prds %>%
+      as.data.frame() %>%
+      mutate(pred = ifelse(!!sym(classes[1]) > 0.5, classes[1], classes[2])) %>%
+      pull(pred)
+  }
   
   res <- dat %>%
     as_tibble(rownames = ".cell_id") %>%
@@ -143,20 +153,21 @@ rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE) {
 #' @param frac_grp group in data_clmn that should be used for calculating and
 #' comparing fractions using data in df_list
 #' @param balance_groups downsample so groups have the same number of cells
-#' @param sample_info addition columns to include in data
 #' @param degs data.frame of DEGs, used to determine which DEGs are markers
-#' for each group, this is used to balance the features equally between groups
+#' for each group
+#' @param include_objects in output tibble include ranger object, top features,
+#' and cell barcodes for training data
 #' @param ... additional parameters to pass to ranger::ranger()
 train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
                      feat_p = 0.05, min_feats = 20, min_cells = 30,
                      scale_data = FALSE, select_feats = TRUE, df_list = NULL,
                      frac_grp = "high", balance_groups = TRUE,
-                     sample_info = NULL, degs = NULL, ...) {
+                     degs = NULL, include_objects = FALSE, ...) {
   
   # Format train/test data
   rf_dat <- df_in %>%
     dplyr::select(
-      all_of(c(data_clmn, sample_info)),
+      all_of(data_clmn),
       where(~ !all(.x == 0))
     ) %>%
     mutate(!!sym(data_clmn) := factor(!!sym(data_clmn))) %>%
@@ -168,7 +179,7 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
   if (scale_data) {
     rf_dat <- rf_dat %>%
       mutate(
-        across(-any_of(c(data_clmn, sample_info)), ~ as.numeric(scale(.x)))
+        across(-all_of(data_clmn), ~ as.numeric(scale(.x)))
       )
   }
   
@@ -176,6 +187,19 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
   # Split into train/test data
   # sam_sz <- min(sample_size, min(table(rf_dat[[data_clmn]])))
   if (balance_groups) {
+    
+    # classes <- as.character(unique(args$data[[data_clmn]]))
+    # 
+    # if (all(classes %in% names(args))) {
+    #   class_wts <- set_names(as.numeric(args[classes]), classes)
+    # 
+    #   args$probability   <- TRUE
+    #   args$class.weights <- class_wts
+    #   args[classes]      <- NULL
+    # }
+    # 
+    # browser()
+    
     if (any(sample_size < min_cells)) {
       cli::cli_abort("All groups must have at least {min_cells} cells")
     }
@@ -203,35 +227,45 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
     rf_test  <- testing(rf_split)
   }
   
-  rf_train <- rf_train %>%
-    dplyr::select(-any_of(sample_info))
-  
   # Train models
   rf_params <- expand.grid(param_lst)
   rf_params <- bind_cols(rf_params, list(...))
   
+  n_params    <- nrow(rf_params)
+  rf_params$n <- 1:n_params
+  
   res <- pmap_dfr(rf_params, ~ {
     args <- list(...)
     
-    if (args$mtry > (ncol(rf_train) - 1)) return(NULL)
+    if (args$mtry > (ncol(rf_train) - 1)) {
+      cli::cli_warn("mtry ({args$mtry}) is greater than the number of features")
+      
+      return(NULL)
+    }
     
     # RF parameters
-    # args$class.weights <- args$class.weights %||% class_weights
-    # args$class.weights <- c(high = 1, low = 200)
-    cases        <- as.character(args$data[[data_clmn]])
-    case.weights <- vector("numeric", length(cases))
+    args$formula      <- as.formula(str_c(data_clmn, " ~ ."))
+    args$data         <- rf_train
+    args$importance   <- args$importance %||% "impurity_corrected"
+    args$seed         <- args$seed %||% 42
+    args$num.threads  <- args$num.threads %||% 12
+    args$probability  <- args$probability %||% FALSE
     
-    case.weights[cases == "high"] <- args$high_wts
-    case.weights[cases == "low"]  <- args$low_wts
-    
-    args$high_wts <- args$low_wts <- NULL
-    
-    args$case.weights  <- case.weights
-    args$formula       <- as.formula(str_c(data_clmn, " ~ ."))
-    args$data          <- rf_train
-    args$importance    <- args$importance %||% "impurity_corrected"
-    args$seed          <- 42
-    args$num.threads   <- 10
+    # SETTING CLASS WEIGHTS DOES NOT IMPROVE ACCURACY OF CLASS BALANCE, WHY???
+    # Check for class.weights parameter
+    # case.weights <- vector("numeric", length(cases))
+    # case.weights[cases == "high"] <- args$high_wts
+    # case.weights[cases == "low"]  <- args$low_wts
+    # args$case.weights             <- case.weights
+    # args$high_wts <- args$low_wts <- NULL
+    # classes <- as.character(unique(args$data[[data_clmn]]))
+    # if (all(classes %in% names(args))) {
+    #   class_wts <- set_names(as.numeric(args[classes]), classes)
+    # 
+    #   args$probability   <- TRUE
+    #   args$class.weights <- class_wts
+    #   args[classes]      <- NULL
+    # }
     
     # Train initial model
     set.seed(42)
@@ -243,21 +277,16 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
     
     # Feature selection
     if (select_feats) {
-      key_feats <- raw_mod %>%
-        importance_pvalues() %>%
-        .[, "pvalue"] %>%
-        sort()
+      key_feats <- importance_pvalues(raw_mod)
+      key_feats <- sort(key_feats[, "pvalue"])
       
       max_p <- key_feats %>%
         head(min_feats) %>%
         max()
       
-      feat_p <- max(max_p, feat_p)
-      
-      key_feats <- key_feats[key_feats < feat_p] %>%
-        names()
-      
-      n_feats <- length(key_feats)
+      feat_p    <- max(max_p, feat_p)
+      key_feats <- names(key_feats[key_feats < feat_p])
+      n_feats   <- length(key_feats)
       
       # Re-train model
       args$mtry       <- min(args$mtry, n_feats)
@@ -272,41 +301,40 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
     err <- mod$prediction.error
     
     # Compare fraction predicted groups with ground truth from training data
+    frac_clmn <- str_c("frac_", frac_grp)
+    
     frac_stats <- df_list %>%
       imap_dfr(~ {
         mod %>%
-          rf_predict(.x, data_clmn = data_clmn, return_stats = FALSE) %>%
+          rf_predict(
+            .x,
+            data_clmn    = data_clmn,
+            return_stats = FALSE,
+            prob         = args$probability
+          ) %>%
           mutate(sample = .y)
       }) %>%
       group_by(sample) %>%
       summarize(
-        frac_high = sum(pred == frac_grp) / n(),
+        !!sym(frac_clmn) := sum(pred == frac_grp) / n(),
         .groups   = "drop"
       ) %>%
-      summarize(
-        frac_mean = mean(frac_high),
-        frac_sd   = sd(frac_high)
-      )
+      summarize(across(all_of(frac_clmn), list(mean = mean, sd = sd)))
     
     # Test model
     prds <- mod %>%
       rf_predict(
         dat          = rf_test,
         data_clmn    = data_clmn,
-        return_stats = TRUE
-      )
-                                         # only used for continuous
-    # err <- sqrt(res$prediction.error)  # response variables
+        return_stats = TRUE,
+        prob         = args$probability
+      ) %>%
+      rename_with(.cols = everything(), ~ str_c(.x, "_accuracy"))
     
     # Format output table
-    tibble(
-      raw_mod   = list(raw_mod),
-      mod       = list(mod),
-      feats     = list(key_feats),
+    res <- tibble(
       n_train   = nrow(rf_train),
       n_test    = nrow(rf_test),
-      train_bcs = list(rownames(rf_train)),
-      # test_bcs  = list(rownames(rf_test)),
       ...,
       n_feats = length(key_feats),
       oob_raw = raw_err,
@@ -314,7 +342,22 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
     ) %>%
       bind_cols(frac_stats) %>%
       bind_cols(prds)
+    
+    if (include_objects) {
+      res <- res %>%
+        mutate(
+          mod          = list(mod),
+          feats        = list(key_feats),
+          training_bcs = list(rownames(rf_train))
+        )
+    }
+    
+    cli::cli_alert_info("{args$n} / {n_params}")
+    
+    res
   })
+  
+  if (nrow(res) == 0) return(NULL)  # If mtry is too high
   
   res <- res %>%
     arrange(oob)
@@ -775,13 +818,20 @@ rf_mods <- typs %>%
     
     # Set RF params
     param_lst <- list(
-      mtry          = seq(1, length(feats), floor(length(feats) / 15)),
       # min.node.size = c(1, 3, 5),
       # num.trees     = c(50, 400, 1000),
-      min.node.size = 1:10,
-      num.trees     = seq(50, 1000, 100),
-      low_wts       = 1:5,
-      high_wts      = 1:5
+      # mtry          = seq(1, length(feats), floor(length(feats) / 15)),
+      # min.node.size = seq(1, 10, 2),
+      # num.trees     = seq(50, 800, 100),
+      # low           = c(1, 5, 10, 20, 50, 100),
+      # high          = 1,
+      
+      low = 1,
+      high = 2,
+      
+      mtry          = 216,
+      min.node.size = 3,
+      num.trees     = 450
     )
     
     # Train model
@@ -789,21 +839,25 @@ rf_mods <- typs %>%
       train_rf(
         data_clmn   = rf_dat_clmn,
         param_lst   = param_lst,
-        sample_info = other_info,
         df_list     = all_dat[names(all_dat) != rf_mouse],
         scale_data  = FALSE,
-        sample_size = sam_size
+        sample_size = sam_size,
+        
+        include_objects = TRUE,
+        balance_groups  = TRUE
       )
+    
+    if (is.null(res)) return(res)  # If mtry is too high
     
     # Identify best models
     res <- res %>%
       arrange(
-        desc(frac_mean < target_frac + 0.05 & frac_mean > target_frac - 0.05),
-        desc(frac_mean < target_frac + 0.1 & frac_mean > target_frac - 0.1),
-        desc(frac_sd < 0.1),
-        oob,
-        desc(low),
-        desc(high)
+        # desc(frac_mean < target_frac + 0.05 & frac_mean > target_frac - 0.05),
+        # desc(frac_mean < target_frac + 0.1 & frac_mean > target_frac - 0.1),
+        # desc(frac_sd < 0.1),
+        # desc(low),
+        # desc(high)
+        oob
       ) %>%
       mutate(
         subtype     = .x,
@@ -831,7 +885,8 @@ rf_preds <- read_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz")) %>%
 ```{r "RF features"}
 # Identify best models
 best_mods <- rf_mods %>%
-  arrange(desc(low), desc(high)) %>%
+  # arrange(desc(low), desc(high)) %>%
+  arrange(oob) %>%
   group_by(subtype) %>%
   slice(1)
 
