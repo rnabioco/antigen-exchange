@@ -550,7 +550,7 @@ cd45pos_so <- cd45pos_so %>%
   )
 ```
 
-```{r "Ag class"}
+```{r "Ag class", eval = create_sobjs}
 # Format data for clustering based on Ag scores
 # The strategy is to identify Ag-high/low cells for all datasets together
 # One might expect that changes in gene expression will depend on absolute

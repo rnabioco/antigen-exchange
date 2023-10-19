@@ -164,18 +164,6 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
     rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
     rename_with(~ str_c("x", .x), matches("^[0-9]"))
   
-  # # Reverse class weights to account for imbalanced data
-  # # class_weights <- class_weights / sum(class_weights)
-  # class_weights <- table(rf_dat[[data_clmn]])
-  # class_weights <- class_weights / min(class_weights)
-  # 
-  # lvls <- levels(rf_dat[[data_clmn]])
-  # 
-  # class_weights <- set_names(
-  #   rev(class_weights),
-  #   lvls
-  # )
-  
   # Scale data
   if (scale_data) {
     rf_dat <- rf_dat %>%
@@ -227,13 +215,25 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
     
     if (args$mtry > (ncol(rf_train) - 1)) return(NULL)
     
+    # RF parameters
+    # args$class.weights <- args$class.weights %||% class_weights
+    # args$class.weights <- c(high = 1, low = 200)
+    cases        <- as.character(args$data[[data_clmn]])
+    case.weights <- vector("numeric", length(cases))
+    
+    case.weights[cases == "high"] <- args$high_wts
+    case.weights[cases == "low"]  <- args$low_wts
+    
+    args$high_wts <- args$low_wts <- NULL
+    
+    args$case.weights  <- case.weights
     args$formula       <- as.formula(str_c(data_clmn, " ~ ."))
     args$data          <- rf_train
     args$importance    <- args$importance %||% "impurity_corrected"
     args$seed          <- 42
-    # args$class.weights <- args$class.weights %||% class_weights
-    # args$class.weights <- c(high = 1, low = 200)
+    args$num.threads   <- 10
     
+    # Train initial model
     set.seed(42)
     
     raw_mod <- mod <- lift_dl(ranger)(args)
@@ -305,7 +305,7 @@ train_rf <- function(df_in, data_clmn, param_lst, sample_size = 135,
       feats     = list(key_feats),
       n_train   = nrow(rf_train),
       n_test    = nrow(rf_test),
-      # train_bcs = list(rownames(rf_train)),
+      train_bcs = list(rownames(rf_train)),
       # test_bcs  = list(rownames(rf_test)),
       ...,
       n_feats = length(key_feats),
@@ -735,7 +735,7 @@ other_info <- c("subtype", "mouse")
 # Select LEC subsets
 typs <- lec_so@meta.data %>%
   filter(mouse == rf_mouse) %>%
-  group_by(subtype, Ag_class_2) %>%
+  group_by(subtype, !!sym(rf_dat_clmn)) %>%
   summarize(n = n(), .groups = "drop") %>%
   group_by(subtype) %>%
   filter(all(n > 60)) %>%
@@ -743,16 +743,14 @@ typs <- lec_so@meta.data %>%
   pull(subtype) %>%
   unique()
 
-# Select features
-# cLEC DEGs from all timepoints
-feats <- degs %>%
-  filter(subtype == rf_cell_type) %>%
-  pull(feature) %>%
-  unique()
-
 # Train models for each LEC subtype
-type_mods <- typs %>%
+rf_mods <- typs %>%
   map_dfr(~ {
+    feats <- degs %>%
+      filter(subtype == .x) %>%
+      pull(feature) %>%
+      unique()
+    
     rf_dat <- lec_so %>%
       subset(subtype == .x & mouse == rf_mouse) %>%
       FetchData(unique(c(rf_dat_clmn, other_info, feats)))
@@ -765,6 +763,7 @@ type_mods <- typs %>%
       rename_with(~ str_c("x", .x), matches("^[0-9]")) %>%
       split(.$mouse)
     
+    # Calculate group sizes
     group_size  <- table(rf_dat[[rf_dat_clmn]])
     target_frac <- group_size[["high"]] / sum(group_size)
     sam_size    <- floor(min(group_size) / 2)
@@ -774,25 +773,15 @@ type_mods <- typs %>%
       names(group_size)
     )
     
-    # # Select features
-    # # calculate proportion of features identified for each group
-    # feats <- degs %>%
-    #   filter(subtype == .x)
-    # 
-    # feat_frac <- table(feats$group)
-    # feat_frac <- feat_frac / sum(feat_frac)
-    # 
-    # feats <- feats %>%
-    #   pull(feature) %>%
-    #   unique()
-    
     # Set RF params
     param_lst <- list(
       mtry          = seq(1, length(feats), floor(length(feats) / 15)),
-      # min.node.size = 1:10,
-      # num.trees     = seq(50, 1000, 100)
-      min.node.size = c(1, 3, 5),
-      num.trees     = c(50, 400, 1000)
+      # min.node.size = c(1, 3, 5),
+      # num.trees     = c(50, 400, 1000),
+      min.node.size = 1:10,
+      num.trees     = seq(50, 1000, 100),
+      low_wts       = 1:5,
+      high_wts      = 1:5
     )
     
     # Train model
@@ -805,7 +794,7 @@ type_mods <- typs %>%
         scale_data  = FALSE,
         sample_size = sam_size
       )
-
+    
     # Identify best models
     res <- res %>%
       arrange(
@@ -817,35 +806,36 @@ type_mods <- typs %>%
         desc(high)
       ) %>%
       mutate(
-        subtype = .x,
-        rank = row_number()
+        subtype     = .x,
+        target_frac = target_frac,
+        rank        = row_number()
       )
       
     res
   })
 
 # Save RF models
-type_mods %>%
+rf_mods %>%
   qsave(here(params$mod_dir, "ag-high_models.qs"))
 ```
 
 ```{r "load models", eval = !run_rf}
 # Load save models
-type_mods <- qread(here(params$mod_dir, "ag-high_models.qs"))
-degs      <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
+rf_mods <- qread(here(params$mod_dir, "ag-high_models.qs"))
+degs    <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
 
-type_preds <- read_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz")) %>%
+rf_preds <- read_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz")) %>%
   column_to_rownames(".cell_id")
 ```
 
 ```{r "RF features"}
 # Identify best models
-best_mods <- type_mods %>%
+best_mods <- rf_mods %>%
   arrange(desc(low), desc(high)) %>%
   group_by(subtype) %>%
   slice(1)
 
-rm(type_mods)
+rm(rf_mods)
 
 # Pull best features
 best_feats <- best_mods %>%
@@ -893,7 +883,7 @@ pred_dat <- lec_so %>%
   rename_with(~ str_c("x", .x), matches("^[0-9]")) %>%
   column_to_rownames(".cell_id")
 
-type_preds <- best_mods %>%
+rf_preds <- best_mods %>%
   pmap_dfr(~ {
     args <- list(...)
     
@@ -914,7 +904,7 @@ type_preds <- best_mods %>%
   })
 
 # Write table with predictions
-type_preds %>%
+rf_preds %>%
   rownames_to_column(".cell_id") %>%
   write_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz"))
 ```
@@ -922,15 +912,15 @@ type_preds %>%
 ```{r "format data"}
 # Format prediction labels
 lec_so <- lec_so %>%
-  AddMetaData(type_preds, col.name = c("type_pred", "type_correct"))
+  AddMetaData(rf_preds, col.name = c("rf_pred", "rf_correct"))
 
 lec_so <- lec_so %>%
   mutate_meta(
     mutate,
     pred_grp = case_when(
-      Ag_class_2 == "high" ~ Ag_class_2,
-      type_pred  == "high" ~ "high-pred",
-      TRUE                 ~ Ag_class_2
+      !!sym(rf_dat_clmn) == "high" ~ !!sym(rf_dat_clmn),
+      rf_pred            == "high" ~ "high-pred",
+      TRUE                         ~ !!sym(rf_dat_clmn)
     ),
     mouse = fct_relevel(mouse, mice)
   )
@@ -994,6 +984,184 @@ chikv_so <- chikv_so %>%
 chikv_preds %>%
   rownames_to_column(".cell_id") %>%
   write_tsv(here(params$mod_dir, "ag-high_chikv_preds.tsv.gz"))
+```
+
+
+
+```{r "OPTIMIZE RF PARAMETERS WITH RF", eval = FALSE}
+mod_dat <- rf_mods %>%
+  filter(subtype == "cLEC") %>%
+  dplyr::select(oob, mtry, min.node.size, num.trees) %>%
+  as.data.frame()
+
+mod_dat   <- initial_split(mod_dat)
+mod_train <- training(mod_dat)
+mod_test  <- testing(mod_dat)
+
+mod_mod <- ranger(
+  oob ~.,
+  data = mod_train
+)
+
+train_mod <- ranger(
+  oob ~.,
+  data = 
+)
+
+
+
+# Format data for model
+# cLEC DEGs from all timepoints
+feats <- degs %>%
+  filter(subtype == rf_cell_type) %>%
+  pull(feature) %>%
+  unique()
+
+rf_dat <- lec_so %>%
+  subset(subtype == rf_cell_type & mouse == rf_mouse) %>%
+  FetchData(unique(c(rf_dat_clmn, feats))) %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+
+rf_train <- rf_dat %>%
+  rownames_to_column(".cell_id") %>%
+  split(.[[rf_dat_clmn]]) %>%
+  imap_dfr(~ {
+    set.seed(42)
+    
+    .x %>%
+      dplyr::sample_n(135) %>%
+      column_to_rownames(".cell_id")
+  })
+
+rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
+```
+
+```{r "OPTIMIZE RF PARAMETERS MLRMBO", eval = FALSE}
+# Install and load required packages
+pak::pkg_install("mlr")
+pak::pkg_install("mlrMBO")
+library(mlr3)
+library(mlrMBO)
+
+# Format data for model
+# cLEC DEGs from all timepoints
+feats <- degs %>%
+  filter(subtype == rf_cell_type) %>%
+  pull(feature) %>%
+  unique()
+
+rf_dat <- lec_so %>%
+  subset(subtype == rf_cell_type & mouse == rf_mouse) %>%
+  FetchData(unique(c(rf_dat_clmn, feats))) %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+
+rf_train <- rf_dat %>%
+  rownames_to_column(".cell_id") %>%
+  split(.[[rf_dat_clmn]]) %>%
+  imap_dfr(~ {
+    set.seed(42)
+    
+    .x %>%
+      dplyr::sample_n(135) %>%
+      column_to_rownames(".cell_id")
+  })
+
+rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
+
+# Define the search space
+param_space <- makeParamSet(
+  makeIntegerParam("num.trees",     lower = 50, upper = 1000),
+  makeIntegerParam("mtry",          lower = 1,  upper = 20),
+  makeIntegerParam("min.node.size", lower = 1,  upper = 20)
+)
+
+# Define the objective function
+cross_validation_rf <- function(num.trees, mtry, min.node.size, data,
+                                clmn = "Ag_class_2") {
+  
+  # Define the task
+  task <- makeClassifTask(data = data, target = clmn)
+  
+  # Define the learner with hyperparameters to be optimized
+  learner <- makeLearner(
+    "classif.ranger",
+    predict.type  = "prob",
+    num.trees     = num.trees,
+    mtry          = mtry,
+    min.node.size = min.node.size
+  )
+  
+  # Define the resampling strategy (e.g., 10-fold cross-validation)
+  resampling <- makeResampleDesc("CV", iters = 10)
+  
+  # Define a measure (e.g., AUC) for evaluation
+  measure <- mlr::auc
+  
+  # Perform the cross-validation
+  result <- resample(learner, task, resampling, measures = measure)
+  
+  # Return the performance metric (e.g., AUC) from cross-validation
+  return(result$aggr[1])
+}
+
+rf_optimization_problem <- makeSingleObjectiveFunction(
+  fn = function(par.set) {
+    # Inside this function, you can define the objective to be minimized.
+    # par.set is a parameter set that represents the hyperparameters to be optimized.
+    
+    num.trees     <- as.integer(par.set[["num.trees"]])
+    mtry          <- as.integer(par.set[["mtry"]])
+    min.node.size <- as.integer(par.set[["min.node.size"]])
+    
+    # Here, you would perform cross-validation with the given hyperparameters and return the performance metric.
+    # For example, you could use AUC as the performance metric.
+    performance <- cross_validation_rf(
+      num.trees, mtry, min.node.size,
+      data = rf_train[, c(rf_dat_clmn, key_feats)]
+    )
+    
+    # Return the negative AUC because mlrMBO minimizes the objective function
+    return(-performance)
+  },
+  par.set = param_space
+)
+
+# Initialize the optimization process
+opt <- makeMBOControl()
+
+# Set the maximum number of iterations
+opt$BUDGET = 1000  # Replace 100 with your desired number of iterations
+
+# Run the Bayesian optimization
+result <- mbo(rf_optimization_problem, control = opt)
+
+# Get the best hyperparameters
+best_hyperparameters <- result$x
+
+# Test best parameters
+# Train model
+rf_args            <- best_hyperparameters
+rf_args$formula    <- factor(Ag_class_2) ~.
+rf_args$data       <- rf_train
+rf_args$importance <- "impurity_corrected"
+
+mod <- lift_dl(ranger)(rf_args)
+
+# Feature selection
+key_feats <- mod %>%
+  importance_pvalues() %>%
+  .[, "pvalue"] %>%
+  sort()
+
+key_feats <- names(key_feats[key_feats < 0.05])
+
+# Re-train model
+rf_args$data       <- rf_train[, c(rf_dat_clmn, key_feats)]
+rf_args$importance <- "none"
+
+mod <- lift_dl(ranger)(rf_args)
 ```
 
 <br>
@@ -1077,7 +1245,7 @@ plt_typs <- "cLEC"
 
 bar_dat <- lec_so@meta.data %>%
   filter(subtype %in% plt_typs) %>%
-  rename(prediction = type_pred, correct = type_correct) %>%
+  rename(prediction = rf_pred, correct = rf_correct) %>%
   mutate(correct = fct_relevel(as.character(correct), c("TRUE", "FALSE")))
 
 bar_thm <- base_theme +
