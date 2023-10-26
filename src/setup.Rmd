@@ -38,7 +38,15 @@ R_packages <- c(
   "openxlsx",   "biomaRt",
   "harmony",
   "rsample",    "ranger",
-  "furrr"
+  "furrr",
+  "caret",
+  "clusterProfiler",
+  "enrichplot",
+  "msigdbr",
+  "org.Mm.eg.db",
+  "GOSemSim",
+  "biomaRt",
+  "ggtree"
 )
 
 purrr::walk(R_packages, library, character.only = TRUE)
@@ -391,7 +399,7 @@ sobjs %>%
 # NEED TO:
 # 1. check epithelial cells, some may be PvCs based on Pdpn, Pecam1, Acta2, Itga7
 # 2. check unassigned cells, some may be epithelial cells
-# 3. check stem cells
+# 3. check stem cells, are these accurate?
 
 # Merge objects
 neg_idx    <- sam_info$cell_sort == "CD45neg"
@@ -448,7 +456,8 @@ cd45neg_so <- cd45neg_so %>%
   mutate_meta(
     mutate,
     cell_type = str_remove(rough_type, " \\(.+$"),
-    cell_type = recode(cell_type, `Stromal cells` = "Fibroblasts")
+    cell_type = recode(cell_type, `Stromal cells` = "Fibroblasts"),
+    subtype   = cell_type
   )
 ```
 
@@ -617,59 +626,196 @@ lec_so <- lec_so %>%
 ```
 
 ```{r "LEC object", eval = create_sobjs}
+# NEED TO:
+# 1. check Marco_LECs, they do not express Marco
+
 # Re-cluster and integrate endothelial cells
 lec_so <- cd45neg_so %>%
-  subset(cell_type == "Endothelial cells")
-
-lec_so <- lec_so %>%
+  subset(cell_type == "Endothelial cells") %>%
   integrate_sobjs(group_vars = "mouse")
 
 # Annotate LEC subsets
+.annotate_lecs <- function(so_in, clst_clmn) {
+  res <- so_in %>%
+    mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
+    clustify(
+      ref_mat     = ref_lec,
+      cluster_col = clst_clmn,
+      n_genes     = 2000,
+      threshold   = 0.53
+    ) %>%
+    mutate_meta(
+      mutate,
+      subtype   = type,
+      cell_type = ifelse(subtype == "BEC", subtype, "LEC")
+    )
+  
+  # Use higher correlation cutoff for LECs
+  res <- res %>%
+    mutate_meta(
+      mutate,
+      subtype = ifelse(
+        cell_type == "LEC" & r < 0.75,
+        "unassigned",
+        subtype
+      )
+    )
+  
+  res
+}
+
 clst_clmn <- "RNA_snn_res.10"
 
+lec_so <- .annotate_lecs(lec_so, clst_clmn)
+
+# Identify contaminating B and T cells
+# label other CD45+ cells as unassigned
 lec_so <- lec_so %>%
-  mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
-  clustify(
-    ref_mat     = ref_lec,
-    cluster_col = clst_clmn,
-    n_genes     = 2000,
-    threshold   = 0.53
+  classify_markers(
+    feats    = "Ptprc",
+    filt     = Ptprc > 0.4,
+    type     = "unassigned",
+    clst_col = clst_clmn,
+    type_col = "cell_type"
   ) %>%
-  mutate_meta(
-    mutate,
-    subtype   = type,
-    cell_type = ifelse(subtype == "BEC", subtype, "LEC")
+  classify_markers(
+    feats    = c("Ptprc", "Cd79a"),
+    filt     = Ptprc > 0.4 & Cd79a > 0.25,
+    type     = "B cells",
+    clst_col = clst_clmn,
+    type_col = "cell_type"
+  ) %>%
+  classify_markers(
+    feats    = c("Ptprc", "Cd3e"),
+    filt     = Ptprc > 0.4 & Cd3e > 0.25,
+    type     = "T cells",
+    clst_col = clst_clmn,
+    type_col = "cell_type"
   )
 
-# Use higher correlation cutoff for LECs
+# Adjust cell type labels
+# this adds BEC label and fixes B and T cell labels
+typ_data <- FetchData(lec_so, "cell_type")
+
+cd45neg_so <- cd45neg_so %>%
+  AddMetaData(typ_data, col.name = "new_type") %>%
+  mutate_meta(~ {
+    .x %>%
+      mutate(
+        cell_type = ifelse(!is.na(new_type), new_type, cell_type),
+        subtype   = ifelse(!is.na(new_type), new_type, subtype)
+      ) %>%
+      dplyr::select(-new_type)
+  })
+
+# Re-annotate LECs after removing B and T cells
 lec_so <- lec_so %>%
-  mutate_meta(
-    mutate,
-    subtype = ifelse(
-      cell_type == "LEC" & r < 0.75,
-      "unassigned",
-      subtype
-    )
-  )
+  subset(cell_type %in% c("LEC", "BEC")) %>%
+  integrate_sobjs(group_vars = "mouse") %>%
+  .annotate_lecs(clst_clmn)
 
 # Adjust cell type labels
 typ_data <- lec_so %>%
   FetchData(c("cell_type", "subtype"))
 
 cd45neg_so <- cd45neg_so %>%
-  AddMetaData(typ_data, col.name = c("new_type", "subtype")) %>%
+  AddMetaData(typ_data, col.name = c("new_type", "new_subtype")) %>%
+  mutate_meta(~ {
+    .x %>%
+      mutate(
+        cell_type = ifelse(!is.na(new_type),    new_type,    cell_type),
+        subtype   = ifelse(!is.na(new_subtype), new_subtype, subtype)
+      ) %>%
+      dplyr::select(-c(new_type, new_subtype))
+  })
+```
+
+```{r "FRC object", eval = create_sobjs}
+# Re-cluster and integrate fibroblasts
+frc_so <- cd45neg_so %>%
+  subset(cell_type == "Fibroblasts")
+
+frc_so <- frc_so %>%
+  integrate_sobjs(group_vars = "mouse")
+
+# Annotate FRC subsets
+.annotate_frcs <- function(so_in, clst_clmn) {
+  res <- so_in %>%
+    mutate_meta(dplyr::select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
+    clustify(
+      ref_mat     = ref_frc,
+      cluster_col = clst_clmn,
+      n_genes     = 2000
+    ) %>%
+    mutate_meta(mutate, subtype = type)
+  
+  res
+}
+
+clst_clmn <- "RNA_snn_res.10"
+
+frc_so <- .annotate_frcs(frc_so, clst_clmn)
+
+# Identify contaminating B and T cells
+frc_so <- frc_so %>%
+  classify_markers(
+    feats    = c("Ptprc", "Cd79a"),
+    filt     = Ptprc > 0.5 & Cd79a > 0.5,
+    type     = "B cells",
+    clst_col = clst_clmn,
+    type_col = "cell_type"
+  ) %>%
+  classify_markers(
+    feats    = c("Ptprc", "Cd3e"),
+    filt     = Ptprc > 0.5 & Cd3e > 0.5,
+    type     = "T cells",
+    clst_col = clst_clmn,
+    type_col = "cell_type"
+  )
+
+# Adjust cell type and subtype labels
+typ_data <- frc_so %>%
+  FetchData("cell_type")
+
+cd45neg_so <- cd45neg_so %>%
+  AddMetaData(typ_data, col.name = "new_type") %>%
   mutate_meta(~ {
     .x %>%
       mutate(
         cell_type = ifelse(!is.na(new_type), new_type, cell_type),
-        subtype   = ifelse(!is.na(subtype),  subtype,  cell_type)
+        subtype   = ifelse(!is.na(new_type), new_type, subtype)
       ) %>%
       dplyr::select(-new_type)
+  })
+
+# Re-annotate fibroblasts after removing B and T cells
+frc_so <- frc_so %>%
+  subset(cell_type == "Fibroblasts") %>%
+  integrate_sobjs(group_vars = "mouse") %>%
+  .annotate_frcs(clst_clmn = "RNA_snn_res.5")
+
+# Add FRC subset labels
+typ_data <- frc_so %>%
+  FetchData(c("cell_type", "subtype"))
+
+cd45neg_so <- cd45neg_so %>%
+  AddMetaData(typ_data, col.name = c("new_type", "new_subtype")) %>%
+  mutate_meta(~ {
+    .x %>%
+      mutate(
+         cell_type = ifelse(!is.na(new_type),    new_type,    cell_type),
+         subtype   = ifelse(!is.na(new_subtype), new_subtype, subtype)
+      ) %>%
+      dplyr::select(-c(new_type, new_subtype))
   })
 ```
 
 ```{r "DC object", eval = create_sobjs}
+# NEED TO:
+# 1. check cDC2s, there is a cluster that might be T-bet+
+
 # Re-cluster and integrate DCs
+# DC subsets were annotated with broad cell types
 dc_so <- cd45pos_so %>%
   subset(cell_type == "DC")
 
@@ -679,6 +825,10 @@ dc_so <- dc_so %>%
 
 ```{r "save objects", eval = create_sobjs}
 # Save meta.data for all cells combined
+all_meta <- list(cd45neg_so, cd45pos_so) %>%
+  map_dfr(~ .x@meta.data) %>%
+  as_tibble(rownames = ".cell_id")
+
 all_meta %>%
   write_tsv(here(params$so_dir, "all_meta.tsv.gz"))
 
@@ -686,9 +836,10 @@ all_meta %>%
 save_objs(cd45neg_so, ob_dir = params$so_dir)
 save_objs(cd45pos_so, ob_dir = params$so_dir)
 save_objs(lec_so,     ob_dir = params$so_dir)
+save_objs(frc_so,     ob_dir = params$so_dir)
 save_objs(dc_so,      ob_dir = params$so_dir)
 
-rm(all_meta, cd45neg_so, cd45pos_so, lec_so, dc_so)
+rm(all_meta, cd45neg_so, cd45pos_so, lec_so, frc_so, dc_so)
 ```
 
 ```{r "load seurat objects"}
@@ -696,6 +847,7 @@ all_meta <- read_tsv(here(params$so_dir, "all_meta.tsv.gz"))
 lec_so   <- qread(here(params$so_dir, "lec_so.qs"))
 dc_so    <- qread(here(params$so_dir, "dc_so.qs"))
 
+# frc_so   <- qread(here(params$so_dir, "frc_so.qs"))
 # cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
 # cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
 ```
