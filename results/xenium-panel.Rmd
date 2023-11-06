@@ -97,9 +97,6 @@ run_rf <- !file.exists(here(params$mod_dir, "ag-high_preds.tsv.gz"))
 ```
 
 ```{r "cell type markers"}
-# Marco LECs do not look accurate for some Ag datasets
-# see expression of B cell markers
-
 rm(lec_so)
 
 markers <- c(cd45neg_so = "LEC", cd45neg_so = "Fibroblasts", cd45pos_so = "DC") %>%
@@ -130,18 +127,6 @@ markers <- c(cd45neg_so = "LEC", cd45neg_so = "Fibroblasts", cd45pos_so = "DC") 
 
 markers %>%
   write_tsv(here(params$tab_dir, "celltype_markers.tsv.gz"))
-
-# # Identify top markers
-# top_marks <- markers %>%
-#   arrange(object, clmn, group, desc(logFC), padj) %>% 
-#   filter(
-#     clmn == "subtype",
-#     !grepl("^H2-", feature)
-#   ) %>%
-#   group_by(group) %>%
-#   dplyr::slice(1:10) %>%
-#   ungroup() %>%
-#   distinct(.keep_all = TRUE)
 ```
 
 ```{r "Subtype markers"}
@@ -169,7 +154,8 @@ ag_dat <- c("lec_so", "frc_so", "dc_so") %>%
           cell_type,
           BEC = "Endothelial cells",
           LEC = "Endothelial cells"
-        )
+        ),
+        dataset = "Ag"
       ) %>%
       dplyr::select(-mouse)
   })
@@ -191,12 +177,20 @@ chikv_dat <- qread(here(params$chikv_so)) %>%
       lec_subtype != "other" ~ lec_subtype,
       frc_subtype != "other" ~ frc_subtype,
       TRUE                   ~ cell_type
-    )
+    ),
+    dataset = "CHIKV"
   ) %>%
   dplyr::select(-c(treatment, tm, lec_subtype, frc_subtype))
 
 # Format plotting data
+samples <- c(
+  "d14", "3wk", "6wk", "6wk-3wk",
+  "mock-8hpi", "mock-24hpi"
+)
+
 plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
+  filter(sample %in% samples) %>%
+  mutate(sample = dataset) %>%
   group_by(sample, cell_type, subtype, annotation, broad_annotation, gene) %>%
   summarize(value = mean(value), .groups = "drop") %>%
   filter(
@@ -209,7 +203,6 @@ plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
   ungroup()
 
 # Create heatmaps
-# add NAs for missing values
 sample_lvls <- c(mice, "mock-8hpi", "mock-24hpi", "CHIKV-8hpi", "CHIKV-24hpi")
 
 plt_dat %>%
@@ -225,14 +218,54 @@ plt_dat %>%
         annotation = fct_relevel(annotation, lvls)
       )
     
-    # typs <- dat %>%
-    #   mutate(gene = as.character(gene)) %>%
-    #   tidyr::expand(sample, subtype, gene) %>%
-    #   mutate(annotation = gn_ann[gene])
+    dat %>%
+      ggplot(aes(subtype, gene, fill = value)) +
+      geom_tile(linewidth = 0.5, color = "white") +
+      facet_grid(annotation ~ sample, scales = "free", space = "free") +
+      scale_fill_gradientn(colours = c("lightblue", "white", "red"), na.value = "grey80") +
+      base_theme +
+      theme(
+        strip.clip        = "off",
+        strip.placement   = "inside",
+        strip.text.y.right = element_text(angle = 0, hjust = 0, size = txt_pt1),
+        # strip.text.y.right = element_text(angle = 0, hjust = 1, size = txt_pt1),
+        # strip.background.y = element_rect(colour = ln_col),
+        axis.title        = element_blank(),
+        axis.text.x       = element_text(angle = 90, hjust = 1, vjust = 0.5, size = txt_pt1),
+        axis.text.y       = element_text(size = txt_pt1)
+      )
+  })
+```
+
+```{r "Subtype markers extended"}
+# Format plotting data
+plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
+  group_by(sample, cell_type, subtype, annotation, broad_annotation, gene) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  filter(
+    !subtype %in% c("unassigned", "BEC"),
+    cell_type %in% broad_annotation
+  ) %>%
+  
+  group_by(sample, cell_type, annotation, broad_annotation, gene) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup()
+
+# Create heatmaps
+plt_dat %>%
+  split(.$cell_type) %>%
+  map(~ {
+    dat <- .x %>%
+      filter(broad_annotation == cell_type) %>%
+      na.omit() %>%
+      mutate(
+        sample     = fct_relevel(sample, sample_lvls),
+        gene       = fct_relevel(gene, rev(gns$gene)),
+        subtype    = fct_relevel(subtype, lvls),
+        annotation = fct_relevel(annotation, lvls)
+      )
     
     dat %>%
-      # full_join(typs, by = c("sample", "subtype", "gene", "annotation")) %>%
-      
       ggplot(aes(subtype, gene, fill = value)) +
       geom_tile(linewidth = 0.5, color = "white") +
       facet_grid(annotation ~ sample, scales = "free", space = "free") +
@@ -252,104 +285,80 @@ plt_dat %>%
 ```
 
 ```{r "Marker plots"}
-# Genes to plot
-gns <- c(
-  "Prox1",    # Broad LNSC markers
-  "Lyve1",
-  "Pdpn",
-  "Pecam1",
+# Load genes to plot
+gns <- here(params$ref_dir, "Xenium_mMulti_v1_metadata.xlsx") %>%
+  read.xlsx2(sheetIndex = 1) %>%
+  as_tibble() %>%
+  dplyr::rename(gene = "Gene", annotation = "Annotation") %>%
+  distinct(gene, .keep_all = TRUE)
 
-  "Marco",    # Marco+ LECs
-  "F8",
-  "Stab2",
+# Only include genes that are identified as a cell type marker for our datasets
+gns <- gns %>%
+  filter(gene %in% markers$feature)
 
-  "Madcam1",  # fLECs
-  # "Glycam1",
-  "Vcam1",
-  "Clu",
-  "Ccl20",
-  "Csf1",
-  "Cd274",
+# Load Ag data
+ag_dat <- c("cd45neg_so", "cd45pos_so") %>%
+  map_dfr(~ {
+    qread(here(params$so_dir, str_c(.x, ".qs"))) %>%
+      FetchData(c("sample", "mouse", "subtype", "cell_type", gns$gene)) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(any_of(gns$gene), names_to = "gene") %>%
+      left_join(gns, by = "gene") %>%
+      mutate(
+        sample = mouse,
+        cell_type = recode(
+          cell_type,
+          BEC = "Endothelial cells",
+          LEC = "Endothelial cells"
+        ),
+        dataset = "Ag"
+      ) %>%
+      dplyr::select(-mouse)
+  })
 
-  "Ackr3",    # cLECs
-  # "Mmrn1",
-  "Ackr4",
-  "Cd36",
-  "Gdf10",
-
-  "Ptx3",     # Ptx3+ LECs
-  "Itih5",
-  "Mrc1",
-
-  "Fgl2",    # Collecting LECs
-  "Ccl21a",
-  
-  "Itgax",   # DCs 
-  
-  "Xcr1",    # cDC1s
-  "Cd24a",
-  "Clec9a",
-
-  "Sirpa",   # cDC2s
-  "Itgam",
-
-  "Tbx21",   # cDC2 Tbet+
-  "Dtx1",
-  "Ccr6",
-
-  "Clec12a", # cDC2 Tbet-
-  "Cx3cr1",
-  "Lyz2",
-  "Csf1r",
-
-  "Siglech", # Siglec-H DCs
-
-  "Ccr7"     # CCR7hi DCs
-)
-
-top_marks %>%
-  filter(feature %in% gns) %>%
-  as.data.frame()
-
-# Ag data
-# plt_dat <- lec_so %>%
-plt_dat <- dc_so %>%
-  FetchData(c("sample", "tm", "mouse", "subtype", gns)) %>%
+# Load CHIKV data
+chikv_dat <- qread(here(params$chikv_so)) %>%
+  FetchData(c("treatment", "tm", "cell_type", "subtype", "lec_subtype", "frc_subtype", gns$gene)) %>%
   as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(gns)) %>%
-  group_by(mouse, subtype, name) %>%
-  summarize(value = mean(value), .groups = "drop") %>%
-  group_by(name, mouse) %>%
-  mutate(value = as.numeric(scale(value))) %>%
-  ungroup() %>%
-  mutate(name = fct_relevel(name, rev(gns)))
-
-# CHIKV data
-plt_dat <- chikv_so %>%
-  subset(cell_type_2 == "LEC") %>%
-  FetchData(c("treatment", "tm", "rep", "lec_type", gns)) %>%
+  pivot_longer(any_of(gns$gene), names_to = "gene") %>%
+  left_join(gns, by = "gene") %>%
   mutate(
-    mouse   = str_c(treatment, "-", tm, "-", rep),
-    subtype = lec_type
+    sample = str_c(treatment, "-", tm),
+    cell_type = recode(
+      cell_type,
+      FRC = "Fibroblasts",
+      PvC = "Fibroblasts"
+    ),
+    subtype = case_when(
+      lec_subtype != "other" ~ lec_subtype,
+      frc_subtype != "other" ~ frc_subtype,
+      TRUE                   ~ cell_type
+    ),
+    dataset = "CHIKV"
   ) %>%
-  
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(gns)) %>%
-  group_by(mouse, subtype, name) %>%
-  summarize(value = mean(value), .groups = "drop") %>%
-  group_by(name, mouse) %>%
-  mutate(value = as.numeric(scale(value))) %>%
-  ungroup() %>%
-  mutate(name = fct_relevel(name, rev(gns)))
+  dplyr::select(-c(treatment, tm, lec_subtype, frc_subtype))
 
-# Create heatmaps
+# Format plotting data
+plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
+  group_by(sample, cell_type, gene) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  filter(!cell_type %in% "unassigned")
+  
 plt_dat %>%
-  ggplot(aes(subtype, name, fill = value)) +
-  geom_tile() +
-  facet_wrap(~ mouse) +
-  scale_fill_gradientn(colours = c("lightblue", "white", "red")) +
-  base_theme +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  split(.$sample) %>%
+  map(~ {
+    mat <- .x %>%
+      dplyr::select(-any_of(c("sample", "subtype"))) %>%
+      pivot_wider(names_from = cell_type, values_from = value) %>%
+      column_to_rownames("gene") %>%
+      as.matrix() %>%
+      t() %>%
+      scale() %>%
+      t() %>%
+      na.omit()
+    
+    Heatmap(mat)
+  })
 ```
 
 ```{r "load models"}

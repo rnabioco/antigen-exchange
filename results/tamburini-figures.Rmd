@@ -29,7 +29,15 @@ editor_options:
 
 <br>
 
-```{r "setup"}
+```{r "setup", include = FALSE}
+# Default chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo    = FALSE,
+  dpi     = 300
+)
+
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 ```
 
@@ -824,65 +832,6 @@ ex_scat <- dat %>%
   plot_layout(heights = c(1, 0.55, 1, 0.55, 0.8)) +
   plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
-```
-
----
-
-<br>
-
-<br>
-
-## LEC markers
-
-```{r, fig.width = 15, fig.height = 18}
-# Plot marker genes
-plt_vars <- c(
-  "subtype",
-  "Prox1", "Lyve1",
-  "Marco", "Madcam1", "Ackr4", "Ptx3"
-  # "Ptprc", "Cd3e", "Cd19", "Hba-a1",
-  # "Pdpn", "Pecam1"
-)
-
-plt_vars %>%
-  map(~ {
-    plt <- lec_so %>%
-      mutate_meta(
-        mutate,
-        tm_lab = ifelse(is.na(tm), vaccination, as.character(tm)),
-        tm_lab = fct_relevel(tm_lab, c(as.character(tms), "dual"))
-      ) %>%
-      plot_scatter(
-        .x,
-        "hUMAP_1",
-        "hUMAP_2",
-        group_col = "tm_lab",
-        size = 0.5,
-        plot_colors = c("lightblue", "red"),
-        top = Inf,
-        panel_nrow = 1
-      ) +
-      umap_theme +
-      theme(
-        aspect.ratio = 0.9,
-        panel.border = element_rect(linewidth = ln_pt, color = ln_col)
-      )
-    
-    if (is.numeric(FetchData(lec_so, .x)[[.x]])) {
-      plt <- plt +
-        guides(color = guide_colorbar(
-          ticks = FALSE, barwidth = unit(5, "pt"), barheight = unit(100, "pt")
-        ))
-    }
-    
-    plt
-  }) %>%
-  plot_grid(
-    plotlist = .,
-    align    = "v",
-    axis     = "rl",
-    ncol     = 1
-  )
 ```
 
 ---
