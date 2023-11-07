@@ -397,9 +397,11 @@ sobjs %>%
 
 ```{r "CD45- samples", eval = create_sobjs}
 # NEED TO:
-# 1. check epithelial cells, some may be PvCs based on Pdpn, Pecam1, Acta2, Itga7
-# 2. check unassigned cells, some may be epithelial cells
-# 3. check stem cells, are these accurate?
+# 1. Check epithelial cells, some may be PvCs based on Pdpn, Pecam1, Acta2,
+#    Itga7. They do express expected markers, Cdh1, Krt8, Muc1, Ocln
+# 2. Check unassigned cells, some may be epithelial cells
+# 3. Check stem cells, are these accurate? They express Cd19 and Cd79a, these
+#    should be reclassified as B cells
 
 # Merge objects
 neg_idx    <- sam_info$cell_sort == "CD45neg"
@@ -902,6 +904,9 @@ umap_theme <- base_theme +
     axis.ticks.y = element_blank(),
     axis.text    = element_blank()
   )
+
+umap_theme_2 <- umap_theme %+replace%
+  theme(panel.border = element_rect(colour = ln_col, linewidth = ln_pt, fill = NA))
 
 fade_0 <- "#FAFAFA"
 fade_1 <- "#F0F0F0"

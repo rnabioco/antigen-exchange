@@ -24,29 +24,8 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
-
----
-
-<br>
-
-## Summary
-
-* The goal of this project is to use machine learning to predict Ag archiving
-  capacity (or ability) in LECs from naive mice.
-* For a proof of principle analysis, Ag-tracking data for d14 cLECs was used to
-  train a random forest classifier to predict Ag status
-* Using this model we defined a gene program that correlates with Ag status at
-  various timepoints
-* Archiving "competent" cLECs can be predicted in the CHIKV LN scRNA-seq data
-* There is a reduction in archiving-competent cLECs in CHIKV-infected mice and
-  a broad downregulation of the Ag-archiving gene program
-* The central goal for this project is to optimize the model
-  (e.g. expand to other cell types)
-  and use it to assess archiving capacity in samples that did not receive an
-  Ag-tag (e.g. other published datasets). We can then identify
-  perturbations/treatments etc that are predicted to impair archiving.
 
 ```{r "setup", include = FALSE}
 # Default chunk options
@@ -80,7 +59,6 @@ ag_clmns <- c(
 ag_clmns %>%
   iwalk(~ {
     lec_so <- lec_so %>%
-      subset(mouse != "d2") %>%
       mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
       cluster_signal(
         data_column  = .x,
@@ -123,9 +101,9 @@ lec_so <- lec_so %>%
 
 # Theme elements
 pred_clrs <- c(
-  low         = "#6A51A3",
-  `high-pred` = "#E69F00",
-  high        = "#D7301F"
+  `Ag-low`       = "#6A51A3",
+  `Ag-competent` = "#E69F00",
+  `Ag-high`      = "#D7301F"
 )
 
 base_theme <- djvdj_theme() +
@@ -558,12 +536,12 @@ create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10)
   res
 }
 
-create_sig_umap <- function(so_in, dat_col, clrs) {
+create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs) {
   res <- so_in %>%
     plot_scatter(
       dat_col,
       "hUMAP_1", "hUMAP_2",
-      group_col   = "mouse",
+      group_col   = grp_col,
       outline     = TRUE,
       plot_colors = clrs,
       panel_nrow  = 1,
@@ -590,15 +568,16 @@ create_sig_umap <- function(so_in, dat_col, clrs) {
   res
 }
 
-create_grp_umap <- function(so_in, dat_col, clrs) {
+create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
+                            lvls = c("Ag-competent", "Ag-low", "Ag-high", "other")) {
   so_in %>%
     plot_scatter(
       dat_col,
       "hUMAP_1", "hUMAP_2",
-      group_col   = "mouse",
+      group_col   = grp_col,
       outline     = TRUE,
       plot_colors = clrs,
-      plot_lvls   = c("high-pred", "low", "high", "other"),
+      plot_lvls   = lvls,
       panel_nrow  = 1,
       size        = 0.25,
       stroke      = 0.8,
@@ -1849,6 +1828,7 @@ pred_dat <- lec_so %>%
   as_tibble(rownames = ".cell_id") %>%
   rename_with(~ str_replace_all(.x, "-", "_")) %>%
   rename_with(~ str_c("x", .x), matches("^[0-9]")) %>%
+  mutate(mouse = as.character(mouse)) %>%
   column_to_rownames(".cell_id")
 
 rf_preds <- rf_mods %>%
@@ -1872,10 +1852,36 @@ rf_preds <- rf_mods %>%
       })
   })
 
+# Predict Ag class using cLEC model
+rf_preds_2 <- rf_mods %>%
+  filter(subtype == "cLEC") %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    
+    dat <- pred_dat %>%
+      split(.$mouse) %>%
+      map(dplyr::select, -all_of(info_clmns))
+    
+    dat %>%
+      imap_dfr(~ {
+        rf_predict(
+          mod          = args$mod,
+          dat          = .x,
+          data_clmn    = rf_dat_clmn,
+          return_stats = FALSE
+        ) %>%
+          dplyr::select(pred, correct)
+      })
+  })
+
 # Write table with predictions
 rf_preds %>%
   rownames_to_column(".cell_id") %>%
   write_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz"))
+
+rf_preds_2 %>%
+  rownames_to_column(".cell_id") %>%
+  write_tsv(here(params$mod_dir, "ag-high_cLEC_preds.tsv.gz"))
 ```
 
 ```{r "load models", eval = !run_rf}
@@ -1897,15 +1903,17 @@ all_feats <- rf_feats %>%
 # Format prediction labels
 # training data was removed before predicting
 lec_so <- lec_so %>%
-  AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds)))
+  AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds))) %>%
+  AddMetaData(rf_preds_2, col.name = str_c("rf_", colnames(rf_preds_2), "_2"))
 
 lec_so <- lec_so %>%
   mutate_meta(
     mutate,
     pred_grp = ifelse(
       rf_pred == "high" & !rf_correct,
-      "high-pred", !!sym(rf_dat_clmn)
+      "Ag-competent", str_c("Ag-", !!sym(rf_dat_clmn))
     ),
+    rf_pred       = str_c("Ag-", rf_pred),
     mouse         = fct_relevel(mouse, mice),
     training_data = is.na(rf_pred)
   )
@@ -1927,6 +1935,12 @@ rf_feats %>%
       ) %>%
       mutate_meta(dplyr::rename, !!!syms(clmn_nms))
   })
+
+# Remove day 2 timepoint
+lec_df <- lec_so@meta.data
+
+lec_so <- lec_so %>%
+  subset(mouse != "d2")
 ```
 
 ```{r "predict CHIKV"}
@@ -2276,7 +2290,364 @@ x[!x %in% y]
 y[!y %in% x]
 ```
 
+```{r "DATA CLUB SLIDE", fig.width = 8.1, fig.height = 9, eval = FALSE}
+# Format data for plotting
+clrs <- c(
+  `Ag-low`  = "#56B4E9",
+  `Ag-high` = "#D7031F" 
+)
+
+dat <- lec_df %>%
+  filter(mouse == "d14") %>%
+  mutate(
+    Ag_class_3 = str_c("Ag-", Ag_class_3),
+    Ag_class_3 = fct_relevel(Ag_class_3, names(clrs))
+  )
+
+# Create UMAP
+u <- dat %>%
+  plot_scatter(
+    "Ag_score",
+    x = "hUMAP_1", y = "hUMAP_2",
+    plot_colors = c("lightblue", "white", pred_clrs["Ag-high"]),
+    size = 0.15,
+    stroke = 0.75,
+    outline = TRUE
+  ) +
+  guides(fill = guide_colorbar(
+    ticks = FALSE,
+    barwidth = unit(130, "pt"),
+    barheight = unit(7, "pt"),
+    title = "Ag-score", title.position = "top", title.hjust = 0.5
+  )) +
+  umap_theme_2 +
+  theme(
+    # aspect.ratio = 0.75,
+    # legend.text     = element_blank()
+    plot.margin     = margin(r = 5, b = 5, l = 5),
+    legend.position = "top"
+  )
+
+# Create histogram
+hst <- dat %>%
+  filter(subtype == rf_cell_type) %>%
+  ggplot(aes(Ag_score, fill = Ag_class_3)) +
+  geom_histogram(alpha = 0.9) +
+  scale_fill_manual(values = clrs) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.4))) +
+  guides(fill = guide_legend(title = "Ag-class")) +
+  labs(x = "Ag-score", y = "number of cells") +
+  base_theme +
+  theme(
+    aspect.ratio    = 0.6,
+    legend.position = c(0.25, 0.6)
+  )
+
+# Plot F1 scores
+f1 <- f1_scores %>%
+  filter(subtype == mod_type, mouse == rf_mouse) %>%
+  ggplot(aes(subtype, F1)) +
+  geom_col(fill = "#E69F00", width = 0.75) +
+  scale_y_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
+  labs(y = "F1 score", x = "Cell type") +
+  base_theme +
+  theme(
+    aspect.ratio = 1.2,
+    axis.title.x = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = txt_pt1),
+  )
+
+# Plot Ag module scores
+ag_mods <- str_c(rf_cell_type, c("_high", "_low"))
+
+lab_fn <- function(x) {
+  x %>%
+    str_remove("[a-zA-Z0-9]+_") %>%
+    str_c("Ag-", ., " module")
+}
+
+bx_dat <- dat %>%
+  filter(!training_data, subtype == rf_cell_type) %>%
+  pivot_longer(all_of(ag_mods))
+  
+bxs <- bx_dat %>%
+  ggplot(aes(Ag_class_3, value, fill = Ag_class_3, color = Ag_class_3)) +
+  geom_boxplot(outlier.size = 0.25, alpha = 0.6, size = 0.75) +
+  facet_wrap(~ name, nrow = 1, scales = "free", labeller = as_labeller(lab_fn)) +
+  scale_color_manual(values = clrs) +
+  scale_fill_manual(values = clrs) +
+  labs(y = "Ag module expression") +
+  base_theme +
+  theme(
+    aspect.ratio    = 2,
+    legend.position = "none",
+    strip.clip      = "off",
+    axis.title.x    = element_blank(),
+    axis.text.x     = element_text(angle = 45, hjust = 1, size = txt_pt1)
+  )
+
+# Plot CHIKV predictions
+treat_clrs <- c(mock = "#009E73", CHIKV = "#6A51A3")
+n_reps     <- n_distinct(chikv_so$rep)
+
+chikv_dat <- chikv_so@meta.data %>%
+  filter(lec_type == rf_cell_type) %>%
+  mutate(treatment = fct_relevel(treatment, names(treat_clrs)))
+
+br_dat <- chikv_dat %>%
+  group_by(treatment, rep) %>%
+  summarize(
+    frac = sum(pred == "high") / n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    p = t.test(
+      frac[treatment == "mock"],
+      frac[treatment == "CHIKV"]
+    )$p.value
+  ) %>%
+  rowwise() %>%
+  mutate(
+    plab = .format_pvalue(p),
+    plab = str_c("italic(p) == ", plab) 
+  )
+
+chikv_brs <- br_dat %>%
+  ggplot(aes(treatment, frac, fill = treatment, alpha = rep)) +
+  geom_col(position = position_dodge2()) +
+  geom_text(
+    aes(x = 1.5, y = 1, label = plab),
+    check_overlap = TRUE, parse = TRUE
+  ) +
+  scale_alpha_manual(values = rep(1, n_reps)) +
+  scale_fill_manual(values = treat_clrs) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  labs(y = "fraction predicted\narchiving-competent") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.2,
+    legend.position = "none",
+    axis.title.x    = element_blank(),
+    axis.text.x     = element_text(size = txt_pt1)
+  )
+
+# Plot module score for CHIKV
+chikv_bxs <- chikv_dat %>%
+  plot_violin(
+    "cLEC_high",
+    cluster_col = "treatment",
+    plot_colors = treat_clrs,
+    draw_quantiles = c(0.25, 0.75),
+    alpha      = 0.6,
+    size       = 0.75,
+    point.size = 2,
+    n_label    = "none"
+  ) +
+  labs(y = "Ag-high module\nexpression") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.2,
+    legend.position = "none",
+    axis.title.x    = element_blank(),
+    axis.text.x     = element_text(size = txt_pt1)
+  )
+
+# Create final figure
+wrap_plots(
+  u, hst, f1, bxs, chikv_brs, chikv_bxs,
+  ncol = 2,
+  heights = c(1, 0.8, 0.8)
+)
+
+ggsave(here("docs/data_club_fig.png"), width = 8.1, height = 9, dpi = 400)
+```
+
+---
+
 <br>
+
+## Summary
+
+* The goal of this project is to use machine learning to predict Ag archiving
+  capacity (or ability) in LECs from naive mice.
+* For a proof of principle analysis, Ag-tracking data for d14 cLECs was used to
+  train a random forest classifier to predict Ag status
+* Using this model we defined a gene program that correlates with Ag status at
+  various timepoints
+* Archiving "competent" cLECs can be predicted in the CHIKV LN scRNA-seq data
+* There is a reduction in archiving-competent cLECs in CHIKV-infected mice and
+  a broad downregulation of the Ag-archiving gene program
+* The central goal for this project is to optimize the model
+  (e.g. expand to other cell types)
+  and use it to assess archiving capacity in samples that did not receive an
+  Ag-tag (e.g. other published datasets). We can then identify
+  perturbations/treatments etc that are predicted to impair archiving.
+
+<br>
+
+Ag signal is shown below for broad cell types identified in the CD45- dataset.
+
+```{r "Ag signal broad cell types", fig.width = 9}
+# ADJUST CELL TYPE ANNOTATIONS FOR PLOTS
+# NEED TO FIX SETUP CODE
+# adjust epithelial cells based on E-cadherin and cytokeratin-8
+# adjust stem cells based on Cd79a, these should be B cells
+clst_clmn <- "RNA_snn_res.5"
+
+cd45neg_so <- cd45neg_so %>%
+  classify_markers(
+    feats    = c("Cdh1", "Krt8"),
+    filt     = Cdh1 > 0.75 & Krt8 > 0.75,
+    type     = "Epithelial cells",
+    clst_col = clst_clmn,
+    type_col = "cell_type"
+  ) %>%
+  classify_markers(
+    feats    = c("Ptprc", "Cd79a", "Cd19"),
+    filt     = Ptprc > 1 & Cd79a > 1.5 & Cd19 > 0.5,
+    type     = "B cells",
+    clst_col = clst_clmn,
+    type_col = "cell_type"
+  )
+
+# Format data for plotting
+dat <- cd45neg_so@meta.data %>%
+  filter(mouse != "6wk-3wk") %>%
+  mutate(
+    mouse = fct_relevel(mouse, mice)
+  )
+
+u_lvls <- c("LEC", "BEC", "Epithelial cells")
+
+# Create UMAP
+u <- dat %>%
+  plot_scatter(
+    data_col    = "cell_type",
+    x           = "hUMAP_1",
+    y           = "hUMAP_2",
+    size        = 0.001,
+    plot_colors = typ_clrs,
+    plot_lvls   = u_lvls,
+    panel_nrow  = 1
+  ) +
+  umap_theme +
+  theme(legend.position = "none")
+
+# Create violin plot
+v_lvls <- fct_reorder(dat$cell_type, dat$Ag_score, median) %>%
+  levels()
+
+vln <- dat %>%
+  plot_violin(
+    "Ag_score",
+    "cell_type",
+    plot_colors    = typ_clrs,
+    plot_lvls      = v_lvls,
+    point.color = "black",
+    # color          = "black",
+    # alpha          = 1,
+    scale          = "width",
+    draw_quantiles = c(0.25, 0.75)
+  ) +
+  labs(y = "Ag-score") +
+  coord_flip() +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.2,
+    legend.position = "none",
+    axis.title.y    = element_blank()
+  )
+
+# Create final figure
+plot_grid(
+  u, vln,
+  rel_widths = c(1, 0.8),
+  align = "h",
+  axis  = "tb",
+  nrow  = 1
+)
+```
+
+<br>
+
+Ag signal is shown below for LEC subsets.
+
+```{r "Ag signal LEC subsets", fig.width = 9, fig.height = 6}
+# Format data for plotting
+dat <- lec_df %>%
+  filter(mouse != "6wk-3wk")
+
+# UMAPs showing LEC subsets
+u_typ <- dat %>%
+  plot_scatter(
+    data_col    = "subtype",
+    x           = "hUMAP_1",
+    y           = "hUMAP_2",
+    group_col   = "tm",
+    plot_colors = lec_clrs,
+    size        = 0.001,
+    panel_nrow  = 1
+  ) +
+  guides(color = guide_legend(ncol = 2, override.aes = list(size = 3))) +
+  umap_theme_2 +
+  theme(legend.title = element_blank())
+
+# UMAPs showing Ag signal
+u_ag <- dat %>%
+  plot_scatter(
+    data_col    = "Ag_score",
+    x           = "hUMAP_1",
+    y           = "hUMAP_2",
+    group_col   = "tm",
+    plot_colors = c("lightblue", "white", "red"),
+    size        = 0.01,
+    panel_nrow  = 1
+  ) +
+  guides(color = guide_colorbar(
+    ticks = FALSE,
+    title = "Ag-score",
+    barwidth = unit(5, "pt"), barheight = unit(70, "pt")
+  )) +
+  umap_theme_2
+  
+# Violin plots showing Ag signal
+v_ag <- dat %>%
+  filter(subtype != "unassigned") %>%
+  plot_violin(
+    data_col       = "Ag_score",
+    cluster_col    = "subtype",
+    group_col      = "tm",
+    plot_colors    = lec_clrs,
+    method = "boxplot",
+    # point.color = "black",
+    # scale          = "width",
+    # draw_quantiles = c(0.25, 0.75),
+    outlier.alpha  = 1,
+    outlier.size   = 0.1,
+    panel_nrow     = 1,
+    n_label        = "none"
+  ) +
+  labs(y = "Ag-score") +
+  base_theme +
+  theme(
+    aspect.ratio    = 0.9,
+    legend.position = "none",
+    axis.title.x    = element_blank(),
+    axis.text.x     = element_text(angle = 45, hjust = 1)
+  )
+
+# Create final figure
+wrap_plots(
+  u_typ, u_ag, v_ag,
+  ncol = 1
+)
+```
+
+---
+
+<br>
+
+<br> 
 
 ## Classifying Ag-high
 
@@ -2333,6 +2704,114 @@ plt_dat %>%
 
 <br>
 
+Ag-low and -high cells are shown below for cLECs.
+
+```{r "cLEC Ag signal", fig.width = 10, fig.height = 2.5}
+# Cell types to plot
+plt_typs <- "cLEC"
+
+# Format plotting data
+plt_dat <- lec_df %>%
+  filter(
+    subtype %in% plt_typs,
+    mouse != "6wk-3wk"
+  )
+
+# Format plot labels
+plt_labs <- plt_dat %>%
+  group_by(subtype, mouse, tm, !!sym(rf_dat_clmn)) %>%
+  summarize(
+    n = label_comma()(n()),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n = str_c(!!sym(rf_dat_clmn), ": ", n, " cells"),
+    !!sym(rf_dat_clmn) := fct_relevel(!!sym(rf_dat_clmn), names(pred_clrs))
+  ) %>%
+  group_by(subtype, mouse, tm) %>%
+  arrange(!!sym(rf_dat_clmn)) %>%
+  mutate(n = str_c(n, collapse = "\n"))
+  
+# Create bargraphs
+hsts <- tms %>%
+  imap(~ {
+    dat <- plt_dat %>%
+      filter(tm == .x) %>%
+      mutate(mouse = as.character(mouse))
+    
+    fst <- .y == 1
+    lst <- .y == length(tms)
+    
+    br <- dat %>%
+      ggplot(aes(y = mouse, fill = mouse, alpha = !!sym(rf_dat_clmn))) +
+      geom_bar() +
+      facet_wrap(~ tm, nrow = 1, scales = "free") +
+      scale_alpha_manual(values = c(low = 0.35, high = 1)) +
+      scale_fill_manual(values = m_clrs) +
+      scale_y_discrete(expand = expansion(c(0, 0))) +
+      scale_x_continuous(expand = expansion(c(0, 0))) +
+      base_theme +
+      theme_void() +
+      theme(
+        legend.position = "none",
+        strip.text      = element_text(size = 11),
+        plot.margin     = margin(t = 5)
+      )
+    
+    # Create histograms
+    hst <- dat %>%
+      ggplot(aes(Ag_score, fill = mouse, alpha = !!sym(rf_dat_clmn))) +
+      geom_histogram(bins = 30) +
+      geom_text(
+        aes(Inf, Inf, label = n),
+        data = filter(plt_labs, tm == .x),
+        check_overlap = TRUE,
+        alpha = 1,
+        hjust = 1.1,
+        vjust = 1.1,
+        size  = txt_pt1 / .pt * 0.65
+      ) +
+      facet_wrap(~ tm, scales = "free", nrow = 1) +
+      guides(fill = "none", alpha = guide_legend(title = "Ag group")) +
+      scale_alpha_manual(values = c(low = 0.35, high = 1)) +
+      scale_fill_manual(values = m_clrs) +
+      scale_y_continuous(expand = expansion(c(0.05, 0.25))) +
+      labs(x = "Ag-score", y = "number of cells") +
+      base_theme +
+      theme(
+        aspect.ratio    = 0.7,
+        strip.text      = element_blank(),
+        legend.position = "none",
+        plot.margin     = margin(t = 0, r = 5, b = 5, l = 5)
+      )
+    
+    if (!fst) {
+      hst <- hst +
+        theme(axis.title.y = element_blank())
+    }
+    
+    # if (lst) {
+    #   hst <- hst +
+    #     theme(legend.position = "bottom")
+    # }
+    
+    plot_grid(
+      br, hst,
+      ncol = 1,
+      align = "v", axis = "rl",
+      rel_heights = c(0.15, 1)
+    )
+  })
+
+# Create final figure
+wrap_plots(
+  hsts,
+  nrow = 1
+)
+```
+
+<br>
+
 A random forest classifier was trained using data for d14 cLECs. The model was
 then used to predict Ag-high cells in the other Ag datasets.
 
@@ -2355,42 +2834,45 @@ plt_typs <- c("cLEC", "Collecting", "fLEC", "Ptx3_LEC")
 
 bar_dat <- lec_so@meta.data %>%
   filter(
+    mouse != "6wk-3wk",
     subtype %in% plt_typs,
     !training_data
   ) %>%
   mutate(
-    rf_correct = fct_relevel(as.character(rf_correct), c("TRUE", "FALSE"))
+    rf_correct = fct_relevel(as.character(rf_correct), c("TRUE", "FALSE")),
+    pred_grp   = fct_relevel(pred_grp, rev(names(pred_clrs))),
+    tm         = as.character(tm)
   )
 
 bar_thm <- base_theme +
-  theme(
-    aspect.ratio = 1.4,
-    axis.title   = element_blank(),
-    axis.text.x  = element_text(angle = 45, hjust = 1)
-  )
+  theme(aspect.ratio = 1.4)
 
 # Plot fraction predicted groups
 bar_1 <- bar_dat %>%
-  ggplot(aes(mouse, fill = rf_pred, alpha = rf_correct)) +
+  ggplot(aes(tm, fill = rf_pred, alpha = rf_correct)) +
   geom_bar(position = "fill") +
   scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
   scale_fill_manual(values = pred_clrs) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
   facet_grid(~ subtype) +
+  labs(y = "fraction of cells", x = "days post vaccination") +
   bar_thm
 
 bar_2 <- bar_dat %>%
-  ggplot(aes(mouse, fill = pred_grp)) +
+  ggplot(aes(tm, fill = pred_grp)) +
   geom_bar(position = "fill", alpha = 0.85) +
   facet_grid(~ subtype) +
   scale_fill_manual(values = pred_clrs) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  labs(y = "fraction of cells", x = "days post vaccination") +
   bar_thm +
   theme(legend.title = element_blank())
 
 plot_grid(
   bar_1, bar_2, 
   ncol = 1,
-  align = "tb",
-  axis  = "trbl"
+  align = "v",
+  axis  = "rl"
 )
 ```
 
@@ -2430,6 +2912,7 @@ pred_dat <- lec_so %>%
   subset(cells = keep_cells) %>%
   FetchData(unique(c(rf_dat_clmn, info_clmns, all_feats))) %>%
   as_tibble(rownames = ".cell_id") %>%
+  mutate(mouse = as.character(mouse)) %>%
   rename_with(~ str_replace_all(.x, "-", "_")) %>%
   rename_with(~ str_c("x", .x), matches("^[0-9]")) %>%
   column_to_rownames(".cell_id")
@@ -2487,6 +2970,27 @@ plt_dat %>%
   theme(
     aspect.ratio = 1,
     axis.text.x  = element_text(angle = 45, hjust = 1)
+  )
+```
+
+<br>
+
+F1 scores are shown for the d14 timepoint using testing and training data from
+the same LEC subset.
+
+```{r "F1 scores 2", fig.width = 8, fig.height = 3.5}
+f1_scores %>%
+  filter(
+    mod_type == subtype,
+    mouse == "d14"
+  ) %>%
+  ggplot(aes(subtype, F1)) +
+  geom_col(fill = "#0072B2") +
+  scale_y_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
+  base_theme +
+  theme(
+    aspect.ratio = 1.3,
+    axis.title.x = element_blank()
   )
 ```
 
@@ -2567,6 +3071,146 @@ plt_dat %>%
 
 <br>
 
+```{r "modules 2", fig.width = 10, fig.height = 4}
+# Format plot data
+plt_typs <- c("cLEC", "Collecting", "fLEC", "Ptx3_LEC")
+
+ag_modules <- plt_typs %>%
+  map(str_c, c("_high", "_low")) %>%
+  unlist()
+
+plt_dat <- lec_so %>%
+  FetchData(c("subtype", "mouse", "tm", "pred_grp", "training_data", ag_modules)) %>%
+  filter(
+    mouse != "6wk-3wk",
+    subtype %in% plt_typs,
+    !training_data
+  ) %>%
+  pivot_longer(all_of(ag_modules)) %>%
+  separate_wider_regex(
+    name,
+    c(module_type = ".*", "_", module_ag = ".*")
+  ) %>%
+  filter(subtype == module_type) %>%
+  mutate(
+    subtype  = fct_relevel(subtype, plt_typs),
+    pred_grp = fct_relevel(pred_grp, names(pred_clrs)),
+    tm       = as.character(tm)
+  )
+
+# Calculate p-values
+alt <- c(high = "greater", low = "less")
+
+p_dat <- plt_dat %>%
+  filter(pred_grp != "Ag-low") %>%
+  group_by(module_type, module_ag, subtype, mouse, tm) %>%
+  summarize(
+    p = t.test(
+      value[pred_grp == "Ag-high"],
+      value[pred_grp == "Ag-competent"],
+      alternative = unique(alt[module_ag])
+    )$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(p_adj = p.adjust(p, method = "bonferroni"))
+
+# Create boxplots
+plt_dat %>%
+  split(.$module_ag) %>%
+  imap(~ {
+    .x %>%  
+      ggplot(aes(tm, value, fill = pred_grp)) +
+      geom_boxplot(outlier.size = 0.1, key_glyph = draw_key_point) +
+      scale_fill_manual(values = pred_clrs) +
+      facet_wrap(
+        ~ subtype,
+        scales = "free_y", nrow = 1, dir = "v"
+      ) +
+      labs(y = "module expression", x = "days post vaccination") +
+      guides(fill = guide_legend(override.aes = list(shape = 22, size = 4))) +
+      ggtitle(str_c("Ag-", .y, " module")) +
+      base_theme +
+      theme(
+        aspect.ratio = 0.75,
+        plot.title   = element_text(hjust = 0.5),
+        legend.title = element_blank()
+      )
+  }) %>%
+  plot_grid(
+    plotlist = .,
+    ncol  = 1,
+    align = "v",
+    axis  = "rl"
+  )
+```
+
+<br>
+
+```{r "cLEC module scores UMAP", fig.width = 8, fig.height = 6.5}
+# Format plotting data
+plt_typ     <- "cLEC"
+module_clmn <- str_c(plt_typ, "_high")
+
+u_so <- lec_so %>%
+  subset(mouse != "6wk-3wk") %>%
+  mutate_meta(
+    mutate,
+    pred_grp = ifelse(subtype == plt_typ, pred_grp, "other"),
+    pred_grp = recode(pred_grp, `Ag-competent` = "Ag-low"),
+    pred_grp = fct_relevel(pred_grp, c("other", names(pred_clrs))),
+    tm       = as.character(tm)
+  )
+
+# Plot module scores
+ag_mod_u <- tms[tms %in% u_so$tm] %>%
+  imap(~ {
+    u_so %>%
+      subset(tm == .x) %>%
+      create_sig_umap(
+        dat_col = module_clmn,
+        grp_col = "tm",
+        clrs    = c("lightblue", "white", pred_clrs[["Ag-high"]])
+      ) +
+      theme(strip.text = element_text(size = 14))
+  }) %>%
+  wrap_plots(nrow = 1) +
+  plot_annotation(
+    title = str_c(plt_typ, " Ag-high module"),
+    theme = theme(
+      plot.title = element_text(hjust = 0.5, size = ttl_pt2)
+    )
+  )
+
+# Plot Ag-high cells
+clrs <- rev(pred_clrs)
+clrs["Ag-low"] <- "#56B4E9"
+clrs["other"]  <- "white"
+
+ag_low_u <- tms[tms %in% u_so$tm] %>%
+  imap(~ {
+    u_so %>%
+      subset(tm == .x) %>%
+      create_grp_umap(
+        dat_col = "pred_grp",
+        grp_col = "tm",
+        clrs    = clrs,
+        lvls    = c("Ag-high", "Ag-low", "other")
+      ) +
+      theme(strip.text = element_text(size = 14))
+  }) %>%
+  wrap_plots(nrow = 1)
+
+# Create final figure
+fig <- plot_grid(
+  ag_mod_u, ag_low_u,
+  ncol = 1
+)
+
+fig
+```
+
+<br>
+
 UMAP projections show Ag-high module expression (top),
 true Ag-low vs true Ag-high (middle),
 and false-positive Ag-high (high-pred) vs true Ag-high (bottom).
@@ -2574,7 +3218,7 @@ and false-positive Ag-high (high-pred) vs true Ag-high (bottom).
 * False positive Ag-high cells (high-pred) show strong overlap with true
   Ag-high cells
   
-```{r "module scores", fig.width = 10, fig.height = 12, results = "asis"}
+```{r "module scores UMAPs", fig.width = 10, fig.height = 12, results = "asis"}
 # Create UMAPs
 plt_typs <- c("cLEC", "Collecting", "fLEC", "Ptx3_LEC")
 
@@ -2668,11 +3312,11 @@ plt_typs %>%
     )
     
     print(fig)
-    cat("\n\n---\n\n<br>\n\n<br>\n\n")
+    cat("\n\n<br>\n\n")
   })
 ```
 
-<br>
+##
 
 Expression of Ag-high and Ag-low gene modules is compared for the 6wk, 3wk,
 and 6wk-3wk samples.
@@ -2682,34 +3326,10 @@ Ag-high cells from the 6wk or 3wk mouse (6wk-high, 3wk-high). All Ag-low cells
 are plotted as a single group.
 
 * When compared to the 6wk and 3wk mice,
-  double positive Ag-high cLECs show slightly higher and lower expression of the
-  Ag-high and Ag-low modules, respectively.
-* This effect is subtle and requires more investigation, but it suggests that
+  double positive Ag-high cLECs show slightly higher expression of the
+  Ag-high module.
+* This effect requires more investigation, but suggests that
   double-positive cells are better equipped to archive antigen.
-
-```{r "AG-EX MODULE EXPRESSION", eval = FALSE}
-# Do 6wk-3wk mice show higher expression of Ag modules than 3wk
-# 6wk-3wk Ag_class is based on the 3wk Ag-tag
-# Module expression is higher in 6wk-3wk vs 3wk, but it is also higher in the
-# 6wk mouse
-typ <- "cLEC"
-module <- str_c(typ, "_high")
-
-lec_so@meta.data %>%
-  filter(subtype == typ) %>%
-  ggplot(aes(mouse, !!sym(module), fill = mouse)) +
-  geom_boxplot() +
-  base_theme
-
-lec_so@meta.data %>%
-  filter(subtype == typ) %>%
-  filter(mouse %in% c("6wk-3wk", "3wk")) %>%
-  ggplot(aes(orig.ident, fill = Ag_class_3)) +
-  geom_bar(position = "fill") +
-  facet_wrap(~ mouse, nrow = 1, scales = "free_x")
-```
-
-##
 
 ```{r "AG-EX DOUBLE POSITIVE", fig.width = 9, fig.height = 5.5}
 # Format plot data
@@ -2783,6 +3403,28 @@ plt_dat %>%
     axis.text.x  = element_text(angle = 45, hjust = 1),
     axis.title.x = element_blank()
   )
+```
+
+```{r "AG-EX MODULE EXPRESSION", eval = FALSE}
+# Do 6wk-3wk mice show higher expression of Ag modules than 3wk
+# 6wk-3wk Ag_class is based on the 3wk Ag-tag
+# Module expression is higher in 6wk-3wk vs 3wk, but it is also higher in the
+# 6wk mouse
+typ <- "cLEC"
+module <- str_c(typ, "_high")
+
+lec_so@meta.data %>%
+  filter(subtype == typ) %>%
+  ggplot(aes(mouse, !!sym(module), fill = mouse)) +
+  geom_boxplot() +
+  base_theme
+
+lec_so@meta.data %>%
+  filter(subtype == typ) %>%
+  filter(mouse %in% c("6wk-3wk", "3wk")) %>%
+  ggplot(aes(orig.ident, fill = Ag_class_3)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ mouse, nrow = 1, scales = "free_x")
 ```
 
 ```{r "GEOMX", eval = FALSE}
