@@ -24,7 +24,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -98,6 +98,18 @@ lec_so <- lec_so %>%
       TRUE                                                                   ~ "low"
     )
   )
+
+# Select LEC subsets to use for RF
+rf_typs <- lec_so@meta.data %>%
+  filter(mouse == rf_mouse) %>%
+  group_by(subtype, !!sym(rf_dat_clmn)) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  group_by(subtype) %>%
+  filter(all(n > 60)) %>%
+  summarize(n = sum(n), .groups = "drop") %>%
+  arrange(desc(n)) %>%
+  pull(subtype) %>%
+  unique()
 
 # Theme elements
 pred_clrs <- c(
@@ -470,11 +482,11 @@ create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10)
       y = max(y),
       
       !!sym(clmn2) := wilcox.test(
-        value[pred_grp == clmn2], value[pred_grp == "low"],
+        value[pred_grp == clmn2], value[pred_grp == "Ag-low"],
         alternative = p_alt
       )$p.value,
       !!sym(clmn3) := wilcox.test(
-        value[pred_grp == clmn3], value[pred_grp == "low"],
+        value[pred_grp == clmn3], value[pred_grp == "Ag-low"],
         alternative = p_alt
       )$p.value,
       .groups = "drop"
@@ -680,7 +692,8 @@ create_heats <- function(so_in, gns, sort_gns = "up", lvls = names(pred_clrs),
   res
 }
 
-create_chikv_heats <- function(so_in, gns, lvls = names(pred_clrs), n_gns = 100,
+create_chikv_heats <- function(so_in, gns, sort_gns = "up",
+                               lvls = names(pred_clrs), n_gns = 100,
                                plt_clrs = c("lightblue", "white", "#6A51A3")) {
   
   # Format data
@@ -711,6 +724,8 @@ create_chikv_heats <- function(so_in, gns, lvls = names(pred_clrs), n_gns = 100,
     unique() %>%
     as.character()
   
+  if (identical(sort_gns, "down")) gn_lvls <- rev(gn_lvls)
+  
   gn_lvls <- head(gn_lvls, n_gns)
   
   # Create heatmaps
@@ -740,7 +755,7 @@ create_chikv_heats <- function(so_in, gns, lvls = names(pred_clrs), n_gns = 100,
   res
 }
 
-create_chikv_boxes <- function(df_in, dat_col, ttl = NULL, ...) {
+create_chikv_boxes <- function(df_in, dat_col, ttl = NULL, clrs = pred_clrs, ...) {
   typ <- str_remove(dat_col, "_[a-zA-Z]+$")
   
   dat <- df_in %>%
@@ -762,7 +777,7 @@ create_chikv_boxes <- function(df_in, dat_col, ttl = NULL, ...) {
         title = "predicted\nAg group", title.position = "top"
       )
     ) +
-    scale_fill_manual(values = pred_clrs) +
+    scale_fill_manual(values = clrs) +
     labs(title = ttl) +
     base_theme +
     theme(
@@ -1478,19 +1493,8 @@ degs %>%
 ```
 
 ```{r "train RF models", eval = run_rf}
-# Select LEC subsets
-typs <- lec_so@meta.data %>%
-  filter(mouse == rf_mouse) %>%
-  group_by(subtype, !!sym(rf_dat_clmn)) %>%
-  summarize(n = n(), .groups = "drop") %>%
-  group_by(subtype) %>%
-  filter(all(n > 60)) %>%
-  ungroup() %>%
-  pull(subtype) %>%
-  unique()
-
 # Test parameters and calculate stats for each LEC subtype
-rf_stats <- typs %>%
+rf_stats <- rf_typs %>%
   map_dfr(~ {
     feats <- degs %>%
       filter(subtype == .x) %>%
@@ -1903,8 +1907,8 @@ all_feats <- rf_feats %>%
 # Format prediction labels
 # training data was removed before predicting
 lec_so <- lec_so %>%
-  AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds))) %>%
-  AddMetaData(rf_preds_2, col.name = str_c("rf_", colnames(rf_preds_2), "_2"))
+  AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds)))
+  # AddMetaData(rf_preds_2, col.name = str_c("rf_", colnames(rf_preds_2), "_2"))
 
 lec_so <- lec_so %>%
   mutate_meta(
@@ -2487,11 +2491,13 @@ ggsave(here("docs/data_club_fig.png"), width = 8.1, height = 9, dpi = 400)
 
 Ag signal is shown below for broad cell types identified in the CD45- dataset.
 
-```{r "Ag signal broad cell types", fig.width = 9}
+```{r "Ag signal broad cell types", fig.width = 7.5, fig.height = 3.5}
 # ADJUST CELL TYPE ANNOTATIONS FOR PLOTS
 # NEED TO FIX SETUP CODE
 # adjust epithelial cells based on E-cadherin and cytokeratin-8
 # adjust stem cells based on Cd79a, these should be B cells
+cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+
 clst_clmn <- "RNA_snn_res.5"
 
 cd45neg_so <- cd45neg_so %>%
@@ -2517,6 +2523,8 @@ dat <- cd45neg_so@meta.data %>%
     mouse = fct_relevel(mouse, mice)
   )
 
+rm(cd45neg_so)
+
 u_lvls <- c("LEC", "BEC", "Epithelial cells")
 
 # Create UMAP
@@ -2538,6 +2546,7 @@ v_lvls <- fct_reorder(dat$cell_type, dat$Ag_score, median) %>%
   levels()
 
 vln <- dat %>%
+  filter(subtype != "unassigned") %>%
   plot_violin(
     "Ag_score",
     "cell_type",
@@ -2568,11 +2577,101 @@ plot_grid(
 )
 ```
 
+```{r "RF GENE EXPRESSION ALL CELL TYPES", eval = FALSE}
+dat <- cd45neg_so %>%
+  AddModuleScore(features = list(rf_feats$cLEC$high)) %>%
+  FetchData(c("orig.ident", "mouse", "cell_type", "subtype", "Cluster1")) %>%
+  as_tibble(rownames = ".cell_id")
+
+dat %>%
+  plot_violin(
+    "Cluster1", "cell_type",
+    plot_colors = typ_clrs,
+    method = "boxplot",
+    group_col = "mouse"
+  )
+
+dat %>%
+  plot_violin(
+    "Cluster1", "subtype",
+    plot_colors = lec_clrs,
+    method = "boxplot",
+    group_col = "mouse"
+  )
+```
+
 <br>
 
-Ag signal is shown below for LEC subsets.
+Ag signal is shown below for day 14 LEC subsets.
 
-```{r "Ag signal LEC subsets", fig.width = 9, fig.height = 6}
+```{r "Ag signal LEC subsets", fig.width = 6.5, fig.height = 3.5}
+# Format data for plotting
+dat <- lec_so@meta.data %>%
+  filter(mouse != "6wk-3wk") %>%
+  mutate(
+    mouse = fct_relevel(mouse, mice)
+  )
+
+u_lvls <- c("LEC", "BEC", "Epithelial cells")
+
+# Create UMAP
+u <- dat %>%
+  plot_scatter(
+    data_col    = "subtype",
+    x           = "hUMAP_1",
+    y           = "hUMAP_2",
+    size        = 0.001,
+    plot_colors = lec_clrs,
+    plot_lvls   = u_lvls,
+    panel_nrow  = 1
+  ) +
+  umap_theme +
+  theme(legend.position = "none")
+
+# Create violin plot
+v_dat <- dat %>%
+  filter(subtype != "unassigned", mouse == "d14")
+  
+v_lvls <- fct_reorder(v_dat$subtype, v_dat$Ag_score, median) %>%
+  levels()
+
+vln <- v_dat %>%
+  plot_violin(
+    "Ag_score",
+    cluster_col    = "subtype",
+    plot_colors    = lec_clrs,
+    plot_lvls      = v_lvls,
+    point.color = "black",
+    # color          = "black",
+    # alpha          = 1,
+    # scale          = "width",
+    draw_quantiles = c(0.25, 0.75)
+  ) +
+  facet_wrap(~ tm, labeller = as_labeller((function(x) str_c("day ", x)))) +
+  labs(y = "Ag-score") +
+  coord_flip() +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.2,
+    legend.position = "none",
+    axis.title.y    = element_blank()
+  )
+
+# Create final figure
+plot_grid(
+  u, vln,
+  rel_widths = c(1, 0.8),
+  align = "h",
+  axis  = "tb",
+  nrow  = 1
+)
+```
+
+<br>
+
+Ag signal is shown below for cLEC subsets for each timepoint.
+
+```{r "Ag signal LEC subsets 2", fig.width = 9, fig.height = 6}
 # Format data for plotting
 dat <- lec_df %>%
   filter(mouse != "6wk-3wk")
@@ -2641,6 +2740,50 @@ wrap_plots(
   u_typ, u_ag, v_ag,
   ncol = 1
 )
+```
+
+<br>
+
+```{r "LEC Ag scores over time", fig.width = 8, fig.height = 2}
+# Data for boxplots
+dat <- lec_df %>%
+  filter(
+    mouse != "6wk-3wk",
+    !subtype %in% c("unassigned")
+    # exp %in% c("exp-0", "exp-1")
+  ) %>%
+  group_by(subtype) %>%
+  filter(all(table(tm) >= 5)) %>%
+  ungroup() %>%
+  mutate(subtype = fct_reorder(subtype, Ag_score, mean, .desc = TRUE))
+
+typ_ag_lvls <- levels(dat$subtype)
+
+# Create boxplots
+dat %>%
+  ggplot(aes(tm, Ag_score, fill = subtype)) +
+  
+  geom_smooth(
+    data = dat,
+    method = "loess",
+    se = FALSE, color = "grey85", linewidth = 0.5, fill = "black", linetype = 2
+  ) +
+  geom_boxplot(aes(group = mouse), outlier.size = 0.2, width = 3, key_glyph = draw_key_point) +
+  
+  guides(
+    fill = guide_legend(override.aes = list(size = 4, shape = 22), order = 1),
+    linetype = guide_legend(override.aes = list(color = "black"), title = NULL)
+  ) +
+  facet_grid(~ subtype) +
+  
+  scale_fill_manual(values = lec_clrs) +
+  labs(x = "days post vaccination", y = "Ag-score") +
+  base_theme +
+  theme(
+    aspect.ratio    = 0.9,
+    legend.position = "none",
+    plot.margin     = margin(0, 15, 0, 15)
+  )
 ```
 
 ---
@@ -2806,6 +2949,113 @@ hsts <- tms %>%
 # Create final figure
 wrap_plots(
   hsts,
+  nrow = 1
+)
+```
+
+<br>
+
+Ag-low and -high cells are shown for d14 LEC subsets
+
+```{r "d14 Ag signal", fig.width = 10, fig.height = 2.5}
+# Cell types to plot
+plt_typs <- typ_ag_lvls[typ_ag_lvls != "BEC"]
+
+# Format plotting data
+plt_dat <- lec_df %>%
+  filter(
+    subtype %in% plt_typs,
+    tm == 14
+  )
+
+# Format plot labels
+plt_labs <- plt_dat %>%
+  group_by(subtype, mouse, tm, !!sym(rf_dat_clmn)) %>%
+  summarize(
+    n = label_comma()(n()),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n = str_c(!!sym(rf_dat_clmn), ": ", n, " cells"),
+    !!sym(rf_dat_clmn) := fct_relevel(!!sym(rf_dat_clmn), names(pred_clrs))
+  ) %>%
+  group_by(subtype, mouse, tm) %>%
+  arrange(!!sym(rf_dat_clmn)) %>%
+  mutate(n = str_c(n, collapse = "\n"))
+
+plt_clrs <- lec_clrs
+plt_clrs["fLEC"] <- "black"
+  
+# Create bargraphs
+hsts <- plt_typs %>%
+  imap(~ {
+    dat <- plt_dat %>%
+      filter(subtype == .x) %>%
+      mutate(mouse = as.character(mouse))
+    
+    fst <- .y == 1
+    lst <- .y == length(tms)
+    
+    br <- dat %>%
+      ggplot(aes(y = mouse, fill = subtype, alpha = !!sym(rf_dat_clmn))) +
+      geom_bar() +
+      facet_wrap(~ subtype, nrow = 1, scales = "free") +
+      scale_alpha_manual(values = c(low = 0.35, high = 1)) +
+      scale_fill_manual(values = plt_clrs) +
+      scale_y_discrete(expand = expansion(c(0, 0))) +
+      scale_x_continuous(expand = expansion(c(0, 0))) +
+      base_theme +
+      theme_void() +
+      theme(
+        legend.position = "none",
+        strip.text      = element_text(size = 11),
+        plot.margin     = margin(t = 5)
+      )
+    
+    # Create histograms
+    hst <- dat %>%
+      ggplot(aes(Ag_score, fill = subtype, alpha = !!sym(rf_dat_clmn))) +
+      geom_histogram(bins = 30) +
+      geom_text(
+        aes(-Inf, Inf, label = n),
+        data = filter(plt_labs, subtype == .x),
+        check_overlap = TRUE,
+        alpha = 1,
+        hjust = -0.25,
+        vjust = 1.1,
+        size  = txt_pt1 / .pt
+      ) +
+      facet_wrap(~ subtype, scales = "free", nrow = 1) +
+      guides(fill = "none", alpha = guide_legend(title = "Ag group")) +
+      scale_alpha_manual(values = c(low = 0.35, high = 1)) +
+      scale_fill_manual(values = plt_clrs) +
+      scale_y_continuous(expand = expansion(c(0.05, 0.25))) +
+      labs(x = "Ag-score", y = "number of cells") +
+      base_theme +
+      theme(
+        aspect.ratio    = 0.7,
+        strip.text      = element_blank(),
+        legend.position = "none",
+        plot.margin     = margin(t = 0, r = 5, b = 5, l = 5)
+      )
+    
+    if (!fst) {
+      hst <- hst +
+        theme(axis.title.y = element_blank())
+    }
+    
+    plot_grid(
+      br, hst,
+      ncol = 1,
+      align = "v", axis = "rl",
+      rel_heights = c(0.15, 1)
+    )
+  })
+
+# Create final figure
+wrap_plots(
+  hsts,
+  widths = c(1.08, 1, 1, 1),
   nrow = 1
 )
 ```
@@ -2978,7 +3228,7 @@ plt_dat %>%
 F1 scores are shown for the d14 timepoint using testing and training data from
 the same LEC subset.
 
-```{r "F1 scores 2", fig.width = 8, fig.height = 3.5}
+```{r "F1 scores 2", fig.width = 8, fig.height = 2.5}
 f1_scores %>%
   filter(
     mod_type == subtype,
@@ -2990,7 +3240,8 @@ f1_scores %>%
   base_theme +
   theme(
     aspect.ratio = 1.3,
-    axis.title.x = element_blank()
+    axis.title.x = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1)
   )
 ```
 
@@ -3071,6 +3322,9 @@ plt_dat %>%
 
 <br>
 
+Expression of the Ag-high and -low gene modules is shown below for 14, 21, and
+42 day timepoints.
+
 ```{r "modules 2", fig.width = 10, fig.height = 4}
 # Format plot data
 plt_typs <- c("cLEC", "Collecting", "fLEC", "Ptx3_LEC")
@@ -3145,6 +3399,8 @@ plt_dat %>%
 ```
 
 <br>
+
+The cLEC Ag-high gene module is shown below.
 
 ```{r "cLEC module scores UMAP", fig.width = 8, fig.height = 6.5}
 # Format plotting data
@@ -3241,7 +3497,7 @@ plt_typs %>%
           subset(mouse == .x) %>%
           create_sig_umap(
             dat_col = module_clmn,
-            clrs = c("lightblue", "white", pred_clrs[["high"]])
+            clrs = c("lightblue", "white", pred_clrs[["Ag-high"]])
           ) +
           geom_circle(
             aes(x0 = hUMAP_1, y0 = hUMAP_2, fill = NULL, color = NULL, r = 2),
@@ -3775,11 +4031,13 @@ plt_dat %>%
 
 ```{r "top features heatmaps"}
 heats <- rf_feats %>%
-  map(~ {
+  imap(~ {
+    typ <- .y
+    
     .x %>%
       imap(~ {
         lec_so %>%
-          subset(subtype == rf_cell_type) %>%
+          subset(subtype == typ) %>%
           create_heats(
             gns = .x,
             sort_gns = switch(.y, high = "up", low = "down")
@@ -3824,6 +4082,31 @@ Points show median expression, grey bars show interquartile range, dotted line
 shows the trend, and arrows indicate the gene is significantly up or down
 regulated when compared to Ag-low cells.
 
+Ag-high gene module is shown below for cLECs.
+
+```{r "cLEC heat", fig.width = 10, fig.height = 5}
+lec_so %>%
+  subset(subtype == "cLEC" & mouse != "6wk-3wk") %>%
+  mutate_meta(mutate, mouse = tm) %>%
+  create_heats(
+    gns = rf_feats$cLEC$high,
+    sort_gns = "down"
+  ) +
+  coord_flip() +
+  facet_wrap(~ mouse, ncol = 1, strip.position = "right") +
+  guides(fill = guide_colorbar(
+    barheight = unit(7, "pt"), barwidth = unit(120, "pt"),
+    title = "expression", title.position = "top"
+  )) +
+  theme(
+    aspect.ratio    = length(pred_clrs) / length(rf_feats$cLEC$high),
+    legend.position = "bottom",
+    legend.title    = element_text()
+  )
+```
+
+<br>
+
 ```{r "Ag-high examples", fig.height = 10, fig.width = 10, results = "asis"}
 heats[names(heats) != "BEC"] %>%
   iwalk(~ {
@@ -3831,7 +4114,8 @@ heats[names(heats) != "BEC"] %>%
     
     plt <- plot_grid(.x$high, gn_plots[[.y]]$high)
     print(plt)
-    cat("\n\n---\n\n<br>\n\n<br>\n\n")
+    cat("\n\n<br>\n\n")
+    # cat("\n\n---\n\n<br>\n\n<br>\n\n")
   })
 ```
 
@@ -3842,10 +4126,10 @@ heats[names(heats) != "BEC"] %>%
     
     plt <- plot_grid(.x$low, gn_plots[[.y]]$low)
     print(plt)
-    cat("\n\n---\n\n<br>\n\n<br>\n\n")
+    cat("\n\n<br>\n\n")
+    # cat("\n\n---\n\n<br>\n\n<br>\n\n")
   })
 ```
-
 
 ```{r "GO", eval = FALSE}
 # Prepare GO data to measure similarity
@@ -3879,9 +4163,77 @@ go <- go_feats["high"] %>%
   })
 ```
 
+```{r "GO examples", eval = FALSE}
+
+go_dat <- go$high@compareClusterResult %>%
+  as_tibble() %>%
+  dplyr::select(-bgID) %>%
+  filter(
+    Cluster == "cLEC",
+    p.adjust < 0.05
+  )
+
+go_dat %>%
+  filter(Description %in% c("endocytosis", "proteolysis")) %>%
+  pull(geneID) %>%
+  str_split("/") %>%
+  purrr::reduce(c) %>%
+  unique()
+
+gns <- c(
+  "Ctsd",   # cathepsin D, protease
+  "Esyt2",  # endocytic adapter
+  "Dab2",   # Clathrin endocytic adapter
+  "Cd63",   # facilitates vesicular trafficking through endosomal pathways
+  "Cd36",   # scavenger receptor
+  "Canx",   # calnexin, molecular chaperone in ER
+  "Lgmn"    # cysteine protease 
+)
+
+dat <- lec_so %>%
+  FetchData(c("tm", "mouse", "subtype", "training_data", "Ag_score", "Ag_class_3", "pred_grp", gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(
+    subtype %in% rf_typs,
+    mouse != "6wk-3wk",
+    !training_data
+  ) %>%
+  mutate(
+    tm = as.character(tm),
+    pred_grp = fct_relevel(pred_grp, names(pred_clrs))
+  ) %>%
+  
+  pivot_longer(all_of(gns))
+  
+dat %>%
+  ggplot(aes(tm, value, fill = pred_grp)) +
+  geom_boxplot() +
+  facet_grid(subtype ~ name) +
+  base_theme
+
+dat %>%
+  group_by(tm, mouse, subtype, name, pred_grp) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  group_by(tm, subtype, name) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup() %>%
+  # filter(subtype == "cLEC") %>%
+  
+  ggplot(aes(pred_grp, name, fill = value)) +
+  geom_tile() +
+  scale_fill_gradientn(colours = c("lightblue", "white", "red")) +
+  facet_grid(subtype ~ tm) +
+  base_theme +
+  theme(
+    aspect.ratio = length(gns) / length(pred_clrs),
+    axis.text.x  = element_text(angle = 45, hjust = 1)
+  )
+```
+
 ```{r "GO clusters", eval = FALSE}
 # Cell types to exclude from GO analysis
-exclude_cell_types <- "BEC"
+# exclude_cell_types <- "BEC"
+exclude_cell_types <- c("BEC", "Collecting", "Ptx3_LEC", "fLEC")
 n_ovlp             <- 3
 n_clusters         <- 15
 
@@ -3986,6 +4338,11 @@ tr <- groupClade(tr, clades, group_name = "cluster") +
   )
 ```
 
+---
+
+<br>
+
+<br>
 
 ## Ag archiving in CHIKV {.tabset .tabset-pills}
 
@@ -3995,6 +4352,7 @@ treat_clrs <- c(mock = "#009E73", CHIKV = "#6A51A3")
 n_reps     <- n_distinct(chikv_so$rep)
 
 plt_dat <- chikv_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
   mutate(
     treatment = fct_relevel(treatment, names(treat_clrs)),
     pred      = fct_relevel(pred, names(pred_clrs))
@@ -4037,15 +4395,15 @@ bar_dat <- plt_dat %>%
 p_dat <- bar_dat %>%
   group_by(lec_type, tm) %>%
   summarize(
-    p = t.test(
+    p = wilcox.test(
       frac_high[treatment == names(treat_clrs)[1]],
       frac_high[treatment == names(treat_clrs)[2]]
     )$p.value,
     .groups = "drop"
   ) %>%
+  mutate(padj = p.adjust(p, method = "bonferroni")) %>%
   rowwise() %>%
   mutate(
-    padj = p.adjust(p, method = "bonferroni"),
     plab = .format_pvalue(padj),
     plab = str_c("italic(p) == ", plab) 
   ) %>%
@@ -4079,6 +4437,66 @@ bar_dat %>%
 
 <br>
 
+The fraction of cells predicted to be Ag-high is shown below for 24 hpi cLECs.
+
+```{r "cLEC fraction Ag", fig.width = 10, fig.height = 2.8}
+# Format plotting data
+bar_dat <- plt_dat %>%
+  
+  filter(lec_type == "cLEC", tm == "24hpi") %>%
+  
+  filter(!is.na(pred)) %>%
+  group_by(orig.ident, lec_type, rep, treatment, tm) %>%
+  summarize(
+    frac_high = sum(pred == "high") / n(),
+    .groups = "drop"
+  )
+
+# Format p-values
+p_dat <- bar_dat %>%
+  group_by(lec_type, tm) %>%
+  summarize(
+    p = wilcox.test(
+      frac_high[treatment == names(treat_clrs)[1]],
+      frac_high[treatment == names(treat_clrs)[2]]
+    )$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(padj = p.adjust(p, method = "bonferroni")) %>%
+  rowwise() %>%
+  mutate(
+    plab = .format_pvalue(padj),
+    plab = str_c("italic(p) == ", plab) 
+  ) %>%
+  filter(padj < 0.05)
+
+# Create bargraphs
+bar_dat %>%
+  ggplot(aes(treatment, frac_high, fill = treatment, alpha = rep)) +
+  geom_col(position = position_dodge2(preserve = "single")) +
+  geom_text(
+    aes(y = Inf, x = 1.5, label = plab, fill = NULL),
+    data = p_dat,
+    alpha = 1,
+    parse = TRUE,
+    size  = txt_pt1 / .pt * 0.8,
+    vjust = 1.1
+  ) +
+  facet_grid(~ lec_type) +
+  scale_y_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
+  scale_alpha_manual(values = rep(1, n_reps)) +
+  scale_fill_manual(values = treat_clrs) +
+  labs(y = "fraction predicted\nAg-competent") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.25, 
+    legend.position = "none",
+    axis.title.x    = element_blank()
+  )
+```
+
+<br>
+
 Expression of the Ag-high (top) and Ag-low (bottom) gene modules is shown below
 for each predicted Ag class for the 24 hpi timepoint.
 
@@ -4088,12 +4506,26 @@ for each predicted Ag class for the 24 hpi timepoint.
 
 ```{r "CHIKV module scores", fig.width = 9, fig.height = 5.5}
 # Module scores for each prediction group
+plt_typs <- c("cLEC", "Collecting", "fLEC", "Ptx3_LEC")
+
+ag_modules <- plt_typs %>%
+  map(str_c, c("_high", "_low")) %>%
+  unlist()
+
+clrs <- c(
+  `Ag-low`       = treat_clrs[["mock"]],
+  `Ag-competent` = treat_clrs[["CHIKV"]]
+)
+
 chikv_boxes <- ag_modules %>%
   map(~ {
     plt_dat %>%
+      mutate(pred = recode(pred, high = "Ag-competent", low = "Ag-low")) %>%
+      mutate(pred = fct_relevel(pred, names(clrs))) %>%
       create_chikv_boxes(
         dat_col = .x,
-        ttl     = .x
+        ttl     = .x,
+        clrs    = clrs
       )
   }) %>%
   purrr::discard(is.null)
@@ -4104,10 +4536,159 @@ chikv_boxes %>%
 
 <br>
 
+Expression of Ag modules is shown for predicted Ag-low and Ag-high cLECs.
+
+```{r "cLEC module scores", fig.width = 9, fig.height = 4}
+# Module scores for each prediction group
+plt_typs <- "cLEC"
+
+ag_modules <- plt_typs %>%
+  map(str_c, c("_high", "_low")) %>%
+  unlist()
+
+clrs <- c(
+  `Ag-low`  = treat_clrs[["mock"]],
+  `Ag-competent` = treat_clrs[["CHIKV"]]
+)
+
+lab_fn <- function(x) {
+  x <- str_replace(x, "cLEC_", "Ag-")
+  x <- str_replace(x, "mock|CHIKV", "module")
+  
+  x
+}
+
+bx_dat <- plt_dat %>%
+  filter(
+    !is.na(pred),
+    lec_type %in% plt_typs,
+    tm == "24hpi"
+  ) %>%
+  pivot_longer(all_of(ag_modules)) %>%
+  mutate(
+    pred = str_c("Ag-", pred),
+    pred = recode(pred, `Ag-high` = "Ag-competent"),
+    pred = fct_relevel(pred, names(clrs)),
+    name = fct_relevel(name, ag_modules)
+  )
+
+p_dat <- bx_dat %>%
+  group_by(treatment, name) %>%
+  summarize(
+    p = wilcox.test(
+      value[pred == names(clrs[1])],
+      value[pred == names(clrs[2])]
+    )$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(padj = p.adjust(p, method = "bonferroni")) %>%
+  rowwise() %>%
+  mutate(plab = .format_pvalue(padj)) %>%
+  ungroup() %>%
+  mutate(plab = str_c("italic(p) == ", plab))
+
+bx_dat %>%
+  ggplot(aes(treatment, value, fill = pred)) +
+  geom_boxplot(notch = TRUE, outlier.size = 0.25, alpha = 0.9, key_glyph = draw_key_point) +
+  geom_text(
+    aes(y = Inf, fill = NULL, label = plab),
+    data = p_dat, vjust = 1.3, parse = TRUE, size = 8 / .pt
+  ) +
+  facet_wrap(name ~ treatment, nrow = 1, scales = "free", labeller = as_labeller(lab_fn)) +
+  labs(y = "Ag module expression") +
+  scale_fill_manual(values = clrs) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.15))) +
+  guides(fill = guide_legend(
+    title = "prediction", title.position = "top", title.hjust = 0.5,
+    override.aes = list(shape = 22, size = 4)
+  )) +
+  base_theme +
+  theme(
+    aspect.ratio = 2.5,
+    legend.position = "bottom",
+    axis.title.x = element_blank()
+  )
+```
+
+<br>
+
+Expression of Ag-high gene module is shown below for mock vs CHIKV.
+
+```{r, fig.width = 9, fig.height = 3}
+
+p_dat <- bx_dat %>%
+  group_by(name) %>%
+  summarize(
+    p = wilcox.test(
+      value[treatment == names(treat_clrs[1])],
+      value[treatment == names(treat_clrs[2])]
+    )$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(padj = p.adjust(p, method = "bonferroni")) %>%
+  rowwise() %>%
+  mutate(plab = .format_pvalue(padj)) %>%
+  ungroup() %>%
+  mutate(plab = str_c("italic(p) == ", plab))
+
+lab_fn <- function(x) {
+  x <- str_replace(x, "cLEC_", "Ag-")
+  x <- str_c(x, " module")
+  
+  x
+}
+
+bx_dat %>%
+  ggplot(aes(treatment, value, fill = treatment, alpha = rep)) +
+  geom_boxplot(outlier.size = 0.25, key_glyph = draw_key_point) +
+  geom_text(
+    aes(x = 1.5, y = Inf, fill = NULL, alpha = NULL, label = plab),
+    data = p_dat, vjust = 1.3, parse = TRUE, size = 8 / .pt
+  ) +
+  facet_wrap(~ name, nrow = 1, scales = "free", labeller = as_labeller(lab_fn)) +
+  labs(y = "Ag module expression") +
+  scale_fill_manual(values = treat_clrs) +
+  scale_alpha_manual(values = rep(0.9, n_reps)) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.15))) +
+  base_theme +
+  theme(
+    aspect.ratio = 1.5,
+    legend.position = "none",
+    axis.title.x = element_blank()
+  )
+
+```
+
+<br>
+
 Mean expression is shown for genes from the Ag-high module for mock- and
 CHIKV-infected mice from the 24 hpi timepoint.
 
 * CHIKV-infected mice broadly downregulate Ag-high modules
+
+```{r "cLEC CHIKV heatmaps", fig.width = 10, fig.height = 6}
+rf_feats$cLEC %>%
+  imap(~ {
+    chikv_so %>%
+      subset(lec_type == "cLEC" & tm == "24hpi") %>%
+      create_chikv_heats(gns = .x, sort_gns = "down") +
+      coord_flip() +
+      facet_wrap(~ lec_type, ncol = 1, strip.position = "right") +
+      guides(fill = guide_colorbar(
+        barheight = unit(7, "pt"), barwidth = unit(120, "pt"),
+        title = "expression", title.position = "top"
+      )) +
+      ggtitle(str_c("Ag-", .y, " module")) +
+      theme(
+        aspect.ratio    = 6 / length(rf_feats$cLEC$high),
+        legend.position = "bottom",
+        legend.title    = element_text()
+      )
+  }) %>%
+  plot_grid(plotlist = ., ncol = 1)
+```
+
+<br>
 
 ```{r "CHIKV heatmaps", fig.width = 6, fig.height = 8.5, results = "asis"}
 rf_feats[names(rf_feats) %in% chikv_typs] %>%
@@ -4125,6 +4706,25 @@ rf_feats[names(rf_feats) %in% chikv_typs] %>%
     print(plt)
     cat("\n\n---\n\n<br>\n\n<br>\n\n")
   })
+```
+
+```{r "PLOT ALL RF GENES", eval = FALSE}
+gns <- rf_feats$cLEC$high
+
+dat <- chikv_so %>%
+  subset(lec_type == "cLEC") %>%
+  FetchData(c("orig.ident", "treatment", "rep", "lec_type", gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(any_of(gns)) %>%
+  mutate(treatment = fct_relevel(treatment, names(treat_clrs)))
+
+dat %>%
+  ggplot(aes(treatment, value, fill = treatment, alpha = rep)) +
+  geom_boxplot() +
+  facet_wrap(~ name) +
+  scale_fill_manual(values = treat_clrs) +
+  scale_alpha_manual(values = rep(0.9, n_reps)) +
+  base_theme
 ```
 
 ## Session info
