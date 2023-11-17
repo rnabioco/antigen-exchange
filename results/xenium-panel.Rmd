@@ -18,6 +18,7 @@ params:
   ref_dir:       "ref"                                                                      # Directory to use for loading/saving clustifyr references
   tab_dir:       "results/tables"
   sample_info:   "sample_info.xlsx"
+  chikv_dir:     "~/Projects/morrison-lnsc/results/tables"
   chikv_so:      "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs/so_merge.qs"
   res_dir:                                                
     value:
@@ -81,22 +82,9 @@ lec_so <- lec_so %>%
   )
 
 rm(dc_so, all_meta)
-
-# Theme elements
-pred_clrs <- c(
-  low         = "#6A51A3",
-  `high-pred` = "#E69F00",
-  high        = "#D7301F"
-)
-
-base_theme <- djvdj_theme() +
-  theme(axis.text = element_text(color = "black"))
-
-# Check for RF predictions
-run_rf <- !file.exists(here(params$mod_dir, "ag-high_preds.tsv.gz"))
 ```
 
-```{r "cell type markers"}
+```{r "cell type markers", eval = FALSE}
 rm(lec_so)
 
 markers <- c(cd45neg_so = "LEC", cd45neg_so = "Fibroblasts", cd45pos_so = "DC") %>%
@@ -129,25 +117,122 @@ markers %>%
   write_tsv(here(params$tab_dir, "celltype_markers.tsv.gz"))
 ```
 
-```{r "Subtype markers"}
-# Load genes to plot
-gns <- here(params$tab_dir, "xenium-panel.xlsx") %>%
-  read.xlsx2(sheetName = "subtype") %>%
+```{r "load models"}
+# Load save models
+# rf_mods <- qread(here(params$mod_dir, "ag-high_models.qs"))
+rf_feats <- qread(here(params$mod_dir, "ag-high_features.qs"))
+degs     <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
+```
+
+```{r "load gene lists"}
+# Xenium mouse atlas
+mouse_atlas_gns <- here(params$ref_dir, "Xenium_mMulti_v1_metadata.xlsx") %>%
+  read.xlsx2(sheetIndex = 1) %>%
   as_tibble() %>%
+  dplyr::rename(gene = "Gene", annotation = "Annotation") %>%
   distinct(gene, .keep_all = TRUE)
 
-gn_ann <- set_names(gns$annotation, gns$gene)
+# Load selected marker genes to plot
+typ_gns <- here(params$tab_dir, "xenium-genes.xlsx") %>%
+  read.xlsx2(sheetName = "cell_type") %>%
+  as_tibble() %>%
+  mutate(
+    include = as.logical(include),
+    include = replace_na(include, TRUE),
+    mouse_atlas = gene %in% mouse_atlas_gns$gene,
+    source = str_c("annotation: ", annotation)
+  ) %>%
+  distinct(gene, .keep_all = TRUE) %>%
+  arrange(mouse_atlas, desc(include))
 
-lvls <- unique(gns$annotation)
+# Load CHIKV DEGs
+chikv_gns <- c(
+  `8hpi`  = here(params$chikv_dir, "8_lectype_chikv-up_markers.tsv"),
+  `24hpi` = here(params$chikv_dir, "merge_lectype_chikv-up_markers.tsv")
+)
 
+chikv_gns <- chikv_gns %>%
+  map_dfr(read_tsv, .id = "tm")
+```
+
+```{r "plot Xenium mouse atlas"}
+# Load Ag data
+ag_dat <- c("cd45neg_so", "cd45pos_so") %>%
+  map_dfr(~ {
+    qread(here(params$so_dir, str_c(.x, ".qs"))) %>%
+      FetchData(c("sample", "mouse", "subtype", "cell_type", mouse_atlas_gns$gene)) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(any_of(mouse_atlas_gns$gene), names_to = "gene") %>%
+      left_join(mouse_atlas_gns, by = "gene") %>%
+      mutate(
+        sample = mouse,
+        dataset = "Ag"
+      ) %>%
+      dplyr::select(-mouse)
+  })
+
+# Load CHIKV data
+chikv_dat <- qread(here(params$chikv_so)) %>%
+  FetchData(c("treatment", "tm", "cell_type", "subtype", "lec_subtype", "frc_subtype", mouse_atlas_gns$gene)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(any_of(mouse_atlas_gns$gene), names_to = "gene") %>%
+  left_join(mouse_atlas_gns, by = "gene") %>%
+  mutate(
+    sample = str_c(treatment, "-", tm),
+    cell_type = recode(
+      cell_type,
+      FRC = "Fibroblasts",
+      PvC = "Fibroblasts"
+    ),
+    subtype = case_when(
+      lec_subtype != "other" ~ lec_subtype,
+      frc_subtype != "other" ~ frc_subtype,
+      TRUE                   ~ cell_type
+    ),
+    cell_type = ifelse(subtype == "BEC", subtype, cell_type),
+    cell_type = dplyr::recode(cell_type, `Endothelial cells` = "LEC"),
+    dataset = "CHIKV"
+  ) %>%
+  dplyr::select(-c(treatment, tm, lec_subtype, frc_subtype))
+
+# Format plotting data
+clmn <- "cell_type"
+
+plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
+  group_by(sample, !!sym(clmn), gene) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  filter(!(!!sym(clmn)) %in% "unassigned")
+  
+plt_dat %>%
+  split(.$sample) %>%
+  imap(~ {
+    mat <- .x %>%
+      dplyr::select(-sample) %>%
+      pivot_wider(names_from = !!sym(clmn), values_from = value) %>%
+      column_to_rownames("gene") %>%
+      as.matrix() %>%
+      t() %>%
+      scale() %>%
+      t() %>%
+      na.omit()
+    
+    mat %>%
+      Heatmap(
+        show_row_names = FALSE,
+        name = .y
+      )
+  })
+```
+
+```{r "plot subtype markers"}
 # Load Ag data
 ag_dat <- c("lec_so", "frc_so", "dc_so") %>%
   map_dfr(~ {
     qread(here(params$so_dir, str_c(.x, ".qs"))) %>%
-      FetchData(c("sample", "mouse", "subtype", "cell_type", gns$gene)) %>%
+      FetchData(c("sample", "mouse", "subtype", "cell_type", typ_gns$gene)) %>%
       as_tibble(rownames = ".cell_id") %>%
-      pivot_longer(any_of(gns$gene), names_to = "gene") %>%
-      left_join(gns, by = "gene") %>%
+      pivot_longer(any_of(typ_gns$gene), names_to = "gene") %>%
+      left_join(typ_gns, by = "gene") %>%
       mutate(
         sample = mouse,
         cell_type = recode(
@@ -162,10 +247,10 @@ ag_dat <- c("lec_so", "frc_so", "dc_so") %>%
 
 # Load CHIKV data
 chikv_dat <- qread(here(params$chikv_so)) %>%
-  FetchData(c("treatment", "tm", "cell_type", "subtype", "lec_subtype", "frc_subtype", gns$gene)) %>%
+  FetchData(c("treatment", "tm", "cell_type", "subtype", "lec_subtype", "frc_subtype", typ_gns$gene)) %>%
   as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(any_of(gns$gene), names_to = "gene") %>%
-  left_join(gns, by = "gene") %>%
+  pivot_longer(any_of(typ_gns$gene), names_to = "gene") %>%
+  left_join(typ_gns, by = "gene") %>%
   mutate(
     sample = str_c(treatment, "-", tm),
     cell_type = recode(
@@ -203,6 +288,10 @@ plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
   ungroup()
 
 # Create heatmaps
+gn_ann <- set_names(typ_gns$annotation, typ_gns$gene)
+
+lvls <- unique(typ_gns$annotation)
+
 sample_lvls <- c(mice, "mock-8hpi", "mock-24hpi", "CHIKV-8hpi", "CHIKV-24hpi")
 
 plt_dat %>%
@@ -213,7 +302,7 @@ plt_dat %>%
       na.omit() %>%
       mutate(
         sample     = fct_relevel(sample, sample_lvls),
-        gene       = fct_relevel(gene, rev(gns$gene)),
+        gene       = fct_relevel(gene, rev(typ_gns$gene)),
         subtype    = fct_relevel(subtype, lvls),
         annotation = fct_relevel(annotation, lvls)
       )
@@ -237,7 +326,7 @@ plt_dat %>%
   })
 ```
 
-```{r "Subtype markers extended"}
+```{r "plot subtype markers extended"}
 # Format plotting data
 plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
   group_by(sample, cell_type, subtype, annotation, broad_annotation, gene) %>%
@@ -260,7 +349,7 @@ plt_dat %>%
       na.omit() %>%
       mutate(
         sample     = fct_relevel(sample, sample_lvls),
-        gene       = fct_relevel(gene, rev(gns$gene)),
+        gene       = fct_relevel(gene, rev(typ_gns$gene)),
         subtype    = fct_relevel(subtype, lvls),
         annotation = fct_relevel(annotation, lvls)
       )
@@ -284,99 +373,177 @@ plt_dat %>%
   })
 ```
 
-```{r "Marker plots"}
-# Load genes to plot
-gns <- here(params$ref_dir, "Xenium_mMulti_v1_metadata.xlsx") %>%
-  read.xlsx2(sheetIndex = 1) %>%
-  as_tibble() %>%
-  dplyr::rename(gene = "Gene", annotation = "Annotation") %>%
-  distinct(gene, .keep_all = TRUE)
-
-# Only include genes that are identified as a cell type marker for our datasets
-gns <- gns %>%
-  filter(gene %in% markers$feature)
-
-# Load Ag data
-ag_dat <- c("cd45neg_so", "cd45pos_so") %>%
-  map_dfr(~ {
-    qread(here(params$so_dir, str_c(.x, ".qs"))) %>%
-      FetchData(c("sample", "mouse", "subtype", "cell_type", gns$gene)) %>%
-      as_tibble(rownames = ".cell_id") %>%
-      pivot_longer(any_of(gns$gene), names_to = "gene") %>%
-      left_join(gns, by = "gene") %>%
-      mutate(
-        sample = mouse,
-        cell_type = recode(
-          cell_type,
-          BEC = "Endothelial cells",
-          LEC = "Endothelial cells"
-        ),
-        dataset = "Ag"
-      ) %>%
-      dplyr::select(-mouse)
-  })
-
-# Load CHIKV data
-chikv_dat <- qread(here(params$chikv_so)) %>%
-  FetchData(c("treatment", "tm", "cell_type", "subtype", "lec_subtype", "frc_subtype", gns$gene)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(any_of(gns$gene), names_to = "gene") %>%
-  left_join(gns, by = "gene") %>%
-  mutate(
-    sample = str_c(treatment, "-", tm),
-    cell_type = recode(
-      cell_type,
-      FRC = "Fibroblasts",
-      PvC = "Fibroblasts"
-    ),
-    subtype = case_when(
-      lec_subtype != "other" ~ lec_subtype,
-      frc_subtype != "other" ~ frc_subtype,
-      TRUE                   ~ cell_type
-    ),
-    dataset = "CHIKV"
+```{r "top Ag-high genes", eval = FALSE}
+# Identify genes shared between the most cell types
+# goi <- c("Dab2", "Cltc", "Psap", "Degs", "Clu", "Prcp")
+top_ag <- rf_feats %>%
+  imap_dfr(~ {
+    tibble(
+      subtype = .y,
+      gene = .x$high
+    )
+  }) %>%
+  filter(subtype != "BEC") %>%
+  group_by(gene) %>%
+  summarize(
+    n_types = n_distinct(subtype),
+    source  = str_c("Ag-high: ", str_c(sort(unique(subtype)), collapse = ", ")),
+    in_cLEC = "cLEC" %in% subtype,
+    .groups = "drop"
   ) %>%
-  dplyr::select(-c(treatment, tm, lec_subtype, frc_subtype))
+  arrange(
+    desc(n_types),
+    desc(in_cLEC)
+  )
 
-# Format plotting data
-plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
-  group_by(sample, cell_type, gene) %>%
-  summarize(value = mean(value), .groups = "drop") %>%
-  filter(!cell_type %in% "unassigned")
+# Identify genes that are upregulated in Ag-high cells
+deg_dat <- degs %>%
+  filter(
+    feature %in% top_ag$gene,
+    !subtype %in% c("all", "BEC", "unassigned"),
+    mouse != "all",
+    group == "high"
+  ) %>%
+  group_by(feature, mouse) %>%
+  mutate(
+    n_types = n_distinct(subtype)
+  ) %>%
+  group_by(feature, subtype) %>%
+  mutate(
+    n_mice = n_distinct(mouse)
+  ) %>%
+  ungroup()
+
+# Identify genes differentially expressed in CHIKV
+chikv_degs <- "merge_celltype2_chikv-down_markers.tsv" %>%
+  here(params$chikv_dir, .) %>%
+  read_tsv()
+
+chikv_degs <- chikv_degs %>%
+  filter(cell_type_2 != "BEC")
+
+# Filter final list of top genes
+# genes upregulated in Ag-high cells in at least one cell type from at
+# least one mouse
+top_ag <- top_ag %>%
+  mutate(
+    mouse_atlas = gene %in% mouse_atlas_gns$gene,
+    up_cLEC      = gene %in% deg_dat$feature[deg_dat$subtype == "cLEC"],
+    up           = gene %in% deg_dat$feature,
+    chikv_down   = gene %in% chikv_degs$gene
+  ) %>%
+  arrange(
+    mouse_atlas,
+    desc(n_types), desc(in_cLEC),
+    desc(up_cLEC), desc(up)
+  ) %>%
+  filter(
+    n_types > 1 | (in_cLEC | up_cLEC)
+  )
+```
+
+```{r "format final Ag panel"}
+# Genes from Walsh et al.
+walsh_gns <- here(params$tab_dir, "xenium-genes.xlsx") %>%
+  read.xlsx2(sheetName = "Ag-high") %>%
+  as_tibble() %>%
+  mutate(
+    include = as.logical(include),
+    include = replace_na(include, TRUE),
+    mouse_atlas = gene %in% mouse_atlas_gns$gene,
+    source      = str_c("Walsh: ", annotation)
+  ) %>%
+  distinct(gene, .keep_all = TRUE) %>%
+  arrange(mouse_atlas, desc(include))
+
+# Final Ag panel
+ag_panel <- bind_rows(typ_gns, walsh_gns, top_ag) %>%
+  mutate(include = replace_na(include, TRUE)) %>%
+  arrange(
+    mouse_atlas,
+    desc(include)
+  ) %>%
+  mutate(duplicated = duplicated(gene)) %>%
+  arrange(duplicated) %>%
+  mutate(
+    rank = row_number(),
+    rank = ifelse(mouse_atlas | duplicated, as.numeric(NA), rank)
+  ) %>%
+  as.data.frame() %>%
+  dplyr::select(gene, source, mouse_atlas, rank)
+```
+
+```{r "format final CHIKV panel"}
+# Identify top CHIKV upregulated genes
+top_chikv <- chikv_gns %>%
+  group_by(tm, gene) %>%
+  mutate(
+    source = str_c(tm, ": ", str_c(sort(unique(lec_type)), collapse = ", "))
+  ) %>%
+  group_by(tm, gene, source) %>%
+  summarize(
+    n_types = n_distinct(lec_type),
+    min_p   = min(max_pval),
+    .groups = "drop"
+  ) %>%
+  group_by(gene) %>%
+  summarize(
+    early   = "8hpi" %in% tm,
+    n_types = max(n_types),
+    source  = str_c(sort(unique(source), decreasing = TRUE), collapse = "; "),
+    min_p   = min(min_p),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(early), desc(n_types), min_p) %>%
+  head(60) %>%
+  mutate(mouse_atlas = gene %in% mouse_atlas_gns$gene) %>%
+  arrange(mouse_atlas)
+
+# Final CHIKV panel
+chikv_panel <- bind_rows(typ_gns, top_chikv) %>%
+  mutate(include = replace_na(include, TRUE)) %>%
+  arrange(
+    mouse_atlas,
+    desc(include)
+  ) %>%
+  mutate(duplicated = duplicated(gene)) %>%
+  arrange(duplicated) %>%
+  mutate(
+    rank = row_number(),
+    rank = ifelse(mouse_atlas | duplicated, as.numeric(NA), rank)
+  ) %>%
+  dplyr::select(gene, source, mouse_atlas, rank)
+```
+
+```{r "save panels"}
+panel_file <- here(params$tab_dir, "xenium-panel.xlsx")
+
+xen_panel_gns %>%
+  xlsx::write.xlsx(
+    file      = panel_file,
+    sheetName = "Xenium mouse atlas"
+  )
+
+ag_panel %>%
+  xlsx::write.xlsx(
+    file      = panel_file,
+    sheetName = "Ag-tracking",
+    append    = TRUE,
+    showNA    = FALSE
+  )
   
-plt_dat %>%
-  split(.$sample) %>%
-  map(~ {
-    mat <- .x %>%
-      dplyr::select(-any_of(c("sample", "subtype"))) %>%
-      pivot_wider(names_from = cell_type, values_from = value) %>%
-      column_to_rownames("gene") %>%
-      as.matrix() %>%
-      t() %>%
-      scale() %>%
-      t() %>%
-      na.omit()
-    
-    Heatmap(mat)
-  })
+chikv_panel %>%
+  xlsx::write.xlsx(
+    file      = panel_file,
+    sheetName = "CHIKV",
+    append    = TRUE,
+    showNA    = FALSE
+  )
 ```
 
-```{r "load models"}
-# Load save models
-rf_mods <- qread(here(params$mod_dir, "ag-high_models.qs"))
-degs    <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
-```
-
-```{r "Ag-high markers"}
-
-
-
-
-```
-
-```{r "format reference data"}
+```{r "format 10X reference data"}
 # Requirements for the cell type annotation file (.csv or .tsv)
-# Use two columns: “Barcode” and “Annotation”, where the barcodes correspond to\
+# Use two columns: “Barcode” and “Annotation”, where the barcodes correspond to
 # those which are in your provided data matrix.
 
 # Load objects
@@ -466,1439 +633,6 @@ mat_info %>%
   })
 ```
 
-
-
-
-```{r "RF functions"}
-# Function to predict
-rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
-                       prob = FALSE) {
-  
-  prds <- mod %>%
-    predict(dat, seed = 42) %>%
-    ranger::predictions()
-  
-  if (prob) {
-    classes <- colnames(prds)
-    
-    prds <- prds %>%
-      as.data.frame() %>%
-      mutate(pred = ifelse(!!sym(classes[1]) > 0.5, classes[1], classes[2])) %>%
-      pull(pred)
-  }
-  
-  res <- dat %>%
-    as_tibble(rownames = ".cell_id") %>%
-    mutate(pred = prds)
-  
-  if (is.null(data_clmn)) return(res)
-  
-  res <- res %>%
-    dplyr::select(.cell_id, all_of(data_clmn), pred) %>%
-    mutate(correct = pred == !!sym(data_clmn)) %>%
-    group_by(pred) %>%
-    mutate(frac_correct = sum(correct) / n()) %>%
-    ungroup()
-  
-  if (!return_stats) return(column_to_rownames(res, ".cell_id"))
-  
-  # Calculate F1 score
-  stats <- caret::confusionMatrix(
-    data      = res$pred,
-    reference = res[[data_clmn]],
-    positive  = "high"
-  )
-  
-  stats <- as_tibble(as.list(stats$byClass))
-    
-  stats
-}
-
-#' Generate RF models using given data and parameters
-#' 
-#' @param df_in data.frame containing features as columns and observations as
-#' rows
-#' @param data_clmn column in df_in containing response variable
-#' @param param_lst list of RF parameters to expand and test
-#' @param feat_p p-value cutoff for selecting best features
-#' @param min_feats minimum number of features to allow after feature selection
-#' @param min_cells minimum number of cells required for each group in data_clmn
-#' @param scale_data Should independent variables be scaled
-#' @param select_feats should features be filtered based on p-value
-#' @param df_list list of data.frames containing data for each mouse to use for
-#' comparing the fraction of predicted Ag-high cells. Want a model where the
-#' fraction of predicted Ag-high cells is roughly the same for all samples.
-#' @param frac_grp group in data_clmn that should be used for calculating and
-#' comparing fractions using data in df_list
-#' @param balance_groups downsample so groups have the same number of cells
-#' @param degs data.frame of DEGs, used to determine which DEGs are markers
-#' for each group
-#' @param include_objects in output tibble include ranger object, top features,
-#' and cell barcodes for training data
-#' @param ... additional parameters to pass to ranger::ranger()
-train_rf <- function(df_in, data_clmn, param_lst,
-                     feat_p = 0.05, min_feats = 20, min_cells = 30,
-                     scale_data = FALSE, select_feats = TRUE, df_list = NULL,
-                     frac_grp = "high", balance_groups = FALSE,
-                     degs = NULL, include_objects = FALSE, ...) {
-  
-  # Format input data
-  rf_dat <- df_in %>%
-    dplyr::select(
-      all_of(data_clmn),
-      where(~ !all(.x == 0))
-    ) %>%
-    mutate(!!sym(data_clmn) := factor(!!sym(data_clmn))) %>%
-    rename_with(~ str_replace_all(.x, "-", "_")) %>%
-    rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
-    rename_with(~ str_c("x", .x), matches("^[0-9]"))
-  
-  classes     <- as.character(unique(rf_dat[[data_clmn]]))
-  class_sizes <- table(rf_dat[[rf_dat_clmn]])
-  
-  # Scale data
-  if (scale_data) {
-    rf_dat <- rf_dat %>%
-      mutate(
-        across(-all_of(data_clmn), ~ as.numeric(scale(.x)))
-      )
-  }
-  
-  # Adjust groups so they are balanced
-  # split into train/test data
-  if (balance_groups) {
-    group_size  <- table(rf_dat[[data_clmn]])
-    target_frac <- group_size[[frac_grp]] / sum(group_size)
-    sample_size <- floor(min(group_size) / 2)
-    
-    if (sample_size < min_cells) {
-      cli::cli_abort("All groups must have at least {min_cells} cells")
-    }
-
-    rf_train <- rf_dat %>%
-      rownames_to_column(".cell_id") %>%
-      group_by(!!sym(data_clmn))
-    
-    set.seed(42)
-    
-    rf_train <- rf_train %>%
-      dplyr::sample_n(sample_size) %>%
-      column_to_rownames(".cell_id")
-
-    rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
-    
-  } else {
-    set.seed(42)
-    
-    rf_split <- initial_split(rf_dat, prop = 0.5)
-    rf_train <- training(rf_split)
-    rf_test  <- testing(rf_split)
-  }
-  
-  # Set parameters to test
-  # if class weights are provided, remove repetitive combinations
-  rf_params <- expand.grid(param_lst)
-  rf_params <- bind_cols(rf_params, list(...))
-  
-  weight_classes <- all(classes %in% names(rf_params)) && !balance_groups
-  
-  if (weight_classes) {
-    clmns <- colnames(rf_params)
-    clmns <- clmns[!clmns %in% classes]
-    
-    rf_params <- rf_params %>%
-      mutate(frac = !!sym(classes[1]) / !!sym(classes[2])) %>%
-      distinct(!!!syms(clmns), frac, .keep_all = TRUE) %>%
-      dplyr::select(-frac)
-  }
-  
-  n_params    <- nrow(rf_params)
-  rf_params$n <- 1:n_params
-  
-  # Train models
-  res <- pmap_dfr(rf_params, ~ {
-    args <- list(...)
-
-    # Select training sample
-    # if class weights are passed, downsample training data accordingly
-    if (weight_classes) {
-      train_sizes <- floor(class_sizes / 2)
-      
-      class_wts <- set_names(as.numeric(args[classes]), classes)
-      class_wts <- sort(class_wts, decreasing = TRUE)
-      
-      train_sizes <- train_sizes[names(class_wts)]
-      
-      ratio  <- class_wts[[1]] / class_wts[[2]]
-      new_sz <- floor(train_sizes[[1]] / ratio)
-      new_sz <- max(new_sz, min_cells)
-      
-      if (new_sz > train_sizes[[2]]) {
-        new_sz <- floor(train_sizes[[2]] * ratio)
-        new_sz <- max(new_sz, min_cells)
-        
-        train_sizes[1] <- new_sz
-        
-      } else {
-        train_sizes[2] <- new_sz
-      }
-      
-      rf_train <- rf_dat %>%
-        rownames_to_column(".cell_id") %>%
-        split(.[[data_clmn]]) %>%
-        imap_dfr(~ {
-          sz <- train_sizes[[.y]]
-          
-          set.seed(42)
-          
-          .x %>%
-            dplyr::sample_n(sz) %>%
-            column_to_rownames(".cell_id")
-        })
-      
-      rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
-      
-      args[classes] <- NULL
-    }
-
-    # RF parameters
-    if (args$mtry > (ncol(rf_train) - 1)) {
-      cli::cli_warn("mtry ({args$mtry}) is greater than the number of features")
-      
-      return(NULL)
-    }
-    
-    args$formula     <- as.formula(str_c(data_clmn, " ~ ."))
-    args$data        <- rf_train
-    args$importance  <- args$importance %||% "impurity_corrected"
-    args$seed        <- args$seed %||% 42
-    args$num.threads <- args$num.threads %||% 12
-    args$probability <- args$probability %||% FALSE
-    
-    # Train initial model
-    set.seed(42)
-    
-    raw_mod <- mod <- lift_dl(ranger)(args)
-    
-    raw_err   <- raw_mod$prediction.error
-    key_feats <- importance(raw_mod)
-    
-    # Feature selection
-    # identify most important features, filter, re-train
-    if (select_feats) {
-      key_feats <- importance_pvalues(raw_mod)
-      key_feats <- sort(key_feats[, "pvalue"])
-      
-      max_p <- key_feats %>%
-        head(min_feats) %>%
-        max()
-      
-      feat_p    <- max(max_p, feat_p)
-      key_feats <- names(key_feats[key_feats < feat_p])
-      n_feats   <- length(key_feats)
-      
-      # Re-train model
-      args$mtry       <- min(args$mtry, n_feats)
-      args$data       <- rf_train[, c(data_clmn, key_feats)]
-      args$importance <- "none"
-      
-      set.seed(42)
-      
-      mod <- lift_dl(ranger)(args)
-    }
-    
-    err <- mod$prediction.error
-    
-    # Compare fraction predicted groups for each mouse with ground truth
-    if (!is.null(df_list)) {
-      frac_clmn <- str_c("frac_", frac_grp)
-      
-      frac_stats <- df_list %>%
-        imap_dfr(~ {
-          mod %>%
-            rf_predict(
-              .x,
-              data_clmn    = data_clmn,
-              return_stats = FALSE,
-              prob         = args$probability
-            ) %>%
-            mutate(sample = .y)
-        }) %>%
-        group_by(sample) %>%
-        summarize(
-          !!sym(frac_clmn) := sum(pred == frac_grp) / n(),
-          .groups   = "drop"
-        ) %>%
-        summarize(across(all_of(frac_clmn), list(mean = mean, sd = sd)))
-    }
-    
-    # Test model
-    prds <- mod %>%
-      rf_predict(
-        dat          = rf_test,
-        data_clmn    = data_clmn,
-        return_stats = TRUE,
-        prob         = args$probability
-      )
-
-    # Format output table
-    res <- tibble(
-      n_train   = nrow(rf_train),
-      n_test    = nrow(rf_test),
-      ...,
-      n_feats = length(key_feats),
-      oob_raw = raw_err,
-      oob     = err
-    ) %>%
-      bind_cols(prds)
-    
-    if (!is.null(df_list)) {
-      res <- res %>%
-        bind_cols(frac_stats)
-    }
-    
-    if (include_objects) {
-      res <- res %>%
-        mutate(
-          mod          = list(mod),
-          feats        = list(key_feats),
-          training_bcs = list(rownames(rf_train))
-        )
-    }
-    
-    cli::cli_alert_info("Training: {args$n} / {n_params}")
-    
-    res
-  })
-  
-  if (nrow(res) == 0) return(NULL)  # If mtry is too high
-  
-  res <- res %>%
-    arrange(desc(F1))
-  
-  res
-}
-
-create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10) {
-  
-  # Format data
-  n_mice <- n_distinct(so_in$mouse)
-  
-  gn_dat <- so_in %>%
-    FetchData(c("mouse", "subtype", "pred_grp", gns)) %>%
-    as_tibble(rownames = ".cell_id") %>%
-    pivot_longer(all_of(gns)) %>%
-    mutate(name = fct_relevel(name, gns))
-  
-  plt_dat <- gn_dat %>%
-    group_by(name, mouse, subtype, pred_grp) %>%
-    summarize(
-      med = median(value),
-      q1  = quantile(value, 0.25),
-      q3  = quantile(value, 0.75),
-      .groups = "drop"
-    ) %>%
-    mutate(pred_grp = fct_relevel(pred_grp, names(plt_clrs))) %>%
-    group_by(name, mouse, subtype) %>%
-    
-    filter(sum(med) > 0) %>%
-    mutate(cor = cor(as.numeric(pred_grp), med)) %>%
-    
-    group_by(name) %>%
-    filter(n_distinct(mouse) == n_mice) %>%
-    ungroup()
-  
-  # Calculate p-values
-  clmn2 <- names(pred_clrs[2])
-  clmn3 <- names(pred_clrs[3])
-  
-  p_clmns <- c(clmn2, clmn3)
-  
-  p_dat <- gn_dat %>%
-    group_by(mouse, subtype, pred_grp, name) %>%
-    mutate(y = quantile(value, 0.75)) %>%
-    group_by(mouse, subtype, name) %>%
-    summarize(
-      y = max(y),
-      
-      !!sym(clmn2) := wilcox.test(
-        value[pred_grp == clmn2], value[pred_grp == "low"],
-        alternative = p_alt
-      )$p.value,
-      !!sym(clmn3) := wilcox.test(
-        value[pred_grp == clmn3], value[pred_grp == "low"],
-        alternative = p_alt
-      )$p.value,
-      .groups = "drop"
-    ) %>%
-    group_by(name) %>%
-    mutate(y = max(y)) %>%
-    
-    group_by(mouse, subtype) %>%
-    mutate(across(all_of(p_clmns), ~ p.adjust(.x, method = "bonferroni"))) %>%
-    ungroup() %>%
-    
-    pivot_longer(all_of(p_clmns), names_to = "pred_grp", values_to = "p") %>%
-    filter(p < 0.05)
-  
-  # Rank genes by number of significant p-values
-  gns <- p_dat %>%
-    group_by(name) %>%
-    summarize(n = n()) %>%
-    filter(name %in% plt_dat$name) %>%
-    arrange(desc(n)) %>%
-    head(n_gns) %>%
-    pull(name) %>%
-    as.character()
-  
-  # Create plots
-  res <- plt_dat %>%
-    filter(name %in% gns) %>%
-    mutate(name = fct_relevel(name, gns)) %>%
-    ggplot(aes(pred_grp, med, color = mouse)) +
-    geom_segment(
-      aes(x = pred_grp, xend = pred_grp, y = q1, yend = q3),
-      linewidth = 1, color = ln_col
-    ) +
-    geom_point(aes(size = pred_grp)) +
-    geom_smooth(
-      aes(x = as.numeric(as.factor(pred_grp))),
-      method = "lm", linewidth = 0.25, linetype = 2,
-      se = FALSE, formula = y ~ x
-    ) +
-    geom_point(
-      aes(y = y),
-      data = filter(p_dat, name %in% gns),
-      position = position_nudge(y = 0.2),
-      color = "black", shape = 6, size = 1
-    ) +
-    facet_grid(name ~ mouse, scales = "free_y", switch = "y") +
-    scale_size_manual(values = c(1, 1.25, 1.25)) +
-    scale_color_manual(values = m_clrs) +
-    scale_y_continuous(breaks = ~ c(ceiling(min(.x)), floor(max(.x)))) +
-    base_theme +
-    theme(
-      aspect.ratio    = 1,
-      legend.position = "none",
-      panel.border    = element_rect(color = "grey75"),
-      strip.placement = "outside",
-      axis.title      = element_blank(),
-      axis.text.x     = element_text(angle = 45, hjust = 1)
-    )
-  
-  res
-}
-
-create_sig_umap <- function(so_in, dat_col, clrs) {
-  res <- so_in %>%
-    plot_scatter(
-      dat_col,
-      "hUMAP_1", "hUMAP_2",
-      group_col   = "mouse",
-      outline     = TRUE,
-      plot_colors = clrs,
-      panel_nrow  = 1,
-      size        = 0.15,
-      stroke      = 0.6
-    ) +
-    guides(fill = guide_colorbar(
-      ticks = FALSE, title.position = "top",
-      barheight = unit(6, "pt"), barwidth = unit(120, "pt"), 
-    )) +
-    base_theme +
-    theme(
-      plot.margin     = margin(),
-      plot.title      = element_text(size = ttl_pt2),
-      legend.margin   = margin(),
-      legend.position = "bottom",
-      legend.title    = element_blank(),
-      axis.title      = element_blank(),
-      axis.ticks      = element_blank(),
-      axis.text       = element_blank(),
-      aspect.ratio    = 0.9
-    )
-  
-  res
-}
-
-create_grp_umap <- function(so_in, dat_col, clrs) {
-  so_in %>%
-    plot_scatter(
-      dat_col,
-      "hUMAP_1", "hUMAP_2",
-      group_col   = "mouse",
-      outline     = TRUE,
-      plot_colors = clrs,
-      plot_lvls   = c("high-pred", "low", "high", "other"),
-      panel_nrow  = 1,
-      size        = 0.25,
-      stroke      = 0.8,
-      color = ln_col,
-      trace_position = "bottom"
-    ) +
-    guides(fill = guide_legend(
-      label.position = "bottom", reverse = TRUE,
-      override.aes = list(size = 4)
-    )) +
-    base_theme +
-    theme(
-      plot.margin     = margin(),
-      plot.title      = element_text(size = ttl_pt2),
-      legend.margin   = margin(),
-      legend.position = "bottom",
-      legend.title    = element_blank(),
-      axis.title      = element_blank(),
-      axis.ticks      = element_blank(),
-      axis.text       = element_blank(),
-      aspect.ratio    = 0.9
-    )
-}
-
-create_heats <- function(so_in, gns, sort_gns = "up", lvls = names(pred_clrs),
-                         plt_clrs = c("lightblue", "white", "#D7301F")) {
-  
-  # Format data
-  n_mice <- n_distinct(so_in$mouse)
-  
-  heat_dat <- so_in %>%
-    FetchData(c("mouse", "subtype", "pred_grp", gns)) %>%
-    as_tibble(rownames = ".cell_id") %>%
-    pivot_longer(all_of(gns)) %>%
-    mutate(name = fct_relevel(name, gns)) %>%
-    
-    group_by(name) %>%
-    filter(n_distinct(mouse[value > 0]) == n_mice) %>%
-    ungroup() %>%
-    
-    group_by(name, mouse, subtype, pred_grp) %>%
-    summarize(value = mean(value), .groups = "drop") %>%
-    mutate(pred_grp = fct_relevel(pred_grp, lvls))
-  
-  # Sort genes
-  gn_lvls <- heat_dat %>%
-    pivot_wider(names_from = "pred_grp", values_from = value) %>%
-    mutate(
-      fc_1 = !!sym(lvls[2]) / !!sym(lvls[1]),
-      fc_2 = !!sym(lvls[3]) / !!sym(lvls[1])
-    ) %>%
-    group_by(name) %>%
-    summarize(
-      across(c(fc_1, fc_2), ~ sum(.x > 1), .names = "{.col}_up"),
-      across(c(fc_1, fc_2), ~ sum(.x < 1), .names = "{.col}_dwn"),
-      .groups = "drop"
-    ) %>%
-    arrange(name)
-  
-  if (identical(sort_gns, "up")) {
-    gn_lvls <- gn_lvls %>%
-      arrange(fc_1_up, fc_2_up, name)
-
-  } else if (identical(sort_gns, "down")) {
-    gn_lvls <- gn_lvls %>%
-      arrange(fc_1_dwn, fc_2_dwn, name)
-  }
-  
-  gn_lvls <- gn_lvls %>%
-    pull(name) %>%
-    as.character()
-  
-  # Create heatmaps
-  res <- heat_dat %>%
-    group_by(name, mouse, subtype) %>%
-    mutate(
-      value = as.numeric(scale(value)),
-      name = fct_relevel(name, gn_lvls)
-    ) %>%
-    
-    ggplot(aes(pred_grp, name, fill = value)) +
-    geom_tile(color = "white") +
-    scale_fill_gradientn(colours = plt_clrs) +
-    facet_grid(~ mouse) +
-    guides(fill = guide_colorbar(ticks = FALSE, barwidth = unit(10, "pt"))) +
-    base_theme +
-    theme(
-      legend.title = element_blank(),
-      axis.title   = element_blank(),
-      axis.text.y  = element_text(color = "black"),
-      axis.text.x  = element_text(angle = 45, hjust = 1, color = "black"),
-      panel.border = element_rect(color = "black"),
-      aspect.ratio = length(gn_lvls) / n_mice * 0.6
-    )
-  
-  res
-}
-
-create_chikv_heats <- function(so_in, gns, lvls = names(pred_clrs),
-                               plt_clrs = c("lightblue", "white", "#6A51A3")) {
-  
-  # Format data
-  heat_dat <- so_in %>%
-    FetchData(c("treatment", "orig.ident", "rep", "lec_type", "pred", gns)) %>%
-    as_tibble(rownames = ".cell_id") %>%
-    pivot_longer(any_of(gns)) %>%
-    mutate(name = fct_relevel(name, gns)) %>%
-    
-    group_by(name, treatment, orig.ident, rep, lec_type) %>%
-    summarize(value = mean(value), .groups = "drop") %>%
-    mutate(
-      treat_rep = str_c(treatment, "-", rep),
-      treatment = fct_relevel(treatment, names(treat_clrs))
-    ) %>%
-    arrange(treatment, rep) %>%
-    mutate(treat_rep = fct_inorder(treat_rep))
-  
-  # Sort genes
-  gn_lvls <- heat_dat %>%
-    filter(lec_type == "cLEC") %>%
-    group_by(treatment, name, lec_type) %>%
-    summarize(value = mean(value), .groups = "drop") %>%
-    pivot_wider(names_from = "treatment", values_from = value) %>%
-    mutate(fc = CHIKV / mock) %>%
-    arrange(desc(fc)) %>%
-    pull(name) %>%
-    unique() %>%
-    as.character()
-  
-  # Create heatmaps
-  res <- heat_dat %>%
-    group_by(name, lec_type) %>%
-    mutate(
-      value = as.numeric(scale(value)),
-      name = fct_relevel(name, gn_lvls)
-    ) %>%
-    
-    ggplot(aes(treat_rep, name, fill = value)) +
-    geom_tile(color = "white") +
-    scale_fill_gradientn(colours = plt_clrs) +
-    facet_grid(~ lec_type) +
-    guides(fill = guide_colorbar(ticks = FALSE, barwidth = unit(10, "pt"))) +
-    base_theme +
-    theme(
-      legend.title = element_blank(),
-      axis.title   = element_blank(),
-      axis.text.y  = element_text(color = "black"),
-      axis.text.x  = element_text(angle = 45, hjust = 1, color = "black"),
-      panel.border = element_rect(color = "black"),
-      aspect.ratio = length(gn_lvls) / n_distinct(heat_dat$treat_rep) * 0.6
-    )
-  
-  res
-}
-
-create_chikv_boxes <- function(df_in, dat_col, ttl = NULL, ...) {
-  res <- df_in %>%
-    filter(tm == "24hpi") %>%
-    ggplot(aes(treatment, !!sym(dat_col), fill = pred)) +
-    geom_boxplot(
-      outlier.size = 0.1, fatten = 1,
-      key_glyph = draw_key_point, alpha = 0.9, ...
-    ) +
-    facet_wrap(~ lec_type, nrow = 1, scales = "free_y") +
-    guides(
-      alpha = "none",
-      fill = guide_legend(
-        override.aes = list(shape = 22, size = 4),
-        title = "predicted\nAg group", title.position = "top"
-      )
-    ) +
-    scale_fill_manual(values = pred_clrs) +
-    labs(title = ttl) +
-    base_theme +
-    theme(
-      aspect.ratio    = 1.2,
-      plot.title      = element_text(size = ttl_pt2, hjust = 0.5),
-      legend.position = "right",
-      # legend.title    = element_text(),
-      axis.title      = element_blank(),
-      plot.margin     = margin()
-    )
-  
-  res
-}
-
-#' Fill the upper triangular matrix completely
-#' 
-#' FROM ENRICHPLOT
-#'
-#' @param x termsim similarity matrix
-#' @param keep GO terms to keep
-#' @return a data.frame
-#' @noRd
-fill_termsim <- function(x, keep = NULL) {
-  if (!is.null(keep)) termsim <- x[keep, keep]
-  else                termsim <- x
-  
-  termsim[which(is.na(termsim))] <- 0
-  
-  termsim2 <- termsim + t(termsim)
-  
-  for ( i in seq_len(nrow(termsim2))) termsim2[i, i] <- 1
-  
-  termsim2
-}
-
-#' Fetch genes for the provided annotations
-fetch_genes <- function(terms, mart) {
-  att  <- c("ensembl_gene_id", "external_gene_name")
-  names(terms) <- names(terms) %||% rep("go_parent_name", length(terms))
-  names(terms)[names(terms) == ""] <- "go_parent_name"
-
-  res <- terms %>%
-    imap(~ {
-      biomaRt::getBM(
-        attributes = att,
-        filters    = .y,
-        values     = .x,
-        mart       = mart
-      ) %>%
-        pull(external_gene_name)
-    }) %>%
-    reduce(c) %>%
-    unique()
-
-  res
-}
-
-#' Identify GO terms
-#' 
-#' By default all expressed genes are used as background for the cell type
-#' This will include results for all terms with any overlap regardless of
-#' significance, we need all terms for plotting enrichment scores
-#' 
-#' Terms with no overlap will not be included in results
-#' 
-#' @param genes Named list of differentially expressed genes for each cell type,
-#' names should correspond to cell type labels found in type_clmn
-#' @param so_in Seurat object so use for determining background gene set, if
-#' `NULL` all genes are used
-#' @param type_clmn Column in Seurat object containing cell types, these should
-#' match the cell types provided by genes
-#' @param max_term_size Maximum term size to include in results
-#' @param min_term_size Minimum term size to include in results
-#' @param db GO database to use, specify 'ALL' to use all three
-#' @param simplify_terms Should GO terms be simplified to removed redundant
-#' results, this has a significant effect on performance
-#' @param n_bkgd Number of top expressed genes to include for the background
-#' gene set
-#' @param exclude_genes Regular expression to use for removing genes before
-#' performing GO analysis, by default ribo protein and mito genes are excluded
-#' @param org_db Bioconductor organism annotation database, should be class
-#' OrgDb
-#' @param sim_data Similarity data to use for simplifying GO terms, generated
-#' using [clusterProfiler::godata()]
-#' @param file Path to output file for saving results
-get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
-                   min_term_size = 10, db = "BP", simplify_terms = TRUE,
-                   n_bkgd = Inf, exclude_genes = "^(Rp[sl]|mt-)",
-                   org_db = org.Mm.eg.db, sim_data = go_sim_data, file = NULL) {
-  
-  # Check for save GO file
-  # this function will save a tsv and a GO object
-  obj_file <- str_c(file, ".qs")
-  tbl_file <- str_c(file, ".tsv")
-  
-  if (!is.null(file) && file.exists(obj_file)) {
-    cli::cli_alert("Loading file {.file {obj_file}}")
-    
-    return(qread(obj_file))
-  }
-  
-  # Identify background gene set for each cell type
-  # this includes all genes with >0 counts for any cell
-  bkgd <- genes %>%
-    imap(~ {
-      bkgd <- NULL
-      
-      # so_in is required to determine background gene list
-      # if genes is not named, all cells in so_in will be used
-      if (!is.null(so_in)) {
-        if (is.character(.y)) bkgd <- subset(so_in, !!sym(type_clmn) == .y)
-        else                  bkgd <- so_in
-        
-        bkgd <- bkgd@assays$RNA@data %>%
-          rowMeans() %>%
-          sort(decreasing = TRUE) %>%
-          head(n_bkgd)
-        
-        bkgd <- names(bkgd[bkgd > 0])
-        
-      } else {
-        cli::cli_warn(
-          "Background gene set can only be determined if so_in is provided"
-        )
-      }
-      
-      bkgd
-    })
-  
-  # Identify GO terms for each gene list
-  # exclude specified genes
-  go <- genes %>%
-    imap(~ {
-      .x <- .x[!grepl(exclude_genes, .x)]
-      
-      g <- .x %>%
-        enrichGO(
-          keyType      = "SYMBOL",
-          OrgDb        = org_db,
-          universe     = bkgd[[.y]],
-          maxGSSize    = max_term_size,
-          minGSSize    = min_term_size,
-          pvalueCutoff = 1.1,
-          qvalueCutoff = 1.1,
-          ont          = db
-        )
-      
-      # Add background genes for each term to object
-      # * this column is formatted in the same way as the geneID column
-      # * these genes could be used to calculate overall fold enrichment for
-      #   each cell type for GO clusters, i.e. determine total number of unique
-      #   background genes overlapping all terms in the cluster
-      # * overall fold enrichment scores for each cell type were not used
-      #   in the final version of the GO heatmaps since the overall enrichment
-      #   scores are on a much different scale as the other enrichement scores
-      bkgd_gns <- g@result$ID %>%
-        clusterProfiler::bitr(         # used to fetch gene symbols for GO terms
-          fromType = "GOALL", toType = "SYMBOL",
-          OrgDb = org.Mm.eg.db
-        ) %>%
-        filter(SYMBOL %in% bkgd[[.y]]) %>%
-        split(.$GOALL)
-      
-      bkgd_gns <- bkgd_gns %>%
-        map_chr(~ {
-          .x$SYMBOL %>%
-            unique() %>%
-            str_c(collapse = "/")
-        })
-      
-      g %>%
-        mutate(bgID = bkgd_gns[ID])
-    })
-  
-  # Merge GO objects  
-  if (!is.null(names(go))) {
-    go <- merge_result(go)
-    
-    go@fun <- "enrichGO"
-    
-  } else if (length(go) == 1) {
-    go <- go[[1]]
-  }
-  
-  # Simplify terms
-  # this collapses terms that are very similar
-  # this is very slow
-  if (simplify_terms) {
-    go <- go %>%
-      clusterProfiler::simplify(semData = sim_data)
-  }
-  
-  # Calculate enrichment scores
-  go <- go %>%
-    mutate(
-      n_ovlp       = as.numeric(str_extract(GeneRatio, "^[0-9]+")),
-      tot_genes    = as.numeric(str_extract(GeneRatio, "[0-9]+$")),
-      n_bg_ovlp    = as.numeric(str_extract(BgRatio,   "^[0-9]+")),
-      tot_bg_genes = as.numeric(str_extract(BgRatio,   "[0-9]+$")),
-      enrichment   = (n_ovlp / tot_genes) / (n_bg_ovlp / tot_bg_genes)
-    )
-  
-  # Save results
-  if (!is.null(file)) {
-    qsave(go, obj_file)
-    
-    go@compareClusterResult %>%
-      write_tsv(tbl_file)
-  }
-  
-  go
-}
-
-#' Cluster GO terms
-#' 
-#' @param go_in Object containing GO results
-#' @param k Number of clusters to identify
-#' @param pval Cutoff for filtering terms based on adjusted p-value, only
-#' significant terms are used for clustering
-#' @param qval Cutoff for filtering terms based on q-value
-#' @param n_overlap Minimum number of genes needed to overlap term for it to be
-#' included for clustering
-#' @param n_shared Minimum number of cell types that term has to be shared with
-#' for it to be included for clustering
-#' @param sim_data Similarity data to use for clustering GO terms, generated
-#' using [clusterProfiler::godata()]
-#' @param min_term_size Minimum number of genes for term to be included
-#' @param max_term_size Maximum number of genes for term to be included
-#' @param exclude_cell_types Cell types to exclude from GO clustering
-get_go_clusters <- function(go_in, k = 3, pval = 0.05, qval = 0.2, n_overlap = 3,
-                            n_shared = 1, sim_data = go_sim_data,
-                            min_term_size = -Inf, max_term_size = Inf,
-                            exclude_cell_types = NULL) {
-  
-  # Identify significant GO terms
-  go_in <- go_in %>%
-    filter(
-      p.adjust < pval, qvalue < qval,
-      Count >= n_overlap,
-      !Cluster %in% exclude_cell_types
-    )
-  
-  # Calculate summary stats for each term
-  # filter by min/max term size and number of cell types sharing the term
-  # sort by number of cell types that share the term
-  # these are the terms that will be used for clustering
-  top_terms <- go_in@compareClusterResult %>%
-    filter(                              # filter based on term size
-      n_bg_ovlp >= min_term_size,
-      n_bg_ovlp <= max_term_size
-    ) %>%
-    
-    group_by(Description, ID) %>%
-    summarize(
-      n_cell_types = n_distinct(Cluster),  # number of cell types with term
-      enrichment   = mean(enrichment),     # mean enrichment score
-      p.adjust     = mean(p.adjust),       # mean p-value across cell types
-      qvalue       = mean(qvalue),         # mean q-value across cell types
-      .groups      = "drop"          
-    ) %>%
-    arrange(desc(n_cell_types), p.adjust) %>%
-    dplyr::filter(n_cell_types >= n_shared)
-
-  # Set number of clusters
-  # must average > 2 terms per cluster
-  if (nrow(top_terms) < 2) return(NULL)
-  
-  k <- min(k, floor(nrow(top_terms) / 2))
-  
-  # Calculate similarity metric for top terms
-  # fill in upper triangle of matrix and filter terms
-  # use top_terms determined previously
-  go_dist <- go_in %>%
-    pairwise_termsim(semData = sim_data) %>%
-    .@termsim %>%
-    fill_termsim(keep = top_terms$Description)
-  
-  # Cluster terms
-  # use ward.D method to avoid overlapping ancestor nodes of each group
-  hc <- stats::hclust(
-    stats::as.dist(1 - go_dist),
-    method = "ward.D"
-  )
-  
-  clst_obj <- stats::cutree(hc, k)
-  
-  clsts <- tibble(
-    Description = names(clst_obj),
-    cluster     = unname(clst_obj)
-  )
-  
-  # Format output object
-  res <- clsts %>%
-    left_join(top_terms, by = "Description") %>%
-  
-    arrange(cluster, desc(n_cell_types), p.adjust) %>%
-    group_by(cluster) %>%
-    mutate(
-      cluster_n_terms = n_distinct(Description),
-      cluster_mean_p  = mean(p.adjust)
-    ) %>%
-    ungroup() %>%
-    arrange(cluster, desc(n_cell_types), p.adjust)
-  
-  res <- list(
-    clusters = res,             # data.frame with cluster stats/assignments
-    object   = hc,              # hclust object
-    clusters_object = clst_obj  # vector of cluster assignments
-  )
-  
-  res
-}
-
-#' Create heatmaps summarizing GO clusters for each cell type
-#' 
-#' @param df_in data.frame containing clustering results generated with
-#' get_clusters(), this provides the terms and cluster assignments to plot
-#' @param go_in Object containing GO results, this is used to plot p-values and
-#' GeneRatio for each cell type
-#' @param n_clusters Number of top GO clusters to plot, clusters are sorted by
-#' number of terms, with the top clusters having the most terms
-#' @param n_terms The number of top terms to show for each cluster, terms are
-#' sorted by the number of cell types that share the term and the overall mean
-#' p-value for the term (averaged across all cell types)
-#' @param pval Adjusted p-value cutoff for marking significant terms, this
-#' cutoff should match the cutoff used for clustering GO terms
-#' @param qval q-value cutoff for marking significant terms
-#' @param n_overlap Minimum number of genes needed to overlap the term for it to
-#' be marked as significant
-#' @param n_genes Minimum number of DEGs for cell type to be included on plot
-#' @param clrs Colors to use for each cluster
-#' @param n_col Number of columns to use for organizing facets (each cluster is
-#' plotted as a separate facet)
-#' @param clusters Which clusters to plot, this overrides n_clusters
-#' @param include_overall_score Include row in heatmap showing combined
-#' enrichment score for each cell type
-#' @param free_y Allow height of each heatmap to differ based on the number of
-#' rows
-#' @param cluster_labels Vector containing descriptive labels for each cluster
-#' @param exclude_cell_types Cell types to exclude from plot
-create_go_heatmap <- function(df_in, go_in, n_clusters = 2, n_terms = 5,
-                              pval = 0.05, qval = 0.2, n_overlap = 3,
-                              n_genes = 3,
-                              clrs = c("orange", "lightblue", "red"), n_col = 1,
-                              clusters = NULL, include_overall_score = FALSE,
-                              free_y = FALSE, cluster_labels = NULL,
-                              exclude_cell_types = NULL) {
-  
-  # Top GO clusters to show
-  # selected based on number of terms belonging to each cluster
-  top_clusters <- clusters %||%
-    df_in$cluster %>%
-    table() %>%
-    sort(decreasing = TRUE) %>%
-    head(n_clusters) %>%
-    names()
-  
-  # Data for heatmap
-  # filter cell types (Cluster column)
-  cluster_ids <- df_in %>%
-    dplyr::select(Description, cluster, n_cell_types)
-  
-  dat <- go_in@compareClusterResult %>%
-    as_tibble() %>%
-    left_join(cluster_ids, by = "Description") %>%
-    filter(
-      cluster %in% top_clusters,
-      !Cluster %in% exclude_cell_types
-    ) %>%
-    mutate(
-      significant = p.adjust < pval & qvalue < qval & n_ovlp >= n_overlap,
-      enriched    = ifelse(significant, "Significant", "NS")  # this is used to add diamond
-    )
-  
-  # Top GO terms to plot
-  # df_in includes combined GO terms identified across all cell types
-  # sorted based on number of cell types sharing term, then mean enrichment
-  terms <- dat %>%
-    filter(significant) %>%
-    group_by(Description, ID, cluster) %>%
-    summarize(                               # recalculate since some cell types
-      n_cell_types = n_distinct(Cluster),    # removed with exclude_cell_types
-      enrichment   = mean(enrichment),
-      .groups = "drop"
-    ) %>%
-    arrange(cluster, desc(n_cell_types), desc(enrichment)) %>%
-    group_by(cluster) %>%
-    dplyr::slice(1:n_terms) %>%
-    ungroup()
-  
-  term_lvls <- rev(terms$Description)
-  
-  dat <- dat %>%
-    filter(ID %in% terms$ID)
-  
-  # Sort cell types based on number of significant terms and max enrichment
-  # score
-  typ_lvls <- dat %>%
-    group_by(Cluster) %>%
-    summarize(
-      n_terms = length(ID[significant]),
-      max_enr = max(enrichment),
-      .groups = "drop"
-    ) %>%
-    arrange(desc(n_terms), desc(max_enr)) %>%
-    pull(Cluster) %>%
-    as.character()
-  
-  # Format term labels
-  dat <- dat %>%
-    mutate(Description = fct_relevel(Description, term_lvls)) %>%
-    arrange(Description) %>%
-    mutate(
-      Description = str_trunc(
-        as.character(Description), width = 70, side = "right"
-      ),
-      Description = str_wrap(Description, width = 40),
-      Description = fct_inorder(Description),
-      Cluster     = fct_relevel(Cluster, typ_lvls)
-    )
-  
-  # Create heatmap
-  if (length(clrs) == 1) scale_clr <- clrs
-  else                   scale_clr <- "black"
-  
-  al_scale <- list(range = c(0, 1))
-  
-  if (max(dat$enrichment) < 70) al_scale$breaks <- seq(0, 70, 15)
-  
-  res <- dat %>%
-    ggplot(aes(Cluster, Description, fill = as.character(cluster), alpha = enrichment)) +
-    geom_tile() +
-    geom_point(
-      aes(color = enriched, fill = NULL),
-      data   = ~ filter(.x, significant),
-      alpha  = 1,
-      shape  = 5,
-      size   = 3,
-      stroke = 1.2
-    ) +
-    scale_color_manual(values = "black") +
-    scale_fill_manual(values = clrs) +
-    lift_dl(scale_alpha_continuous)(al_scale) +
-    scale_x_discrete(labels = ~ str_replace(.x, "_", " ")) +
-    guides(
-      alpha = guide_legend(
-        keyheight      = unit(7, "pt"),
-        label.position = "bottom",
-        order          = 1,
-        title          = "Enrichment Score",
-        title.position = "top",
-        nrow           = 1,
-        override.aes   = list(fill = scale_clr)
-      ),
-      color = guide_legend(
-        title          = NULL,
-        label.position = "top",
-        label.theme    = element_text(size = ttl_pt2),
-        label.vjust    = 0.45,
-        override.aes   = list(size = 4.5, stroke = 1.7),
-      ),
-      fill = "none"
-    ) +
-    base_theme +
-    theme(
-      legend.position    = "bottom",
-      legend.title.align = 0.5,
-      legend.key.width   = unit(25, "pt"),
-      axis.title         = element_blank(),
-      axis.text.x        = element_text(angle = 45, hjust = 1),
-      strip.clip         = "off"
-    )
-  
-  if (free_y) {
-    res <- res +
-      facet_grid(
-        rows = "cluster",
-        scales = "free_y", space = "free_y",
-        labeller = cluster_labels %||% "label_value"
-      )
-  } else {
-    n_terms <- terms %>%
-      group_by(cluster) %>%
-      summarize(n = n_distinct(Description), .groups = "drop") %>%
-      pull(n) %>%
-      max()
-    
-    res <- res +
-      facet_wrap(
-        ~ cluster, ncol = n_col, scales = "free_y",
-        labeller = cluster_labels %||% "label_value"
-      ) +
-      theme(aspect.ratio = n_terms / n_distinct(dat$Cluster))
-  }
-  
-  res <- list(
-    heatmap = res,
-    terms = terms
-  )
-  
-  res
-}
-
-#' Create expanded GO summary plots
-#' 
-#' @param go_in data.frame containing GO results (compareClusterResult)
-#' @param degs_in data.frame containing DEG results, this is used to select
-#' the top differentially expressed genes for go_in
-#' @param all_exp_data Named list of Seurat objects containing all expression
-#' data wanting to plot
-#' @param all_degs_data Named list of data.frames containing DEGs, this is used to
-#' determine which genes are upregulated for each cell type and timepoint. DEGs
-#' need to be provided for each Seurat object provided to all_exp_data
-#' @param n_clusters Number of top GO clusters to plot, clusters are sorted by
-#' number of terms, with the top clusters having the most terms
-#' @param n_terms The number of top terms to show for each cluster, terms are
-#' sorted by the number of cell types that share the term and the overall mean
-#' p-value for the term (averaged across all cell types)
-#' @param n_genes Number of top genes to plot for each GO cluster
-#' @param pval Adjusted p-value cutoff for marking significant terms
-#' @param n_overlap Minimum number of genes needed to overlap the term for it to
-#' be marked as significant
-#' @param n_shared Minimum number of cell types that term has to be shared with
-#' for it to be included
-#' @param exclude_cell_types Cell types to exclude from plots
-create_go_summary_plots <- function(go_in, degs_in,
-                                    all_exp_data = list(
-                                      "8hpi" = so_8, "24hpi" = so_merge
-                                    ),
-                                    all_degs_data = list(
-                                      "8hpi"  = degs[["so_8-up_lectype"]],
-                                      "24hpi" = degs[["so_merge-up_lectype"]]
-                                    ),
-                                    n_clusters = 5, n_terms = 6, n_genes = 4,
-                                    pval = 0.05, n_overlap = 3, n_shared = 1,
-                                    only_show_upreg = TRUE,
-                                    exclude_cell_types = NULL
-                                    ) {
-  
-  # Cluster GO terms
-  clsts <- go_in %>%
-    get_go_clusters(
-      k         = n_clusters,
-      pval      = pval,
-      n_overlap = n_overlap,
-      n_shared  = n_shared,
-      exclude_cell_types = NULL
-    )
-  
-  if (is.null(clsts)) return(NULL)
-  
-  # Create tree
-  clst_ids <- as.character(unique(sort(clsts$clusters$cluster)))
-  
-  clst_clrs <- set_names(
-    unname(type_cols)[1:n_distinct(clst_ids)],
-    clst_ids
-  )
-  
-  cl <- split(
-    names(clsts$clusters_object),
-    clsts$clusters_object
-  )
-  
-  tr <- ggtree(clsts$object, linewidth = 1)
-  
-  clades <- cl %>%
-    map_int(~ MRCA(tr, .x))
-  
-  tr <- groupClade(tr, clades, group_name = "cluster") +
-    aes(color = cluster) +
-    scale_color_manual(values = clst_clrs) +
-    geom_tiplab(angle = 90, hjust = 1, nudge_x = -0.1) +
-    layout_dendrogram() +
-    theme(
-      legend.position = "none",
-      plot.margin = margin(6, 6, 250, 6)
-    )
-  
-  # Create heatmaps
-  heat <- clsts$clusters %>%
-    create_go_heatmap(
-      go_in      = go_in,
-      n_overlap  = n_overlap,
-      n_clusters = n_clusters,
-      n_genes    = 0,           # Min genes represented on plot for cell type
-      n_terms    = n_terms,     # to be shown on plot
-      n_col      = 1,
-      free_y     = FALSE,
-      clrs       = clst_clrs,
-      exclude_cell_types = exclude_cell_types
-    )
-  
-  heat$heatmap <- heat$heatmap +
-    theme(axis.text = element_text(size = 10))
-  
-  # Example genes to plot
-  heat_terms <- heat$terms %>%
-    dplyr::select(Description, cluster, ID)
-  
-  gns <- get_go_genes(
-    go_in    = go_in@compareClusterResult,
-    degs_in  = degs_in,
-    clust_in = heat_terms,
-    genes    = n_genes,
-    exclude_cell_types = exclude_cell_types
-  )
-  
-  # Create gene plots
-  gn_plts <- create_go_gene_plots(
-    all_exp_data       = all_exp_data,
-    all_degs_data      = all_degs_data,
-    genes              = gns,
-    cell_types         = Inf,
-    clrs               = clst_clrs,
-    only_show_upreg    = only_show_upreg,
-    exclude_cell_types = exclude_cell_types
-  ) +
-    theme(
-      plot.margin = margin(6, 40, 6, 40, unit = "pt"),
-      axis.text   = element_text(size = 7),
-      strip.text  = element_text(size = 8)
-    )
-  
-  # Create final figure
-  bot <- plot_grid(
-    heat$heatmap + theme(plot.margin = margin(6, 40, 6, 40, unit = "pt")),
-    gn_plts,
-    nrow = 1,
-    labels = c("B", "C"),
-    rel_widths = c(0.9, 1),
-    align = "h",
-    axis  = "tb"
-  )
-  
-  res <- plot_grid(
-    tr, bot,
-    ncol = 1,
-    rel_heights = c(0.3, 1),
-    labels = "A"
-  )
-  
-  res
-}
-```
-
-```{r "load models"}
-# Load save models
-rf_mods <- qread(here(params$mod_dir, "ag-high_models.qs"))
-degs    <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
-
-rf_preds <- read_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz")) %>%
-  column_to_rownames(".cell_id")
-```
-
-```{r "RF features"}
-# Pull best features
-rf_feats <- rf_mods %>%
-  pmap(~ {
-    args <- list(...)
-    
-    fts <- args$feats %>%
-      unlist(use.names = FALSE) %>%
-      str_replace_all("_", "-") %>%
-      str_remove("^x")
-    
-    degs %>%
-      filter(feature %in% fts) %>%
-      mutate(label_rank = case_when(
-        subtype == args$subtype & mouse == rf_mouse ~ 1,
-        subtype == args$subtype                     ~ 2,
-        mouse   == rf_mouse                         ~ 3,
-        TRUE                                        ~ 4
-      )) %>%
-      group_by(feature) %>%
-      filter(label_rank == min(label_rank)) %>%
-      ungroup() %>%
-      split(.$group) %>%
-      map(~ unique(pull(.x, feature)))
-  })
-
-names(rf_feats) <- rf_mods$subtype
-
-all_feats <- rf_feats %>%
-  unlist(use.names = FALSE) %>%
-  unique()
-
-# Save top features
-rf_feats %>%
-  qsave(here(params$mod_dir, "ag-high_features.qs"))
-```
-
-```{r "format data"}
-# Format prediction labels
-# training data was removed before predicting
-lec_so <- lec_so %>%
-  AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds)))
-
-lec_so <- lec_so %>%
-  mutate_meta(
-    mutate,
-    pred_grp = ifelse(
-      rf_pred == "high" & !rf_correct,
-      "high-pred", !!sym(rf_dat_clmn)
-    ),
-    mouse         = fct_relevel(mouse, mice),
-    training_data = is.na(rf_pred)
-  )
-
-# Add module scores
-rf_feats %>%
-  iwalk(~ {
-    clmn_nms <- str_c(.y, "_", names(.x))
-
-    clmn_nms <- set_names(
-      str_c(clmn_nms, seq_along(clmn_nms)),
-      clmn_nms
-    )
-
-    lec_so <<- lec_so %>%
-      AddModuleScore(
-        features = .x,
-        name     = names(clmn_nms)
-      ) %>%
-      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
-  })
-```
-
-```{r "predict CHIKV"}
-# Load CHIKV data
-chikv_so <- qread(params$chikv_so)
-
-# Format RF data
-# need to add zeros for missing genes
-# scaling genes across entire dataset yields predications more in line with
-# Ag data (e.g. fraction Ag-high is roughly the same)
-clmns <- c(
-  "orig.ident", "rep", "treatment", "tm",
-  "cell_type_2", "cell_type", "lec_type", "subtype",
-  "UMAP_1", "UMAP_2"
-)
-
-chikv_dat <- chikv_so %>%
-  FetchData(c(clmns, all_feats))
-
-missing_gns <- all_feats[!all_feats %in% colnames(chikv_dat)]
-
-chikv_dat[, missing_gns] <- 0
-
-chikv_dat <- chikv_dat %>%
-  rename_with(~ str_replace_all(.x, "-", "_")) %>%
-  rename_with(~ str_c("x", .x), matches("^[0-9]"))
-
-# Predict using models for each LEC subset
-chikv_preds <- rf_mods %>%
-  pmap_dfr(~ {
-    args <- list(...)
-    
-    dat <- chikv_dat %>%
-      filter(lec_type == args$subtype) %>%
-      dplyr::select(-all_of(clmns))
-    
-    args$mod %>%
-      rf_predict(
-        dat = dat,
-        return_stats = FALSE
-      ) %>%
-      dplyr::select(.cell_id, pred) %>%
-      column_to_rownames(".cell_id")
-  })
-
-chikv_so <- chikv_so %>%
-  AddMetaData(chikv_preds)
-
-rf_feats %>%
-  iwalk(~ {
-    clmn_nms <- str_c(.y, "_", names(.x))
-
-    clmn_nms <- set_names(
-      str_c(clmn_nms, seq_along(clmn_nms)),
-      clmn_nms
-    )
-
-    chikv_so <<- chikv_so %>%
-      AddModuleScore(
-        features = .x,
-        name     = names(clmn_nms)
-      ) %>%
-      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
-  })
-
-# Save predictions
-chikv_preds %>%
-  rownames_to_column(".cell_id") %>%
-  write_tsv(here(params$mod_dir, "ag-high_chikv_preds.tsv.gz"))
-```
-
 ---
 
 <br>
@@ -1906,6 +640,7 @@ chikv_preds %>%
 <br>
 
 ## Session info
+
 ```{r "session info"}
 sessionInfo()
 ```
