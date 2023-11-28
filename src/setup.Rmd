@@ -174,7 +174,7 @@ calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
           .names = "{.col}_score")
         ) %>%
         ungroup() %>%
-        rename(!!!final_clmns)
+        dplyr::rename(!!!final_clmns)
     })
   
   res
@@ -369,22 +369,30 @@ ref_immgen_dc <- cbind(ref_immgen[shared_gns, ], ref_mousespleenDC[shared_gns, ]
 # do not use filtered matrix since a poor quality library would have a high
 # fraction of counts in empty drops that would not be taken into account when
 # normalizing data
-plan(strategy = multisession, workers = 6)
+norm_file <- here(params$ref_dir, "norm_factors.tsv")
 
-norm_factors <- sam_info %>%
-  mutate(
-    lib_size = future_pmap_dbl(., ~ {
-      args <- list(...)
-      
-      mat <- here(params$res_dir[[args$experiment]], args$directory)
-      mat <- here(mat, "outs/raw_feature_bc_matrix")
-      res <- Read10X(mat)
-      sum(res$`Antibody Capture`) / 1e6
-    })
-  )
+if (!file.exists(norm_file)) {
+  plan(strategy = multisession, workers = 6)
+  
+  norm_factors <- sam_info %>%
+    mutate(
+      lib_size = future_pmap_dbl(., ~ {
+        args <- list(...)
+        
+        mat <- here(params$res_dir[[args$experiment]], args$directory)
+        mat <- here(mat, "outs/raw_feature_bc_matrix")
+        res <- Read10X(mat)
+        sum(res$`Antibody Capture`) / 1e6
+      })
+    )
+  
+  plan(strategy = sequential)
+  
+  norm_factors %>%
+    write_tsv(norm_file)
+}
 
-norm_factors %>%
-  write_tsv(here(params$ref_dir, "norm_factors.tsv"))
+norm_factors <- read_tsv(norm_file)
 
 norm_factors <- set_names(
   norm_factors$lib_size,
@@ -432,7 +440,7 @@ stat_clmns <- c(
   "pct_mito"
 )
 
-plan(multisession, workers = 4)
+plan(multisession, workers = 6)
 
 sam_stats <- sam_info %>%
   future_pmap_dfr(~ {
@@ -456,11 +464,13 @@ sam_stats <- sam_info %>%
   pivot_wider(names_from = matrix, values_from = ag_counts) %>%
   mutate(Ag_counts_frac = Ag_counts_filtered / Ag_counts_raw)
 
+plan(strategy = sequential)
+
 sobjs %>%
   map_dfr(~ {
     .x@meta.data %>%
       as_tibble(rownames = "cell_id") %>%
-      group_by(exp, sample, tm, mouse, vaccination, cell_sort) %>%
+      group_by(directory, exp, sample, tm, mouse, vaccination, cell_sort) %>%
       mutate(across(all_of(stat_clmns), median, .names = "med_{.col}")) %>%
       group_by(qc_class, !!!syms(str_c("med_", stat_clmns)), .add = TRUE) %>%
       summarize(n = n(), .groups = "drop")
@@ -707,19 +717,6 @@ cd45pos_so <- cd45pos_so %>%
   )
 ```
 
-```{r "AG CLASS 2", eval = FALSE}
-# Try splitting into Ag-low/high separately for each cell type
-lec_so <- lec_so %>%
-  subset(mouse != "d2") %>%
-  mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
-  cluster_signal(
-    data_column  = "Ag_score",
-    grp_column   = "mouse_type",
-    clust_column = "Ag_class_2",
-    method       = "km"
-  )
-```
-
 ```{r "LEC object", eval = create_sobjs}
 # NEED TO:
 # 1. check Marco_LECs, they do not express Marco
@@ -825,6 +822,75 @@ cd45neg_so <- cd45neg_so %>%
   })
 ```
 
+```{r "LEC RF Ag class", eval = create_sobjs}
+# Set Ag-low/high classes for classifier
+# * split for each cell type from each mouse
+# * set subtype cutoff for all mice using d14 cutoff
+rf_mouse <- "d14"
+
+ag_clmns <- c(
+  Ag_class_rf  = "Ag_score",
+  Ag_class_3wk = "Ag_score_3",
+  Ag_class_6wk = "Ag_score_6"
+)
+
+ag_clmns %>%
+  iwalk(~ {
+    lec_so <- lec_so %>%
+      mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
+      cluster_signal(
+        data_column  = .x,
+        grp_column   = "mouse_type",
+        clust_column = .y,
+        method       = "km"
+      )
+    
+    # The threshold will be the same for each column since this is set using
+    # only the d14 mouse
+    threshold <- lec_so@meta.data %>%
+      filter(mouse == rf_mouse, !!sym(.y) == "high") %>%
+      group_by(subtype) %>%
+      summarize(threshold = min(!!sym(.x)), .groups = "drop")
+    
+    threshold <- set_names(threshold$threshold, threshold$subtype)
+    
+    lec_so <<- lec_so %>%
+      mutate_meta(
+        mutate,
+        !!sym(.y) := ifelse(!!sym(.x) >= threshold[subtype], "high", "low")
+      )
+  })
+
+# Identify double-positive cells for the 6wk-3wk mouse
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    Ag_class_dual = case_when(
+      mouse == "6wk-3wk" & (Ag_class_3wk == "high" & Ag_class_6wk == "high") ~ "double-high",
+      mouse == "6wk-3wk" & (Ag_class_3wk == "high" | Ag_class_6wk == "high") ~ "single-high",
+      # mouse == "6wk-3wk" & Ag_class_6wk == "high"                            ~ "6wk-single",
+      # mouse == "6wk-3wk" & Ag_class_3wk == "high"                            ~ "3wk-single",
+      mouse == "6wk"     & Ag_class_6wk == "high"                            ~ "6wk-high",
+      mouse == "3wk"     & Ag_class_3wk == "high"                            ~ "3wk-high",
+      # mouse == "6wk-3wk" & (Ag_class_3wk == "low" & Ag_class_6wk == "low")   ~ "double-low",
+      TRUE                                                                   ~ "low"
+    )
+  )
+```
+
+```{r "AG CLASS 2", eval = FALSE}
+# Try splitting into Ag-low/high separately for each cell type
+lec_so <- lec_so %>%
+  subset(mouse != "d2") %>%
+  mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
+  cluster_signal(
+    data_column  = "Ag_score",
+    grp_column   = "mouse_type",
+    clust_column = "Ag_class_2",
+    method       = "km"
+  )
+```
+
 ```{r "FRC object", eval = create_sobjs}
 # Re-cluster and integrate fibroblasts
 frc_so <- cd45neg_so %>%
@@ -907,7 +973,10 @@ cd45neg_so <- cd45neg_so %>%
 
 ```{r "DC object", eval = create_sobjs}
 # NEED TO:
-# 1. check cDC2s, there is a cluster that might be T-bet+
+# 1. check cDC2s, there is a cluster that might be T-bet+. The cDC2 subset
+#    shows higher expression of T-bet+ markers than the T-bet- cells, however,
+#    the expression of T-bet+ markers is still very sparse and not especially
+#    convincing
 
 # Re-cluster and integrate DCs
 # DC subsets were annotated with broad cell types
