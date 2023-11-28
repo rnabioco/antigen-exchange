@@ -9,45 +9,52 @@ knitr::opts_chunk$set(
 )
 
 # Load packages
-R_packages <- c(
-  "tidyverse",
-  "ggbeeswarm",
-  "ggforce",
-  "Seurat",
-  "gprofiler2", "knitr",
-  "cowplot",
-  "ggrepel",    "RColorBrewer",
-  "xlsx",
-  "colorblindr",
-  "broom",
-  "mixtools",
-  "clustifyr",
-  "boot",       "scales",
-  "patchwork",  "ComplexHeatmap",
-  "devtools",
-  "presto",     "here",
-  "tools",
-  "clustifyrdata",
-  "gtools",
-  "djvdj",
-  "M3Drop",     "vroom",
-  "qs",         "ggtrace",
-  "ggtext",     "rdrop2",
-  "lubridate",
-  "MetBrewer",
-  "openxlsx",   "biomaRt",
-  "harmony",
-  "rsample",    "ranger",
-  "furrr",
-  "caret",
-  "clusterProfiler",
-  "enrichplot",
-  "msigdbr",
-  "org.Mm.eg.db",
-  "GOSemSim",
-  "biomaRt",
-  "ggtree"
-)
+library(tidyverse)
+library(ggbeeswarm)
+library(ggforce)
+library(Seurat)
+library(gprofiler2)
+library(knitr)
+library(cowplot)
+library(ggrepel)
+library(RColorBrewer)
+library(xlsx)
+library(colorblindr)
+library(broom)
+library(mixtools)
+library(clustifyr)
+library(boot)
+library(scales)
+library(patchwork)
+library(ComplexHeatmap)
+library(devtools)
+library(presto)
+library(here)
+library(tools)
+library(clustifyrdata)
+library(gtools)
+library(djvdj)
+library(M3Drop)
+library(vroom)
+library(qs)
+library(ggtrace)
+library(ggtext)
+library(lubridate)
+library(MetBrewer)
+library(openxlsx)
+library(biomaRt)
+library(harmony)
+library(rsample)
+library(ranger)
+library(furrr)
+library(caret)
+library(clusterProfiler)
+library(enrichplot)
+library(msigdbr)
+library(org.Mm.eg.db)
+library(GOSemSim)
+library(biomaRt)
+library(ggtree)
 
 purrr::walk(R_packages, library, character.only = TRUE)
 
