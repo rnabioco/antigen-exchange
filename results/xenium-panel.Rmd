@@ -33,8 +33,6 @@ editor_options:
 
 <br>
 
-## Summary
-
 This includes code/plots to select genes for the Xenium gene panel
 
 ```{r "setup", include = FALSE}
@@ -559,7 +557,10 @@ xen_dir <- params$so_dir %>%
 res_dirs <- set_names(as.character(params$res_dir), names(params$res_dir))
 
 mat_info <- sam_info %>%
-  filter(sample %in% c("d14", "LEC-P4-P2")) %>%
+  filter(
+    sample %in% c("d14", "LEC-P4-P2", "LEC-P4") |
+      directory == "GEX_CD45neg_d2-ADT_CD45neg_d2"
+  ) %>%
   mutate(
     mat_path  = here(res_dirs[experiment]),
     sample    = directory,
@@ -568,17 +569,21 @@ mat_info <- sam_info %>%
   )
 
 # Combine with CHIKV paths
-chikv_dir <- "~/Projects/morrison-lnsc/results/orig_24hpi"
-chikv_sams <- c(A1 = "CHIKV-1", M1 = "mock-1")
+chikv_dir <- c(
+  `8hpi`  = "~/Projects/morrison-lnsc/results/2021-04-16",
+  `24hpi` = "~/Projects/morrison-lnsc/results/orig_24hpi"
+)
+
+chikv_sams <- c(AF1 = "8hpi", A1 = "24hpi")
 
 chikv_info <- tibble(
   directory = names(chikv_sams),
   sample    = unname(chikv_sams)
 ) %>%
   mutate(
-    mat_path  = chikv_dir,
+    mat_path  = chikv_dir[sample],
     cell_sort = "CHIKV",
-    filt_clmn = "orig.ident",
+    filt_clmn = "tm",
     ann_clmn  = "lec_type"
   )
 
@@ -597,17 +602,26 @@ mat_info %>%
       args$cell_sort,
       CD45neg = cd45neg_so@meta.data,
       CD45pos = cd45pos_so@meta.data,
-      CHIKV   = filter(chikv_so@meta.data, tm == "24hpi")
+      CHIKV   = filter(chikv_so@meta.data, treatment == "CHIKV", rep == 1)
     )
     
-    dat %>%
+    dat <- dat %>%
       as_tibble(rownames = "Barcode") %>%
       filter(!!sym(args$filt_clmn) == args$sample) %>%
       mutate(
         Barcode = str_remove(Barcode, "^[0-9]+[a-z]+_"),
         Barcode = str_remove(Barcode, "_.+$")
       ) %>%
-      dplyr::select(Barcode, Annotation = !!sym(args$ann_clmn)) %>%
+      dplyr::select(Barcode, Annotation = !!sym(args$ann_clmn))
+    
+    mat_bcs <- read_tsv(
+      file.path(args$mat_path, "barcodes.tsv.gz"),
+      col_names = FALSE
+    )
+    
+    stopifnot(all(dat$Barcode %in% mat_bcs$X1))
+    
+    dat %>%
       write_tsv(args$ann_file)
   })
 

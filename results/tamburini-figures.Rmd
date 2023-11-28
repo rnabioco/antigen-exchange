@@ -22,7 +22,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ---
@@ -39,11 +39,21 @@ knitr::opts_chunk$set(
 )
 
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
+
+# Plot parameters
+min_cells <- 5
 ```
 
 ## Figure 1
 
 Antigen persists in discrete cell subsets within the lymph node
+
+* Experiment 1 is shown for the LEC 21 and 42 day timepoints. Experiment 2 data
+  include very few LECs for the 21 day timepoint.
+* Experiment 2 is shown for the DC 21 and 42 day timepoints. Experiment 1 data
+  are lower quality.
+* Subsets are only shown if there are >= `r min_cells` cells for each timepoint
+* CHECK AG ACORES FOR NEUTROPHILS
 
 ```{r "type frequency"}
 fig1_dat <- all_meta %>%
@@ -202,7 +212,7 @@ lec_typ_u <- u_dat %>%
 # Ag-score UMAPs
 u_clrs <- list(
   LEC = c("lightblue", "white", "#D7301F"),
-  DC  = c("lightblue", "white", "#6A51A3")
+  DC  = c("lightblue", "white", "#6A51A3", "#6A51A3")
   # DC  = c("white", "#6A51A3")
 )
 
@@ -239,30 +249,34 @@ lec_ag_u <- u_dat %>%
 
 ```{r "LEC Ag scores", fig.width = 8, fig.height = 2}
 # Data for boxplots
-dat <- lec_so@meta.data %>%
+lec_dat <- lec_so@meta.data %>%
   filter(
-    mouse != "6wk-3wk",
     !subtype %in% c("unassigned"),
     exp %in% c("exp-0", "exp-1")
   ) %>%
   group_by(subtype) %>%
-  filter(all(table(tm) >= 10)) %>%
+  filter(all(table(mouse) >= min_cells)) %>%
   ungroup() %>%
+  filter(mouse != "6wk-3wk") %>%
   mutate(subtype = fct_reorder(subtype, Ag_score, mean, .desc = TRUE))
 
-# # Data for lines
-# ln_dat <- dat %>%
-#   group_by(tm, mouse, subtype) %>%
-#   summarize(Ag_score = median(Ag_score), .groups = "drop")
+plt_lec_typs <- unique(lec_dat$subtype)
+
+ln_dat <- lec_dat %>%
+  group_by(subtype, tm) %>%
+  summarize(Ag_score = median(Ag_score), .groups = "drop")
 
 # Create boxplots
-lec_ag_bxs <- dat %>%
+lec_ag_bxs <- lec_dat %>%
   ggplot(aes(tm, Ag_score, fill = subtype)) +
   
-  geom_smooth(
-    data = dat,
-    method = "loess",
-    se = FALSE, color = "grey85", linewidth = 0.5, fill = "black", linetype = 2
+  # geom_smooth(
+  #   method = "loess", span = 2,
+  #   se = FALSE, color = "grey85", linewidth = 0.5, fill = "black", linetype = 2
+  # ) +
+  geom_line(
+    data = ln_dat,
+    color = "grey85", linewidth = 0.5, linetype = 2
   ) +
   geom_boxplot(aes(group = mouse), outlier.size = 0.2, width = 3, key_glyph = draw_key_point) +
   
@@ -280,41 +294,40 @@ lec_ag_bxs <- dat %>%
     legend.position = "none",
     plot.margin     = margin(0, 15, 0, 15)
   )
-
-# # Plot all cell types
-# dat <- all_meta %>%
-#   filter(
-#     mouse != "6wk-3wk",
-#     # cell_type == "LEC",
-#     !subtype %in% c("unassigned"),
-#     exp %in% c("exp-0", "exp-1")
-#   ) %>%
-#   mutate(subtype = fct_reorder(subtype, Ag_score, mean, .desc = TRUE))
 ```
 
 ```{r "DC Ag scores", fig.width = 8, fig.height = 2}
 # Data for boxplots
-dat <- dc_so@meta.data %>%
-  filter(exp %in% c("exp-0", "exp-2")) %>%
+dc_dat <- dc_so@meta.data %>%
+  filter(
+    mouse != "6wk-3wk",
+    !subtype %in% c("unassigned"),
+    exp %in% c("exp-0", "exp-2")
+  ) %>%
+  group_by(subtype) %>%
+  filter(all(table(tm) >= min_cells)) %>%
+  ungroup() %>%
   mutate(subtype = fct_reorder(subtype, Ag_score, mean, .desc = TRUE))
 
-# # Data for lines
-# ln_dat <- dat %>%
-#   group_by(tm, subtype) %>%
-#   summarize(Ag_score = median(Ag_score), .groups = "drop")
+ln_dat <- dc_dat %>%
+  group_by(subtype, tm) %>%
+  summarize(Ag_score = median(Ag_score), .groups = "drop")
 
 # Create boxplots
-dc_ag_bxs <- dat %>%
+dc_ag_bxs <- dc_dat %>%
   ggplot(aes(tm, Ag_score, fill = subtype)) +
   
-  geom_smooth(
-    data = dat,
-    method = "loess",
-    se = FALSE, color = "grey85", linewidth = 0.5, fill = "black", linetype = 2
+  # geom_smooth(
+  #   method = "loess", span = 2,
+  #   se = FALSE, color = "grey85", linewidth = 0.5, fill = "black", linetype = 2
+  # ) +
+  geom_line(
+    data = ln_dat,
+    color = "grey85", linewidth = 0.5, linetype = 2
   ) +
   geom_boxplot(
     aes(group = mouse),
-    outlier.size = 0.2, width = 2.5, key_glyph = draw_key_point
+    outlier.size = 0.2, width = 3, key_glyph = draw_key_point
   ) +
   guides(
     fill = guide_legend(override.aes = list(size = 4, shape = 22), order = 1),
@@ -333,30 +346,32 @@ dc_ag_bxs <- dat %>%
 
 ```{r "Ag heat"}
 # Create heatmaps
-heat_args <- list(
-  ttl = c("LEC", "DC"),
-  dat = list(
-    LEC = lec_so@meta.data,
-    DC = dc_so@meta.data
-  ),
-  clrs = c("#D7301F", "#6A51A3")
-  # clrs = c("#D7301F", "#0072B2")
-)
+heat_clrs <- c(LEC = "#D7301F", DC = "#6A51A3")
+exps      <- c(LEC = "exp-1",   DC = "exp-2")  
+
+# heat_args <- list(
+#   ttl = c("LEC", "DC"),
+#   dat = list(
+#     LEC = lec_so@meta.data,
+#     DC = dc_so@meta.data
+#   ),
+#   clrs = 
+#   # clrs = c("#D7301F", "#0072B2")
+# )
   
-ag_heats <- heat_args %>%
-  pmap(~ {
-    args <- list(...)
-    exps <- c(LEC = "exp-1", DC = "exp-2")  
-    
-    dat <- args$dat %>%
+ag_heats <- list(
+  LEC = lec_so@meta.data,
+  DC  = dc_so@meta.data
+) %>%
+  imap(~ {
+    dat <- .x %>%
       filter(
         !is.na(tm),
-        exp %in% c("exp-0", exps[[args$ttl]]),
-        # cell_type == args$ttl,
+        exp %in% c("exp-0", exps[[.y]]),
         subtype != "unassigned"
       ) %>%
       group_by(subtype) %>%
-      filter(all(table(tm) >= 10)) %>%
+      filter(all(table(tm) >= min_cells)) %>%
       group_by(mouse, tm, subtype) %>%
       summarize(Ag_score = mean(Ag_score), .groups = "drop") %>%
       mutate(
@@ -365,18 +380,20 @@ ag_heats <- heat_args %>%
         ttl     = "Ag-score"
       )
     
-    rat <- ifelse(
-      identical(args$ttl, "DC"),
-      1.25,
-      n_distinct(dat$subtype) / n_distinct(dat$tm)
-    )
+    # rat <- ifelse(
+    #   identical(.y, "DC"),
+    #   1.25,
+    #   n_distinct(dat$subtype) / n_distinct(dat$tm)
+    # )
+
+    rat <- n_distinct(dat$subtype) / n_distinct(dat$tm)
     
     dat %>%
       ggplot(aes(tm, subtype, fill = Ag_score)) +
       geom_tile() +
       facet_wrap(~ ttl) +
       labs(x = "days post vaccination") +
-      scale_fill_gradientn(colours = c("lightblue", "white", args$clrs)) +
+      scale_fill_gradientn(colours = c("lightblue", "white", heat_clrs[[.y]])) +
       guides(fill = guide_colorbar(
         ticks = FALSE, title = "Ag-score",
         barheight = unit(105, "pt"), barwidth = unit(10, "pt")
@@ -409,6 +426,121 @@ plot_grid(
 )
 ```
 
+<br>
+
+### Extended figures
+
+Ag-score is shown for all LEC subsets for each experiment
+
+```{r, fig.width = 14, fig.height = 6}
+# Data for boxplots
+lec_dat <- lec_so@meta.data %>%
+  filter(mouse != "6wk-3wk") %>%
+  mutate(subtype = fct_reorder(subtype, Ag_score, mean, .desc = TRUE))
+
+ln_dat <- lec_dat %>%
+  group_by(subtype, exp, tm) %>%
+  summarize(Ag_score = median(Ag_score), .groups = "drop")
+
+# Create boxplots
+exps <- c("exp-1", "exp-2")
+
+exps %>%
+  map(~ {
+    lec_dat %>%
+      filter(exp %in% c("exp-0", .x)) %>%
+      
+      ggplot(aes(tm, Ag_score, fill = subtype)) +
+      
+      geom_line(
+        data = filter(ln_dat, exp %in% c("exp-0", .x)),
+        color = "grey85", linewidth = 0.5, linetype = 2
+      ) +
+      geom_boxplot(aes(group = mouse), outlier.size = 0.2, width = 3, key_glyph = draw_key_point) +
+      
+      guides(
+        fill = guide_legend(override.aes = list(size = 4, shape = 22), order = 1),
+        linetype = guide_legend(override.aes = list(color = "black"), title = NULL)
+      ) +
+      facet_grid(~ subtype) +
+      
+      scale_fill_manual(values = lec_clrs) +
+      labs(title = .x, x = "days post vaccination", y = "Ag-score") +
+      base_theme +
+      theme(
+        aspect.ratio    = 0.9,
+        legend.position = "none",
+        plot.margin     = margin(0, 15, 0, 15)
+      )
+  }) %>%
+  plot_grid(
+    plotlist = .,
+    ncol = 1
+  )
+```
+
+```{r}
+lec_dat %>%
+  group_by(subtype, tm, exp) %>%
+  summarize(n = n(), .groups = "drop")
+```
+
+Ag-score is shown for all DC subsets for each experiment
+
+```{r, fig.width = 9, fig.height = 6}
+# Data for boxplots
+dc_dat <- dc_so@meta.data %>%
+  filter(mouse != "6wk-3wk") %>%
+  mutate(subtype = fct_reorder(subtype, Ag_score, mean, .desc = TRUE))
+
+ln_dat <- dc_dat %>%
+  group_by(subtype, exp, tm) %>%
+  summarize(Ag_score = median(Ag_score), .groups = "drop")
+
+# Create boxplots
+exps <- c("exp-1", "exp-2")
+
+exps %>%
+  map(~ {
+    dc_dat %>%
+      filter(exp %in% c("exp-0", .x)) %>%
+      
+      ggplot(aes(tm, Ag_score, fill = subtype)) +
+      
+      geom_line(
+        data = filter(ln_dat, exp %in% c("exp-0", .x)),
+        color = "grey85", linewidth = 0.5, linetype = 2
+      ) +
+      geom_boxplot(aes(group = mouse), outlier.size = 0.2, width = 3, key_glyph = draw_key_point) +
+      
+      guides(
+        fill = guide_legend(override.aes = list(size = 4, shape = 22), order = 1),
+        linetype = guide_legend(override.aes = list(color = "black"), title = NULL)
+      ) +
+      facet_grid(~ subtype) +
+      
+      scale_fill_manual(values = dc_clrs) +
+      labs(title = .x, x = "days post vaccination", y = "Ag-score") +
+      base_theme +
+      theme(
+        aspect.ratio    = 0.9,
+        legend.position = "none",
+        plot.margin     = margin(0, 15, 0, 15)
+      )
+  }) %>%
+  plot_grid(
+    plotlist = .,
+    ncol = 1
+  )
+
+```
+
+```{r}
+dc_dat %>%
+  group_by(subtype, tm, exp) %>%
+  summarize(n = n(), .groups = "drop")
+```
+
 ---
 
 <br>
@@ -416,6 +548,9 @@ plot_grid(
 <br>
 
 ## Figure 2
+
+* p-values were calculated using a t test with bonferroni correction
+* ADD AG MODULE BOXPLOTS
 
 ```{r "exchange UMAPs", fig.width = 16, fig.height = 4}
 # Keys for naming labels
@@ -436,7 +571,7 @@ m_key <- c(
 # Using experiment 1 since, experiment is missing 3wk LECs
 dat <- lec_so@meta.data %>%
   group_by(subtype) %>%
-  filter(all(table(mouse) >= 10)) %>%
+  filter(all(table(mouse) >= min_cells)) %>%
   ungroup() %>%
   mutate(mouse = fct_relevel(mouse, names(m_key))) %>%
   filter(exp == "exp-1") %>%
@@ -524,227 +659,63 @@ ex_panels <- map2(ex_heat, ex_u, ~ {
 ```
 
 ```{r "exchange 3wk boxes", fig.width = 10, fig.height = 2}
-tm_clmn <- "tm_3"
-ag_clmn <- "Ag_score_3"
+# Plot colors
+tm <- "21"
 
-lec_lvls <- c("cLEC", "fLEC", "Collecting")
+plt_fill <- plt_clr <- tm_clrs
+plt_fill[names(plt_fill) != tm] <- "white"
+plt_clr[names(plt_clr) != tm]   <- "grey65"
+plt_clr[names(plt_clr) == tm]   <- "black"
 
 # Effect of previous vaccination on uptake of new antigen
 # Comparison using exp-2 isn't very useful since we captured very few LECs
 # for the 3wk timepoint
-dat <- lec_so@meta.data %>%
+# Use LEC subsets shown in Fig 1
+ex_3_bxs <- lec_so@meta.data %>%
   filter(
-    # cell_type == "LEC",
     !subtype %in% c("unassigned"),
     exp %in% c("exp-0", "exp-1")
   ) %>%
-  group_by(subtype) %>%
-  filter(all(table(mouse) >= 5)) %>%
-  ungroup() %>%
-  mutate(
-    # subtype = fct_relevel(subtype, lec_lvls),
-    subtype = fct_reorder(subtype, !!sym(ag_clmn), mean, .desc = TRUE),
-    vaccination = fct_relevel(vaccination, vacs)
-  )
-
-# Data to draw line connecting timepoints
-ln_dat <- dat %>%
-  filter(mouse != "6wk-3wk")
-  # # group_by(!!sym(tm_clmn), subtype) %>%
-  # # summarize(!!sym(ag_clmn) := median(!!sym(ag_clmn)), .groups = "drop") %>%
-  # # na.omit() %>%
-  # group_by(subtype) %>%
-  # group_modify(~ {
-  #   if (nrow(.x) == 2) {
-  #     scores <- pull(.x, ag_clmn)
-  #     tms    <- pull(.x, tm_clmn)
-  #     new_ag <- scores[tms == max(tms)]
-  #     
-  #     .x %>%
-  #       add_row(
-  #         !!sym(tm_clmn) := max(pull(.x, tm_clmn)) - 1,
-  #         !!sym(ag_clmn) := new_ag
-  #       )
-  #   } else {
-  #     .x
-  #   }
-  # }) %>%
-  # ungroup()
-
-# p-values for vaccination
-p_dat <- dat %>%
-  group_by(!!sym(tm_clmn), subtype) %>%
-  filter(all(vacs %in% vaccination)) %>%
-  summarize(
-    pval = t.test(
-      (!!sym(ag_clmn))[vaccination == vacs[1]],
-      (!!sym(ag_clmn))[vaccination == vacs[2]],
-      alternative = "less"
-    )$p.value,
-    y = max(!!sym(ag_clmn)),
-    y = y + (y * 0.1),
-    .groups = "drop"
-  ) %>%
-  mutate(padj = p.adjust(pval, method = "bonferroni")) %>%
-  rowwise() %>%
-  mutate(
-    plab = .format_pvalue(padj),
-    plab = str_c("italic(p) == ", plab)
-  ) %>%
-  filter(padj < 0.05)
-
-# Create boxplots
-ex_3_bxs <- dat %>%
-  ggplot(aes(!!sym(tm_clmn), !!sym(ag_clmn), fill = as.character(!!sym(tm_clmn)), alpha = vaccination)) +
-  geom_smooth(
-    data = ln_dat,
-    mapping = aes(fill = NULL, alpha = NULL),
-    method = "loess",
-    se = FALSE, color = "grey85", linetype = 2, linewidth = 0.5, show.legend = FALSE,
-    span = 0.8
-  ) +
-  geom_boxplot(
-    outlier.size = 0.2, width = 5, key_glyph = draw_key_point,
-    position = position_dodge2(preserve = "single")
-  ) +
-  geom_text(
-    aes(y = y, label = plab, alpha = NULL),
-    data = p_dat,
-    parse = TRUE,
-    show.legend = FALSE,
-    # size = txt_pt1 / .pt
-    size = 8 / .pt
-  ) +
-  facet_grid(~ subtype) +
-  scale_alpha_manual(values = c(single = 0.35, dual = 1)) +
-  scale_fill_manual(values = tm_clrs) +
-  guides(fill = "none", alpha = guide_legend(override.aes = list(shape = 15, size = 4))) +
-  labs(x = "days post vaccination", y = "Ag-score") +
-  base_theme +
-  theme(
-    aspect.ratio = 0.6
+  create_exchange_boxes(
+    tm_clmn   = "tm_3",
+    ag_clmn   = "Ag_score_3",
+    typs      = plt_lec_typs,
+    clrs      = plt_clr,
+    fill_clrs = plt_fill
   )
 ```
 
 ```{r "exchange 6wk boxes", fig.width = 10, fig.height = 2.15}
+# Plot colors
+tm <- "42"
 
-# old_so <- qread("~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/2022-10-28/sobjs/so_lec_new.qs")
-
-# Effect of vaccination on retention of previously acquired antigen 
-tm_clmn <- "tm_6"
-ag_clmn <- "Ag_score_6"
+plt_fill <- plt_clr <- tm_clrs
+plt_fill[names(plt_fill) != tm] <- "white"
+plt_clr[names(plt_clr) != tm]   <- "grey65"
+plt_clr[names(plt_clr) == tm]   <- "black"
 
 # Effect of previous vaccination on uptake of new antigen
 # Comparison using exp-2 isn't very useful since we captured very few LECs
 # for the 3wk timepoint
-dat <- lec_so@meta.data %>%
+# Use LEC subsets shown in Fig 1
+ex_6_bxs <- lec_so@meta.data %>%
   filter(
-    # cell_type == "LEC",
     !subtype %in% c("unassigned"),
     exp %in% c("exp-0", "exp-1")
   ) %>%
-  group_by(subtype) %>%
-  filter(all(table(mouse) >= 5)) %>%
-  ungroup() %>%
-  mutate(
-    # subtype = fct_relevel(subtype, lec_lvls),
-    subtype = fct_reorder(subtype, !!sym(ag_clmn), mean, .desc = TRUE),
-    vaccination = fct_relevel(vaccination, vacs)
-  )
-
-# # ADD OLD LEC ANNOTATIONS
-# dat <- dat %>%
-#   as_tibble(rownames = ".cell_id") %>%
-#   mutate(raw_id = str_remove(.cell_id, "_.+$"))
-# 
-# dat <- old_so@meta.data %>%
-#   as_tibble(rownames = ".cell_id") %>%
-#   mutate(raw_id = str_remove(.cell_id, "_.+$")) %>%
-#   dplyr::select(orig.ident, raw_id, subtype) %>%
-#   right_join(dat, by = c("orig.ident", "raw_id"), suffix = c("", ".new"))
-
-# Data to draw line connecting timepoints
-ln_dat <- dat %>%
-  filter(mouse != "6wk-3wk")
-  # group_by(!!sym(tm_clmn), subtype) %>%
-  # summarize(!!sym(ag_clmn) := median(!!sym(ag_clmn)), .groups = "drop") %>%
-  # na.omit() %>%
-  # group_by(subtype) %>%
-  # group_modify(~ {
-  #   if (nrow(.x) == 2) {
-  #     scores <- pull(.x, ag_clmn)
-  #     tms    <- pull(.x, tm_clmn)
-  #     new_ag <- scores[tms == max(tms)]
-  #     
-  #     .x %>%
-  #       add_row(
-  #         !!sym(tm_clmn) := max(pull(.x, tm_clmn)) - 1,
-  #         !!sym(ag_clmn) := new_ag
-  #       )
-  #   } else {
-  #     .x
-  #   }
-  # }) %>%
-  # ungroup()
-
-# p-values for vaccination
-p_dat <- dat %>%
-  group_by(!!sym(tm_clmn), subtype) %>%
-  filter(all(vacs %in% vaccination)) %>%
-  summarize(
-    pval = t.test(
-      (!!sym(ag_clmn))[vaccination == vacs[1]],
-      (!!sym(ag_clmn))[vaccination == vacs[2]],
-      alternative = "less"
-    )$p.value,
-    y = max(!!sym(ag_clmn)),
-    y = y + (y * 0.1),
-    .groups = "drop"
-  ) %>%
-  mutate(padj = p.adjust(pval, method = "bonferroni")) %>%
-  rowwise() %>%
-  mutate(
-    plab = .format_pvalue(padj),
-    plab = str_c("italic(p) == ", plab)
-  ) %>%
-  filter(padj < 0.05)
-
-# Create boxplots
-ex_6_bxs <- dat %>%
-  ggplot(aes(!!sym(tm_clmn), !!sym(ag_clmn), fill = as.character(!!sym(tm_clmn)), alpha = vaccination)) +
-  geom_smooth(
-    data = ln_dat,
-    mapping = aes(fill = NULL, alpha = NULL),
-    method = "loess",
-    se = FALSE, color = "grey85", linetype = 2, linewidth = 0.5, show.legend = FALSE,
-    span = 0.8
-  ) +
-  geom_boxplot(
-    outlier.size = 0.2, width = 5, key_glyph = draw_key_point,
-    position = position_dodge2(preserve = "single")
-  ) +
-  geom_text(
-    aes(y = y, label = plab, alpha = NULL),
-    data = p_dat,
-    parse = TRUE,
-    show.legend = FALSE,
-    size = 8 / .pt,
-    # size = txt_pt1 / .pt,
-    hjust = 0.7
-  ) +
-  facet_grid(~ subtype) +
-  scale_alpha_manual(values = c(single = 0.35, dual = 1)) +
-  scale_fill_manual(values = tm_clrs) +
-  guides(fill = "none", alpha = guide_legend(override.aes = list(shape = 15, size = 4))) +
-  labs(x = "days post vaccination", y = "Ag-score") +
-  base_theme +
-  theme(
-    aspect.ratio = 0.6
+  create_exchange_boxes(
+    tm_clmn   = "tm_6",
+    ag_clmn   = "Ag_score_6",
+    typs      = plt_lec_typs,
+    clrs      = plt_clr,
+    fill_clrs = plt_fill
   )
 ```
 
 ```{r "exchange correlation", fig.width = 10, fig.height = 4}
 # Plot data
+lec_lvls <- c("cLEC", "fLEC", "Collecting")
+
 dat <- lec_so@meta.data %>%
   as_tibble(rownames = "cell_id") %>%
   filter(
@@ -789,7 +760,7 @@ ag_labs <- c(
 
 ex_scat <- dat %>%
   ggplot(aes(!!sym(x_var), !!sym(y_var), color = subtype)) +
-  geom_abline(slope = 1, intercept = 0, size = 0.5, color = "grey90") +
+  geom_abline(slope = 1, intercept = 0, linewidth = 0.5, color = "grey90") +
   geom_point(size = 1.5) +
   geom_smooth(
     method    = "lm",
@@ -832,6 +803,70 @@ ex_scat <- dat %>%
   plot_layout(heights = c(1, 0.55, 1, 0.55, 0.8)) +
   plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
+```
+
+<br>
+
+### Extended figures
+
+Day 21 Ag-score is shown for all subsets for each experiment
+
+```{r "extended 3wk boxes", fig.width = 15, fig.height = 5}
+# Plot colors
+tm <- "21"
+
+plt_fill <- plt_clr <- tm_clrs
+plt_fill[names(plt_fill) != tm] <- "white"
+plt_clr[names(plt_clr) != tm]   <- "grey65"
+plt_clr[names(plt_clr) == tm]   <- "black"
+
+# Effect of previous vaccination on uptake of new antigen
+# Comparison using exp-2 isn't very useful since we captured very few LECs
+# for the 3wk timepoint
+# Use LEC subsets shown in Fig 1
+c("exp-1", "exp-2") %>%
+  map(~ {
+    lec_so@meta.data %>%
+      filter(exp %in% c("exp-0", .x)) %>%
+      create_exchange_boxes(
+        tm_clmn   = "tm_3",
+        ag_clmn   = "Ag_score_3",
+        clrs      = plt_clr,
+        fill_clrs = plt_fill
+      ) +
+      ggtitle(.x)
+  }) %>%
+  plot_grid(plotlist = ., ncol = 1)
+```
+
+Day 42 Ag-score is shown for all subsets for each experiment
+
+```{r "extended 6wk boxes", fig.width = 15, fig.height = 5}
+# Plot colors
+tm <- "42"
+
+plt_fill <- plt_clr <- tm_clrs
+plt_fill[names(plt_fill) != tm] <- "white"
+plt_clr[names(plt_clr) != tm]   <- "grey65"
+plt_clr[names(plt_clr) == tm]   <- "black"
+
+# Effect of previous vaccination on uptake of new antigen
+# Comparison using exp-2 isn't very useful since we captured very few LECs
+# for the 3wk timepoint
+# Use LEC subsets shown in Fig 1
+c("exp-1", "exp-2") %>%
+  map(~ {
+    lec_so@meta.data %>%
+      filter(exp %in% c("exp-0", .x)) %>%
+      create_exchange_boxes(
+        tm_clmn   = "tm_6",
+        ag_clmn   = "Ag_score_6",
+        clrs      = plt_clr,
+        fill_clrs = plt_fill
+      ) +
+      ggtitle(.x)
+  }) %>%
+  plot_grid(plotlist = ., ncol = 1)
 ```
 
 ---

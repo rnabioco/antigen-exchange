@@ -249,6 +249,87 @@ format_ag_data <- function(so_in, norm_factors, ag_key) {
       tm_6 = ifelse(vaccination == "dual", 42, tm)
     )
 }
+
+create_exchange_boxes <- function(dat, tm_clmn, ag_clmn, typs = NULL,
+                                  clrs, fill_clrs) {
+  
+  # Format plot data
+  dat <- dat %>%
+    mutate(
+      subtype = fct_reorder(subtype, !!sym(ag_clmn), mean, .desc = TRUE),
+      vaccination = fct_relevel(vaccination, vacs)
+    )
+  
+  if (!is.null(typs)) {
+    dat <- dat %>%
+      filter(subtype %in% typs)
+  }
+  
+  # Data to draw line connecting timepoints
+  ln_dat <- dat %>%
+    filter(mouse != "6wk-3wk") %>%
+    group_by(!!sym(tm_clmn), subtype) %>%
+    summarize(!!sym(ag_clmn) := median(!!sym(ag_clmn)), .groups = "drop")
+  
+  # p-values for vaccination
+  p_dat <- dat %>%
+    group_by(!!sym(tm_clmn), subtype) %>%
+    filter(all(vacs %in% vaccination)) %>%
+    summarize(
+      pval = t.test(
+        (!!sym(ag_clmn))[vaccination == vacs[1]],
+        (!!sym(ag_clmn))[vaccination == vacs[2]],
+        alternative = "less"
+      )$p.value,
+      y = max(!!sym(ag_clmn)),
+      y = y + (y * 0.1),
+      .groups = "drop"
+    ) %>%
+    mutate(padj = p.adjust(pval, method = "bonferroni")) %>%
+    rowwise() %>%
+    mutate(
+      plab = .format_pvalue(padj),
+      plab = str_c("italic(p) == ", plab)
+    ) %>%
+    filter(padj < 0.05)
+  
+  # Create boxplots
+  res <- dat %>%
+    ggplot(aes(!!sym(tm_clmn), !!sym(ag_clmn))) +
+    
+    geom_line(
+      data = ln_dat,
+      color = "grey85", linewidth = 0.5, linetype = 2
+    ) +
+    geom_boxplot(
+      aes(fill = as.character(!!sym(tm_clmn)), color = as.character(!!sym(tm_clmn)), alpha = vaccination),
+      outlier.size = 0.2, width = 5, key_glyph = draw_key_point,
+      position = position_dodge2(preserve = "single")
+    ) +
+    geom_text(
+      aes(y = y, label = plab, alpha = NULL),
+      data = p_dat,
+      parse = TRUE,
+      show.legend = FALSE,
+      # size = txt_pt1 / .pt
+      size = 8 / .pt
+    ) +
+    facet_grid(~ subtype) +
+    scale_alpha_manual(values = c(single = 0.35, dual = 1)) +
+    scale_fill_manual(values = fill_clrs) +
+    scale_color_manual(values = clrs) +
+    guides(
+      fill = "none", color = "none",
+      alpha = guide_legend(override.aes = list(shape = 15, size = 4))
+    ) +
+    labs(x = "days post vaccination", y = "Ag-score") +
+    base_theme +
+    theme(
+      aspect.ratio = 0.7
+    )
+  
+  res
+}
 ```
 
 ```{r "references"}
@@ -426,10 +507,11 @@ cd45neg_so <- cd45neg_so %>%
   mutate_meta(mutate, rough_type = type)
 
 # Adjust B and T cells
+# adjust stem cells based on Cd79a, these appear to be B cells
 cd45neg_so <- cd45neg_so %>%
   classify_markers(
-    feats    = c("Ptprc", "Cd19"),
-    filt     = Ptprc > 1.25 & Cd19 > 0.5,
+    feats    = c("Ptprc", "Cd79a", "Cd19"),
+    filt     = Ptprc > 1 & Cd79a > 1.5 & Cd19 > 0.5,
     type     = "B cells",
     clst_col = clst_clmn,
     type_col = "rough_type"
@@ -448,6 +530,17 @@ cd45neg_so <- cd45neg_so %>%
     feats    = c("Ptprc", "Pdpn", "Pecam1"),
     filt     = Ptprc < 0.5 & Pdpn < 0.5 & Pecam1 > 2,
     type     = "Endothelial cells",
+    clst_col = clst_clmn,
+    type_col = "rough_type"
+  )
+
+# Adjust epithelial cells based on E-cadherin and cytokeratin-8
+# some unassigned cells appear to be epithelial cells
+cd45neg_so <- cd45neg_so %>%
+  classify_markers(
+    feats    = c("Cdh1", "Krt8"),
+    filt     = Cdh1 > 0.75 & Krt8 > 0.75,
+    type     = "Epithelial cells",
     clst_col = clst_clmn,
     type_col = "rough_type"
   )
