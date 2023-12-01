@@ -12,22 +12,20 @@ output:
     self_contained: true
     highlight:      "kate"
 params:
-  template_dir:  "src"                                                                      # Directory containing template Rmarkdowns
-  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs" # Directory for loading/saving Seurat objects
-  ref_dir:       "ref"                                                                      # Directory to use for loading/saving clustifyr references
+  template_dir:  "src"                                                     # template Rmarkdowns
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # loading/saving Seurat objects
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models" # loading/saving ML models
+  ref_dir:       "ref"                                                     # loading/saving clustifyr references
   sample_info:   "sample_info.xlsx"
   res_dir:                                                
     value:
       exp-0: "~/Projects/antigen-tracking/results"
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
+  chikv_so: "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs/so_merge.qs"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
-
----
-
-<br>
 
 ```{r "setup", include = FALSE}
 # Default chunk options
@@ -39,10 +37,27 @@ knitr::opts_chunk$set(
 )
 
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
+knitr::knit(here::here(params$template_dir, "setup-ml.Rmd"), "")
 
 # Plot parameters
 min_cells <- 5
 ```
+
+---
+
+<br>
+
+## Cell type annotations
+
+```{r}
+
+```
+
+---
+
+<br>
+
+<br>
 
 ## Figure 1
 
@@ -260,7 +275,7 @@ lec_dat <- lec_so@meta.data %>%
   filter(mouse != "6wk-3wk") %>%
   mutate(subtype = fct_reorder(subtype, Ag_score, mean, .desc = TRUE))
 
-plt_lec_typs <- unique(lec_dat$subtype)
+plt_lec_typs <- levels(lec_dat$subtype)
 
 ln_dat <- lec_dat %>%
   group_by(subtype, tm) %>%
@@ -549,6 +564,124 @@ dc_dat %>%
 
 ## Figure 2
 
+Ag-low and -high cells were identified by separately clustering each LEC subset
+for each sample into two groups based on Ag-score. For the 6wk-3wk sample,
+the 3wk Ag score is used. Ag-low/high classifications
+used for the analysis are shown below.
+
+Ag-low and -high cells are shown for d14 LEC subsets
+
+```{r "d14 Ag signal", fig.width = 10, fig.height = 2.5}
+# # Cell types to plot
+# plt_typs <- typ_ag_lvls[typ_ag_lvls != "BEC"]
+
+# Format plotting data
+plt_dat <- lec_so@meta.data %>%
+  filter(
+    subtype %in% plt_lec_typs,
+    mouse %in% rf_mouse
+  )
+
+# Format plot labels
+plt_labs <- plt_dat %>%
+  group_by(subtype, mouse, tm, !!sym(rf_dat_clmn)) %>%
+  summarize(
+    n = label_comma()(n()),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n = str_c(!!sym(rf_dat_clmn), ": ", n, " cells"),
+    !!sym(rf_dat_clmn) := fct_relevel(!!sym(rf_dat_clmn), names(pred_clrs))
+  ) %>%
+  group_by(subtype, mouse, tm) %>%
+  arrange(!!sym(rf_dat_clmn)) %>%
+  mutate(n = str_c(n, collapse = "\n"))
+
+plt_clrs <- lec_clrs
+# plt_clrs["fLEC"] <- "black"
+  
+# Create bargraphs
+hsts <- plt_lec_typs %>%
+  imap(~ {
+    dat <- plt_dat %>%
+      filter(subtype == .x) %>%
+      mutate(mouse = as.character(mouse))
+    
+    fst <- .y == 1
+    lst <- .y == length(tms)
+    
+    br <- dat %>%
+      ggplot(aes(y = mouse, fill = subtype, alpha = !!sym(rf_dat_clmn))) +
+      geom_bar() +
+      facet_wrap(~ subtype, nrow = 1, scales = "free") +
+      scale_alpha_manual(values = c(low = 0.35, high = 1)) +
+      scale_fill_manual(values = plt_clrs) +
+      scale_y_discrete(expand = expansion(c(0, 0))) +
+      scale_x_continuous(expand = expansion(c(0, 0))) +
+      base_theme +
+      theme_void() +
+      theme(
+        legend.position = "none",
+        strip.text      = element_text(size = 11),
+        plot.margin     = margin(t = 5)
+      )
+    
+    # Create histograms
+    hst <- dat %>%
+      ggplot(aes(Ag_score, fill = subtype, alpha = !!sym(rf_dat_clmn))) +
+      geom_histogram(bins = 30) +
+      geom_text(
+        aes(-Inf, Inf, label = n),
+        data = filter(plt_labs, subtype == .x),
+        check_overlap = TRUE,
+        alpha = 1,
+        hjust = -0.25,
+        vjust = 1.1,
+        size  = txt_pt1 / .pt
+      ) +
+      facet_wrap(~ subtype, scales = "free", nrow = 1) +
+      guides(fill = "none", alpha = guide_legend(title = "Ag group")) +
+      scale_alpha_manual(values = c(low = 0.35, high = 1)) +
+      scale_fill_manual(values = plt_clrs) +
+      scale_y_continuous(expand = expansion(c(0.05, 0.25))) +
+      labs(x = "Ag-score", y = "number of cells") +
+      base_theme +
+      theme(
+        aspect.ratio    = 0.7,
+        strip.text      = element_blank(),
+        legend.position = "none",
+        plot.margin     = margin(t = 0, r = 5, b = 5, l = 5)
+      )
+    
+    if (!fst) {
+      hst <- hst +
+        theme(axis.title.y = element_blank())
+    }
+    
+    plot_grid(
+      br, hst,
+      ncol = 1,
+      align = "v", axis = "rl",
+      rel_heights = c(0.15, 1)
+    )
+  })
+
+# Create final figure
+wrap_plots(
+  hsts,
+  widths = c(1.08, 1, 1, 1, 1),
+  nrow = 1
+)
+```
+
+---
+
+<br>
+
+<br>
+
+## Figure 3
+
 * p-values were calculated using a t test with bonferroni correction
 * ADD AG MODULE BOXPLOTS
 
@@ -708,7 +841,8 @@ ex_6_bxs <- lec_so@meta.data %>%
     ag_clmn   = "Ag_score_6",
     typs      = plt_lec_typs,
     clrs      = plt_clr,
-    fill_clrs = plt_fill
+    fill_clrs = plt_fill,
+    p_hjust   = 0.75
   )
 ```
 

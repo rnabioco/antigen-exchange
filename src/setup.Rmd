@@ -56,8 +56,6 @@ library(GOSemSim)
 library(biomaRt)
 library(ggtree)
 
-purrr::walk(R_packages, library, character.only = TRUE)
-
 source(here(params$template_dir, "funs.R"))
 
 # Load sample info
@@ -258,7 +256,7 @@ format_ag_data <- function(so_in, norm_factors, ag_key) {
 }
 
 create_exchange_boxes <- function(dat, tm_clmn, ag_clmn, typs = NULL,
-                                  clrs, fill_clrs) {
+                                  clrs, fill_clrs, p_hjust = 0.5) {
   
   # Format plot data
   dat <- dat %>%
@@ -319,7 +317,8 @@ create_exchange_boxes <- function(dat, tm_clmn, ag_clmn, typs = NULL,
       parse = TRUE,
       show.legend = FALSE,
       # size = txt_pt1 / .pt
-      size = 8 / .pt
+      size = 8 / .pt,
+      hjust = p_hjust
     ) +
     facet_grid(~ subtype) +
     scale_alpha_manual(values = c(single = 0.35, dual = 1)) +
@@ -331,9 +330,7 @@ create_exchange_boxes <- function(dat, tm_clmn, ag_clmn, typs = NULL,
     ) +
     labs(x = "days post vaccination", y = "Ag-score") +
     base_theme +
-    theme(
-      aspect.ratio = 0.7
-    )
+    theme(aspect.ratio = 0.7)
   
   res
 }
@@ -827,75 +824,6 @@ cd45neg_so <- cd45neg_so %>%
       ) %>%
       dplyr::select(-c(new_type, new_subtype))
   })
-```
-
-```{r "LEC RF Ag class", eval = create_sobjs}
-# Set Ag-low/high classes for classifier
-# * split for each cell type from each mouse
-# * set subtype cutoff for all mice using d14 cutoff
-rf_mouse <- "d14"
-
-ag_clmns <- c(
-  Ag_class_rf  = "Ag_score",
-  Ag_class_3wk = "Ag_score_3",
-  Ag_class_6wk = "Ag_score_6"
-)
-
-ag_clmns %>%
-  iwalk(~ {
-    lec_so <- lec_so %>%
-      mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
-      cluster_signal(
-        data_column  = .x,
-        grp_column   = "mouse_type",
-        clust_column = .y,
-        method       = "km"
-      )
-    
-    # The threshold will be the same for each column since this is set using
-    # only the d14 mouse
-    threshold <- lec_so@meta.data %>%
-      filter(mouse == rf_mouse, !!sym(.y) == "high") %>%
-      group_by(subtype) %>%
-      summarize(threshold = min(!!sym(.x)), .groups = "drop")
-    
-    threshold <- set_names(threshold$threshold, threshold$subtype)
-    
-    lec_so <<- lec_so %>%
-      mutate_meta(
-        mutate,
-        !!sym(.y) := ifelse(!!sym(.x) >= threshold[subtype], "high", "low")
-      )
-  })
-
-# Identify double-positive cells for the 6wk-3wk mouse
-lec_so <- lec_so %>%
-  mutate_meta(
-    mutate,
-    Ag_class_dual = case_when(
-      mouse == "6wk-3wk" & (Ag_class_3wk == "high" & Ag_class_6wk == "high") ~ "double-high",
-      mouse == "6wk-3wk" & (Ag_class_3wk == "high" | Ag_class_6wk == "high") ~ "single-high",
-      # mouse == "6wk-3wk" & Ag_class_6wk == "high"                            ~ "6wk-single",
-      # mouse == "6wk-3wk" & Ag_class_3wk == "high"                            ~ "3wk-single",
-      mouse == "6wk"     & Ag_class_6wk == "high"                            ~ "6wk-high",
-      mouse == "3wk"     & Ag_class_3wk == "high"                            ~ "3wk-high",
-      # mouse == "6wk-3wk" & (Ag_class_3wk == "low" & Ag_class_6wk == "low")   ~ "double-low",
-      TRUE                                                                   ~ "low"
-    )
-  )
-```
-
-```{r "AG CLASS 2", eval = FALSE}
-# Try splitting into Ag-low/high separately for each cell type
-lec_so <- lec_so %>%
-  subset(mouse != "d2") %>%
-  mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
-  cluster_signal(
-    data_column  = "Ag_score",
-    grp_column   = "mouse_type",
-    clust_column = "Ag_class_2",
-    method       = "km"
-  )
 ```
 
 ```{r "FRC object", eval = create_sobjs}
