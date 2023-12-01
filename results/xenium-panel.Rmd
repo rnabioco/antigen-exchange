@@ -52,32 +52,32 @@ rf_mouse     <- "d14"
 # Run setup chunks
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 
-# Set Ag-low/high groups
-# * exclude d2 since it has very few cells
-# * split for each cell type from each mouse
-# * set subtype cutoff for all mice using d14 cutoff
-lec_so <- lec_so %>%
-  subset(mouse != "d2") %>%
-  mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
-  cluster_signal(
-    data_column  = "Ag_score",
-    grp_column   = "mouse_type",
-    clust_column = "Ag_class_2",
-    method       = "km"
-  )
-
-threshold <- lec_so@meta.data %>%
-  filter(mouse == rf_mouse, Ag_class_2 == "high") %>%
-  group_by(subtype) %>%
-  summarize(threshold = min(Ag_score), .groups = "drop")
-
-threshold <- set_names(threshold$threshold, threshold$subtype)
-
-lec_so <- lec_so %>%
-  mutate_meta(
-    mutate,
-    Ag_class_3 = ifelse(Ag_score >= threshold[subtype], "high", "low")
-  )
+# # Set Ag-low/high groups
+# # * exclude d2 since it has very few cells
+# # * split for each cell type from each mouse
+# # * set subtype cutoff for all mice using d14 cutoff
+# lec_so <- lec_so %>%
+#   subset(mouse != "d2") %>%
+#   mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
+#   cluster_signal(
+#     data_column  = "Ag_score",
+#     grp_column   = "mouse_type",
+#     clust_column = "Ag_class_2",
+#     method       = "km"
+#   )
+# 
+# threshold <- lec_so@meta.data %>%
+#   filter(mouse == rf_mouse, Ag_class_2 == "high") %>%
+#   group_by(subtype) %>%
+#   summarize(threshold = min(Ag_score), .groups = "drop")
+# 
+# threshold <- set_names(threshold$threshold, threshold$subtype)
+# 
+# lec_so <- lec_so %>%
+#   mutate_meta(
+#     mutate,
+#     Ag_class_3 = ifelse(Ag_score >= threshold[subtype], "high", "low")
+#   )
 
 rm(dc_so, all_meta)
 ```
