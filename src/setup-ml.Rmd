@@ -15,9 +15,6 @@ pred_clrs <- c(
   `Ag-high`      = "#D7301F"
 )
 
-base_theme <- djvdj_theme() +
-  theme(axis.text = element_text(color = "black"))
-
 # RF parameters
 rf_dat_clmn  <- "Ag_class_ml"
 rf_cell_type <- "cLEC"
@@ -341,28 +338,32 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
   res
 }
 
-create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10) {
+create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10,
+                            p_test = wilcox.test, draw_line = TRUE, pt_size = 1) {
   
   # Format data
   n_mice <- n_distinct(so_in$mouse)
   
   gn_dat <- so_in %>%
-    FetchData(c("mouse", "subtype", "pred_grp", "training_data", gns)) %>%
+    FetchData(c("mouse", "tm", "subtype", "pred_grp", "training_data", gns)) %>%
     as_tibble(rownames = ".cell_id") %>%
     filter(!training_data) %>%
     pivot_longer(all_of(gns)) %>%
-    mutate(name = fct_relevel(name, gns))
+    mutate(
+      name = fct_relevel(name, gns),
+      tm = str_c("day ", tm)
+    )
   
   plt_dat <- gn_dat %>%
-    group_by(name, mouse, subtype, pred_grp) %>%
+    group_by(name, mouse, tm, subtype, pred_grp) %>%
     summarize(
       med = median(value),
       q1  = quantile(value, 0.25),
       q3  = quantile(value, 0.75),
       .groups = "drop"
     ) %>%
-    mutate(pred_grp = fct_relevel(pred_grp, names(plt_clrs))) %>%
-    group_by(name, mouse, subtype) %>%
+    mutate(pred_grp = fct_relevel(pred_grp, names(pred_clrs))) %>%
+    group_by(name, mouse, tm, subtype) %>%
     
     filter(sum(med) > 0) %>%
     mutate(cor = cor(as.numeric(pred_grp), med)) %>%
@@ -378,17 +379,17 @@ create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10)
   p_clmns <- c(clmn2, clmn3)
   
   p_dat <- gn_dat %>%
-    group_by(mouse, subtype, pred_grp, name) %>%
+    group_by(mouse, tm, subtype, pred_grp, name) %>%
     mutate(y = quantile(value, 0.75)) %>%
-    group_by(mouse, subtype, name) %>%
+    group_by(mouse, tm, subtype, name) %>%
     summarize(
       y = max(y),
       
-      !!sym(clmn2) := wilcox.test(
+      !!sym(clmn2) := p_test(
         value[pred_grp == clmn2], value[pred_grp == "Ag-low"],
         alternative = p_alt
       )$p.value,
-      !!sym(clmn3) := wilcox.test(
+      !!sym(clmn3) := p_test(
         value[pred_grp == clmn3], value[pred_grp == "Ag-low"],
         alternative = p_alt
       )$p.value,
@@ -397,7 +398,7 @@ create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10)
     group_by(name) %>%
     mutate(y = max(y)) %>%
     
-    group_by(mouse, subtype) %>%
+    group_by(mouse, tm, subtype) %>%
     mutate(across(all_of(p_clmns), ~ p.adjust(.x, method = "bonferroni"))) %>%
     ungroup() %>%
     
@@ -414,29 +415,37 @@ create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10)
     as.character()
   
   # Create plots
+  names(plt_clrs) <- str_c("day ", names(plt_clrs))
+  
   res <- plt_dat %>%
     filter(name %in% gns) %>%
     mutate(name = fct_relevel(name, gns)) %>%
-    ggplot(aes(pred_grp, med, color = mouse)) +
+    ggplot(aes(pred_grp, med, color = tm)) +
     geom_segment(
       aes(x = pred_grp, xend = pred_grp, y = q1, yend = q3),
-      linewidth = 1, color = ln_col
+      linewidth = pt_size, color = ln_col
     ) +
-    geom_point(aes(size = pred_grp)) +
-    geom_smooth(
-      aes(x = as.numeric(as.factor(pred_grp))),
-      method = "lm", linewidth = 0.25, linetype = 2,
-      se = FALSE, formula = y ~ x
-    ) +
+    geom_point(aes(size = pred_grp))
+  
+  if (draw_line) {
+    res <- res +
+      geom_smooth(
+        aes(x = as.numeric(as.factor(pred_grp))),
+        method = "lm", linewidth = 0.25, linetype = 2,
+        se = FALSE, formula = y ~ x
+      )
+  }
+  
+  res <- res +
     geom_point(
       aes(y = y),
       data = filter(p_dat, name %in% gns, p < 0.05),
       position = position_nudge(y = 0.2),
-      color = "black", shape = 6, size = 1
+      color = "black", shape = 6, stroke = 1, size = pt_size
     ) +
-    facet_grid(name ~ mouse, scales = "free_y", switch = "y") +
-    scale_size_manual(values = c(1, 1.25, 1.25)) +
-    scale_color_manual(values = m_clrs) +
+    facet_grid(name ~ tm, scales = "free_y", switch = "y") +
+    scale_size_manual(values = c(pt_size, pt_size * 1.25, pt_size * 1.25)) +
+    scale_color_manual(values = plt_clrs) +
     scale_y_continuous(breaks = ~ c(ceiling(min(.x)), floor(max(.x)))) +
     base_theme +
     theme(
@@ -461,7 +470,8 @@ create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs) {
       plot_colors = clrs,
       panel_nrow  = 1,
       size        = 0.15,
-      stroke      = 0.6
+      stroke      = 0.6,
+      label_params = list(size = ttl_pt1)
     ) +
     guides(fill = guide_colorbar(
       ticks = FALSE, title.position = "top",
@@ -484,7 +494,8 @@ create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs) {
 }
 
 create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
-                            lvls = c("Ag-competent", "Ag-low", "Ag-high", "other")) {
+                            lvls = c("Ag-competent", "Ag-low", "Ag-high", "other"),
+                            pt_size = 0.25, ...) {
   so_in %>%
     plot_scatter(
       dat_col,
@@ -494,10 +505,12 @@ create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
       plot_colors = clrs,
       plot_lvls   = lvls,
       panel_nrow  = 1,
-      size        = 0.25,
+      size        = pt_size,
       stroke      = 0.8,
-      color = ln_col,
-      trace_position = "bottom"
+      color       = ln_col,
+      label_params = list(size = ttl_pt1),
+      trace_position = "bottom",
+      ...
     ) +
     guides(fill = guide_legend(
       label.position = "bottom", reverse = TRUE,

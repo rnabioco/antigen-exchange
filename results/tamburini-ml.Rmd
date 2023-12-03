@@ -4072,7 +4072,9 @@ heats <- rf_feats %>%
 
 ```{r "top features examples", fig.height = 8, fig.width = 8}
 gn_plots <- rf_feats %>%
-  map(~ {
+  imap(~ {
+    typ <- .y
+    
     plt_args <- list(
       gns   = .x,
       p_alt = c("greater", "less"),
@@ -4083,7 +4085,7 @@ gn_plots <- rf_feats %>%
       pmap(~ {
         args <- list(...)
         lec_so %>%
-          subset(subtype == rf_cell_type) %>%
+          subset(subtype == typ) %>%
           create_gn_plots(
             gns      = args$gns,
             plt_clrs = pred_clrs,
