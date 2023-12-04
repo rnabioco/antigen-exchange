@@ -49,8 +49,135 @@ min_cells <- 5
 
 ## Cell type annotations
 
-```{r}
+```{r "CD45- heatmaps", fig.width = 30, fig.height = 20}
+# Function to create marker heatmaps
+create_marker_heatmap <- function(so_in, markers) {
+  
+  gns <- markers %>%
+    pull(gene) %>%
+    as.character()
+  
+  clmns <- c("sample", "mouse", "subtype", "cell_type", gns)
+  
+  dat <- so_in %>%
+    FetchData(clmns) %>%
+    as_tibble(rownames = ".cell_id") %>%
+    pivot_longer(any_of(gns), names_to = "gene") %>%
+    left_join(markers, by = "gene") %>%
+    
+    group_by(subtype, mouse, gene, label) %>%
+    summarize(
+      pct_expr = sum(value > 0) / n(),
+      pct_expr = as.character(round(pct_expr, 2)),
+      value    = mean(value),
+      .groups  = "drop"
+    ) %>%
+    group_by(gene, mouse) %>%
+    mutate(value = as.numeric(scale(value))) %>%
+    ungroup() %>%
+    mutate(
+      subtype = fct_relevel(subtype, levels(markers$annotation)),
+      gene    = fct_relevel(gene, rev(levels(markers$gene)))
+    )
+  
+  res <- dat %>%
+    ggplot(aes(subtype, gene, fill = value)) +
+    geom_tile() +
+    geom_text(aes(label = pct_expr), size = 6 / .pt) +
+    facet_grid(label ~ mouse, scales = "free_y", space = "free_y") +
+    scale_fill_gradientn(colours = c("lightblue", "white", "red")) +
+    base_theme +
+    theme(
+      strip.clip   = "off",
+      strip.text.y = element_text(angle = 0, hjust = 0),
+      axis.title   = element_blank(),
+      axis.text.x  = element_text(angle = 45, hjust = 1)
+    )
+  
+  res
+}
 
+# Load data
+rm(lec_so, dc_so)
+
+cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+
+# Load cell type markers
+xlsx_path <- here(params$ref_dir, "cell-type-markers.xlsx")
+markers   <- xlsx::read.xlsx(xlsx_path, sheetName = "markers")
+
+markers <- markers %>%
+  mutate(
+    cell_type = fct_inorder(cell_type),
+    subtype   = fct_inorder(subtype)
+  ) %>%
+  group_by(gene) %>%
+  summarize(
+    label      = str_c(cell_type, collapse = "/"),
+    cell_type  = dplyr::first(cell_type),
+    annotation = dplyr::first(subtype),
+    .groups    = "drop"
+  ) %>%
+  arrange(cell_type, annotation) %>%
+  mutate(
+    gene  = fct_inorder(gene),
+    label = fct_inorder(label)
+  )
+
+# CD45- heatmaps
+create_marker_heatmap(cd45neg_so, markers)
+```
+
+<br>
+
+```{r "CD45+ heatmaps", fig.width = 25, fig.height = 20}
+create_marker_heatmap(cd45pos_so, markers)
+
+# Load data for other figures
+rm(cd45neg_so, cd45pos_so)
+
+lec_so <- qread(here(params$so_dir, "lec_so.qs"))
+dc_so  <- qread(here(params$so_dir, "dc_so.qs"))
+```
+
+```{r "MARKER PLOTS", eval = FALSE}
+cd45neg_so %>%
+  plot_scatter(
+    data_col = "cell_type",
+    x = "hUMAP_1",
+    y = "hUMAP_2",
+    group_col = "mouse",
+    size = 0.1
+  )
+
+cd45pos_so %>%
+  plot_violin(
+    "Fcer1g",
+    "cell_type",
+    "mouse",
+    method = "boxplot"
+  )
+
+cd45pos_so %>%
+  plot_scatter(
+    data_col = "Ceacam8",
+    x = "hUMAP_1",
+    y = "hUMAP_2",
+    group_col = "mouse",
+    size = 0.1,
+    plot_colors = c("lightblue", "white", "red")
+  )
+
+cd45pos_so %>%
+  plot_scatter(
+    data_col = "Zbtb46",
+    x = "hUMAP_1",
+    y = "hUMAP_2",
+    group_col = "mouse",
+    size = 0.1,
+    plot_colors = c("lightblue", "white", "red")
+  )
 ```
 
 ---
@@ -71,9 +198,10 @@ Antigen persists in discrete cell subsets within the lymph node
 * CHECK AG ACORES FOR NEUTROPHILS
 
 ```{r "type frequency"}
+# Format data for plotting
 fig1_dat <- all_meta %>%
   filter(
-    mouse != "6wk-3wk",
+    vaccination == "single",
     cell_type != "unassigned"
   ) %>%
   group_by(cell_sort) %>%
@@ -91,6 +219,7 @@ freq_dat <- fig1_dat %>%
     tm_group = fct_inorder(tm_group)
   )
 
+# Create bargraphs
 group_lab <- c(CD45pos = "CD45+", CD45neg = "CD45-")
 
 x_labs <- get_nlab_fun(freq_dat, "tm_group", l = "\n", r = "")
@@ -121,7 +250,15 @@ typ_freq <- freq_dat %>%
 
 ```{r "type Ag heat", fig.width = 16, fig.height = 5}
 # Create heatmap summarize Ag scores
+# exclude CD45+ cell types from CD45- datasets and vice versa
+cd45neg_typs <- c("LEC", "BEC", "Fibroblasts", "Epithelial cells")
+
 heat_dat <- fig1_dat %>%
+  filter(
+    (cell_sort == "CD45neg" & cell_type %in% cd45neg_typs) |
+      (cell_sort == "CD45pos" & !cell_type %in% cd45neg_typs)
+  ) %>%
+  
   group_by(tm, cell_type) %>%
   summarize(
     Ag_score = mean(Ag_score), .groups = "drop",
@@ -245,7 +382,10 @@ lec_ag_u <- u_dat %>%
         size         = 0.7,
         stroke       = 0.7
       ) +
-      # facet_wrap(~ tm_lab, nrow = 1) +
+      facet_wrap(
+        ~ tm_lab, nrow = 1,
+        labeller = as_labeller(function(x) str_c("day ", x))
+      ) +
       guides(fill = guide_colorbar(
         title.position = "right", ticks = FALSE, title = "Ag-score",
         barheight = unit(120, "pt"), barwidth = unit(10, "pt")
@@ -495,6 +635,8 @@ lec_dat %>%
   summarize(n = n(), .groups = "drop")
 ```
 
+<br>
+
 Ag-score is shown for all DC subsets for each experiment
 
 ```{r, fig.width = 9, fig.height = 6}
@@ -616,7 +758,6 @@ brs <- rf_typs %>%
       theme_void() +
       theme(
         legend.position = "none",
-        strip.text      = element_text(size = ttl_pt1),
         plot.margin     = margin(t = 5)
       )
   })

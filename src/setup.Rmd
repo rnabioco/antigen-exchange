@@ -494,7 +494,8 @@ sobjs %>%
 # NEED TO:
 # 1. Check epithelial cells, some may be PvCs based on Pdpn, Pecam1, Acta2,
 #    Itga7. They do express expected markers, Cdh1, Krt8, Muc1, Ocln
-# 2. Check unassigned cells, some may be epithelial cells
+# 2. Check unassigned cells, some may be epithelial cells. They do express
+#    epithelial cell markers including Cdh1 and Krt8
 # 3. Check stem cells, are these accurate? They express Cd19 and Cd79a, these
 #    should be reclassified as B cells
 
