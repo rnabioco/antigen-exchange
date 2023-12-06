@@ -970,7 +970,7 @@ sqr_size <- 4
 
 txt_theme_1 <- theme(
   strip.text   = element_text(size = ttl_pt2),
-  legend.text  = element_text(size = txt_pt2),
+  legend.text  = element_text(size = ttl_pt1),
   axis.title   = element_text(size = ttl_pt2),
   axis.text    = element_text(size = txt_pt2, color = "black"),
   legend.title = element_text(size = ttl_pt2),

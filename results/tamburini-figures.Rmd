@@ -14,7 +14,7 @@ output:
 params:
   template_dir:  "src"                                                     # template Rmarkdowns
   so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # loading/saving Seurat objects
-  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-10-21" # loading/saving ML models
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-11-01" # loading/saving ML models
   ref_dir:       "ref"                                                     # loading/saving clustifyr references
   sample_info:   "sample_info.xlsx"
   res_dir:                                                
@@ -24,7 +24,7 @@ params:
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
   chikv_so: "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs/so_merge.qs"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -355,7 +355,8 @@ lec_typ_u <- u_dat %>%
       theme(
         aspect.ratio = 0.9,
         legend.position = "right",
-        legend.title = element_blank()
+        legend.title = element_blank(),
+        legend.text  = element_text(size = txt_pt2)
       )
     
     res
@@ -754,11 +755,11 @@ brs <- rf_typs %>%
       scale_fill_manual(values = plt_clrs) +
       scale_y_discrete(expand = expansion(c(0, 0))) +
       scale_x_continuous(expand = expansion(c(0, 0))) +
-      base_theme +
       theme_void() +
       theme(
         legend.position = "none",
-        plot.margin     = margin(t = 5)
+        plot.margin     = margin(t = 5),
+        strip.text      = element_text(size = ttl_pt2)
       )
   })
 
@@ -781,7 +782,7 @@ hsts <- rf_typs %>%
         alpha = 1,
         hjust = -0.25,
         vjust = 1.1,
-        size  = txt_pt1 / .pt
+        size  = txt_pt2 / .pt
       ) +
       facet_wrap(~ subtype, scales = "free", nrow = 1) +
       guides(fill = "none") +
@@ -826,32 +827,6 @@ hsts <- wrap_plots(
   ncol = length(rf_tms),
   heights = c(0.1, 1)
 )
-
-# hsts <- map2(brs, hsts, ~ {
-#   plot_grid(
-#     .x, .y,
-#     ncol = 1,
-#     align = "v", axis = "rl",
-#     rel_heights = c(0.15, 1)
-#   )
-# }) %>%
-#   plot_grid(
-#     plotlist = .,
-#     nrow = 1,
-#     rel_widths = c(1.12, 1.12, 1)
-#   )
-
-# hsts <- plot_grid(
-#   hsts, lgnd,
-#   ncol = 1,
-#   rel_heights = c(1, 0.01)
-# )
-
-# hsts <- wrap_plots(
-#   hsts,
-#   widths = c(1.12, rep(1, length(rf_typs) - 1)),
-#   nrow = 1
-# )
 ```
 
 ```{r "RF Ag-competent bars", fig.width = 8, fig.height = 5}
@@ -990,7 +965,7 @@ mod_bxs <- plt_dat %>%
       
       geom_text(
         aes(1.5, Inf, fill = NULL, label = p_high_adj),
-        size = txt_pt1 / .pt,
+        size = 11 / .pt,
         data = p_dat,
         hjust = 0,
         vjust = 1.2,
@@ -998,7 +973,7 @@ mod_bxs <- plt_dat %>%
       ) +
       geom_text(
         aes(1.5, Inf, fill = NULL, label = p_comp_adj),
-        size = txt_pt1 / .pt,
+        size = 11 / .pt,
         data = p_dat,
         hjust = 0,
         vjust = c(2.4, 3, 2.4),
@@ -1051,7 +1026,9 @@ ag_mod_u <- rf_tms %>%
       create_sig_umap(
         dat_col = module_clmn,
         grp_col = "tm",
-        clrs    = c("lightblue", "lightblue", "white", pred_clrs[["Ag-high"]])
+        clrs    = c("lightblue", "lightblue", "white", pred_clrs[["Ag-high"]]),
+        pt_size    = 1,
+        pt_stroke  = 0.7
       ) +
       geom_circle(
         aes(x0 = hUMAP_1, y0 = hUMAP_2, fill = NULL, color = NULL, r = 2.5),
@@ -1088,7 +1065,8 @@ ag_low_u <- rf_tms %>%
         grp_col = "tm",
         clrs    = clrs,
         lvls    = c("Ag-high", "Ag-low", "other"),
-        pt_size = 0.75
+        pt_size = 1,
+        pt_stroke = 0.8
       ) +
       facet_wrap(~ tm, labeller = as_labeller(function(x) str_c("day ", x)))
       # theme(strip.text = element_text(size = 14))
@@ -1112,7 +1090,7 @@ gene_examples <- lec_so %>%
   # theme(aspect.ratio = 1.1)
 ```
 
-```{r, fig.height = 14, fig.width = 13}
+```{r "Fig 2", fig.width = 15, fig.height = 16.1}
 left <- plot_grid(
   plot_grid(hsts, nrow = 2, rel_heights = c(1, 0.1)),
   mod_bxs$high,
@@ -1137,63 +1115,6 @@ plot_grid(
   left, right,
   rel_widths = c(1, 0.5)
 )
-
-# plot_grid(
-#   plot_grid(hsts, nrow = 2, rel_heights = c(1, 0.1)), bar_2,
-#   mod_bxs$high, NULL,
-#   mod_u, NULL,
-#   ncol   = 2,
-#   rel_widths = c(1, 0.5),
-#   rel_heights = c(1, 1, 2.3),
-#   labels = c("A", "B", "C", "", "D", ""),
-#   label_size = ttl_pt2 * 1.5
-#   # align = "vh",
-#   # axis  = "trbl"
-# )
-# 
-# dsgn <- "
-#   AAB
-#   CCF
-#   EEF
-#   EEF
-# "
-# 
-# wrap_plots(
-#   plot_grid(hsts, nrow = 2, rel_heights = c(1, 0.1)), bar_2,
-#   mod_bxs$high,
-#   mod_u, gene_examples,
-#   design = dsgn
-# ) +
-#   plot_annotation(tag_levels = "A")
-# 
-# top <- plot_grid(
-#   plot_grid(hsts, nrow = 2, rel_heights = c(1, 0.1)),
-#   bar_2,
-#   nrow = 1,
-#   rel_widths = c(1, 0.5),
-#   labels = c("A", "B"), label_x = c(0, -0.05),
-#   label_size = ttl_pt2 * 1.5
-#   # align = "h",
-#   # axis  = "tb"
-# )
-# 
-# plot_grid(
-#   top,
-#   plot_grid(mod_bxs$high, nrow = 1, ncol = 2, rel_widths = c(1, 0.5)),
-#   ncol = 1,
-#   labels = c("", "C"),
-#   label_size = ttl_pt2 * 1.5
-# )
-# 
-# wrap_plots(
-#   br, hst,
-#   bar_2,
-#   mod_bxs$high,
-#   ncol = 1,
-#   heights = c(0.07, 0.5, 1, 1)
-#   # align = "v",
-#   # axis  = "rl"
-# )
 ```
 
 ---
@@ -1296,8 +1217,9 @@ ex_heat <- plt_args %>%
       base_theme +
       theme(
         aspect.ratio = n_distinct(heat_dat$subtype) / n_distinct(heat_dat$mouse),
+        plot.margin  = margin(0, 15, 0, 15),
         axis.title.y = element_blank(),
-        plot.margin = margin(0, 15, 0, 15)
+        axis.text.y  = element_text(size = ttl_pt2)
       )
   })
 
@@ -1452,11 +1374,94 @@ ex_scat <- dat %>%
   )
 ```
 
-```{r "Fig 2", fig.width = 15, fig.height = 16}
+```{r "AG-EX DOUBLE POSITIVE", fig.width = 9, fig.height = 5.5}
+# Format plot data
+# lvls <- c("low", "6wk-high", "3wk-high", "single-high", "double-high")
+lvls <- c("Ag-low", "Ag-high", "single-high", "double-high")
+
+plt_dat <- lec_so %>%
+  FetchData(c("subtype", "mouse", "Ag_class_dual", ag_modules)) %>%
+  filter(
+    mouse %in% c("6wk", "3wk", "6wk-3wk"),
+    subtype %in% rf_typs
+  ) %>%
+  pivot_longer(all_of(ag_modules)) %>%
+  separate_wider_regex(
+    name,
+    c(module_type = ".*", "_", module_ag = ".*")
+  ) %>%
+  filter(
+    subtype == module_type,
+    module_ag == "high"
+  ) %>%
+  
+  # Group all low cells together under single mouse, otherwise three boxplots
+  # are shown
+  mutate(
+    subtype       = fct_relevel(subtype, rf_typs),
+    mouse         = m_key[as.character(mouse)],
+    Ag_class_dual = str_replace(Ag_class_dual, "^[0-9]+wk", "Ag"),
+    Ag_class_dual = recode(Ag_class_dual, low = "Ag-low"),
+    Ag_class_dual = fct_relevel(Ag_class_dual, lvls)
+  ) %>%
+  arrange(Ag_class_dual) %>%
+  mutate(
+    mouse_class = fct_inorder(str_c(mouse, "-", subtype, "-", Ag_class_dual))
+  )
+
+# # Calculate p-values
+# p_dat <- plt_dat %>%
+#   filter(
+#     Ag_class_dual %in% c("double-high", "6wk-high"),
+#     subtype == "cLEC",
+#     module_ag == "high"
+#   )
+# 
+# wilcox.test(
+#   p_dat$value[p_dat$Ag_class_dual == "double-high"],
+#   p_dat$value[p_dat$Ag_class_dual == "6wk-high"],
+#   alternative = "greater"
+# )
+
+# Format n labels
+n_dat <- plt_dat %>%
+  group_by(Ag_class_dual, mouse_class, subtype, module_ag) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  mutate(
+    n = str_c(Ag_class_dual, "\nn = ", scales::label_comma()(n))
+  ) %>%
+  filter(module_ag == "high")
+
+n_lab <- set_names(n_dat$n, n_dat$mouse_class)
+
+# Create boxplots
+ex_mod_bxs <- plt_dat %>%
+  filter(mouse == "dual") %>%
+  ggplot(aes(mouse_class, value, fill = subtype)) +
+  geom_boxplot(notch = TRUE, outlier.size = 0.1) +
+  facet_wrap(~ subtype, scales = "free") +
+  scale_fill_manual(values = lec_clrs) +
+  scale_x_discrete(labels = n_lab) +
+  labs(y = "Ag-high module score") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.3,
+    legend.position = "none",
+    axis.text.x     = element_text(angle = 45, hjust = 1),
+    axis.title.x    = element_blank()
+  )
+```
+
+```{r "Fig 3", fig.width = 14, fig.height = 20}
 (ex_heat[[1]] + ex_u[[1]]) / ex_3_bxs /
   (ex_heat[[2]] + ex_u[[2]]) / ex_6_bxs /
-  ex_scat +
-  plot_layout(heights = c(1, 0.55, 1, 0.55, 0.8)) +
+  ex_scat /
+  wrap_plots(ex_mod_bxs, plot_spacer()) +
+  # wrap_plots(ex_mod_bxs, nrow = 1) +
+  # wrap_plots(append(list(plot_spacer()), ex_mod_bxs), nrow = 1, widths = c(0, 1, 1, 1)) +
+  # (ex_mod_bxs[[1]] + ex_mod_bxs[[2]] + ex_mod_bxs[[3]]) +
+  # plot_grid(plotlist = ex_mod_bxs, nrow = 1) +
+  plot_layout(heights = c(1, 0.55, 1, 0.55, 0.8, 0.8)) +
   plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
 ```
@@ -1495,6 +1500,8 @@ c("exp-1", "exp-2") %>%
   plot_grid(plotlist = ., ncol = 1)
 ```
 
+<br>
+
 Day 42 Ag-score is shown for all subsets for each experiment
 
 ```{r "extended 6wk boxes", fig.width = 15, fig.height = 5}
@@ -1525,11 +1532,453 @@ c("exp-1", "exp-2") %>%
   plot_grid(plotlist = ., ncol = 1)
 ```
 
+<br>
+
+Expression of Ag-high gene modules is shown for each LEC subset.
+
+```{r "AG-EX DOUBLE POSITIVE EXTENDED", fig.width = 9, fig.height = 5.5}
+# Format plot data
+# lvls <- c("low", "6wk-high", "3wk-high", "single-high", "double-high")
+lvls <- c("Ag-low", "Ag-high", "single-high", "double-high")
+
+plt_dat <- lec_so %>%
+  FetchData(c("subtype", "mouse", "Ag_class_dual", ag_modules)) %>%
+  filter(
+    mouse %in% c("6wk", "3wk", "6wk-3wk"),
+    subtype %in% rf_typs
+  ) %>%
+  pivot_longer(all_of(ag_modules)) %>%
+  separate_wider_regex(
+    name,
+    c(module_type = ".*", "_", module_ag = ".*")
+  ) %>%
+  filter(
+    subtype == module_type,
+    module_ag == "high"
+  ) %>%
+  
+  # Group all low cells together under single mouse, otherwise three boxplots
+  # are shown
+  mutate(
+    subtype       = fct_relevel(subtype, rf_typs),
+    mouse         = m_key[as.character(mouse)],
+    Ag_class_dual = str_replace(Ag_class_dual, "^[0-9]+wk", "Ag"),
+    Ag_class_dual = recode(Ag_class_dual, low = "Ag-low"),
+    Ag_class_dual = fct_relevel(Ag_class_dual, lvls)
+  ) %>%
+  arrange(Ag_class_dual) %>%
+  mutate(
+    mouse_class = fct_inorder(str_c(mouse, "-", subtype, "-", Ag_class_dual))
+  )
+
+# Format n labels
+n_dat <- plt_dat %>%
+  group_by(Ag_class_dual, mouse_class, subtype, module_ag) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  mutate(
+    n = str_c(Ag_class_dual, "\nn = ", scales::label_comma()(n))
+  ) %>%
+  filter(module_ag == "high")
+
+n_lab <- set_names(n_dat$n, n_dat$mouse_class)
+
+# Create boxplots
+ex_mod_bxs <- rf_typs %>%
+  map(~ {
+    plt_dat %>%
+      filter(subtype == .x) %>%
+      ggplot(aes(mouse_class, value, fill = subtype)) +
+      geom_boxplot(notch = TRUE, outlier.size = 0.1) +
+      facet_grid(~ mouse, scales = "free_x", space = "free_x") +
+      scale_fill_manual(values = lec_clrs) +
+      scale_x_discrete(labels = n_lab) +
+      labs(y = str_c(.x, " Ag-high\nmodule score")) +
+      base_theme +
+      theme(
+        legend.position = "none",
+        axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        axis.title.x = element_blank()
+      )
+  })
+
+ex_mod_bxs %>%
+  plot_grid(
+    plotlist = .,
+    align    = "h",
+    axis     = "tb",
+    nrow     = 1
+  )
+```
+
 ---
 
 <br>
 
 <br>
+
+```{r "GEOMX PROCESSING", eval = FALSE}
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(umap)
+
+proj      <- "tamburini-antigen-tracking"
+geomx_dat <- file.path("~/Dropbox/Ryan/Projects", proj)
+
+geomx_dir  <- file.path("~/Projects", proj)
+geomx_res  <- "results/2023-06-23"
+counts_dir <- "results/2023-06-23/counts"
+worksheet  <- "geomx_worksheets/Tamburini_061423_20230619T1930_annotations.xlsx"
+obj_dir    <- "sobjs"                            # Directory to load/save Seurat objects
+table_dir  <- "tables"
+pkcs       <- c("Mm_R_NGS_WTA_v1.0.pkc", "Hesselberth_02-SO-90138_v1.0.pkc")
+
+# Load data
+dcc <- dir(file.path(geomx_dat, counts_dir), ".dcc$", full.names = TRUE)
+pkc <- file.path(geomx_dir, "ref", pkcs)
+ann <- file.path(geomx_dir, geomx_res, worksheet)
+
+dat <- readNanoStringGeoMxSet(
+  dccFiles               = dcc,
+  pkcFiles               = pkc,
+  phenoDataFile          = ann,
+  phenoDataSheet         = "LabWorksheet",
+  phenoDataDccColName    = "Sample_ID",
+  protocolDataColNames   = c("Aoi", "Roi"),
+  experimentDataColNames = "Panel"
+)
+
+pkcs    <- annotation(dat)
+modules <- gsub(".pkc", "", pkcs)
+
+# Add 1 to counts
+dat <- dat %>%
+  shiftCountsOne(useDALogic = TRUE)
+
+# Default QC cutoffs are shown in parenthesis
+# study-specific values were selected after visualizing the QC results in more
+# detail below
+QC_params <- list(
+  minSegmentReads   = 1000,  # Minimum number of reads (1000)
+  percentTrimmed    = 80,    # Minimum % of reads trimmed (80%)
+  percentStitched   = 80,    # Minimum % of reads stitched (80%)
+  percentAligned    = 75,    # Minimum % of reads aligned (80%)
+  percentSaturation = 50,    # Minimum sequencing saturation (50%)
+  minNegativeCount  = 1,     # Minimum negative control counts (10)
+  maxNTCCount       = 1000,  # Maximum counts observed in NTC well (1000)
+  minNuclei         = 100,   # Minimum # of nuclei estimated (100)
+  minArea           = 5000   # Minimum segment area in um2 (5000)
+)
+
+dat <- dat %>%
+  setSegmentQCFlags(qcCutoffs = QC_params)
+
+# Collate QC Results
+QCResults    <- protocolData(dat)[["QCFlags"]]
+flag_columns <- colnames(QCResults)
+
+QC_Summary <- data.frame(
+  Pass    = colSums(!QCResults[, flag_columns]),
+  Warning = colSums(QCResults[, flag_columns])
+)
+
+QCResults$QCStatus <- apply(QCResults, 1L, function(x) {
+    ifelse(sum(x) == 0L, "PASS", "WARNING")
+})
+
+QC_Summary["TOTAL FLAGS", ] <- c(
+  sum(QCResults[, "QCStatus"] == "PASS"),
+  sum(QCResults[, "QCStatus"] == "WARNING")
+)
+
+# Calculate geometric mean for negative control probes for each pkc module 
+neg_geo_mns <- esBy(
+  negativeControlSubset(dat), 
+  GROUP = "Module", 
+  FUN = function(x) assayDataApply(x, MARGIN = 2, FUN = ngeoMean, elt = "exprs")
+)
+
+protocolData(dat)[["NegGeoMean"]] <- neg_geo_mns
+
+# explicitly copy the Negative geoMeans from sData to pData
+negCols <- paste0("NegGeoMean_", modules)
+
+pData(dat)[, negCols] <- sData(dat)[["NegGeoMean"]][, modules]
+
+# Filter data
+dat <- dat[, QCResults$QCStatus == "PASS"]
+
+## Probe QC
+# A probe is removed globally from the dataset if either of the following is
+# true, Nanostring does not recommend adjusting these parameters.
+# A probe is removed locally (from a given segment) if the probe is an outlier
+# according to the Grubb’s test in that segment.
+# 
+# * The geometric mean of that probe’s counts from all segments divided by the
+#   geometric mean of all probe counts representing the target from all segments
+#   is less than 0.1
+# * The probe is an outlier according to the Grubb’s test in at least 20% of the
+#   segments
+# 
+# Generally keep the qcCutoffs parameters unchanged. Set removeLocalOutliers to 
+# FALSE if you do not want to remove local outliers
+dat <- dat %>%
+  setBioProbeQCFlags(
+    qcCutoffs = list(minProbeRatio = 0.1, percentFailGrubbs = 20),
+    removeLocalOutliers = TRUE
+  )
+
+ProbeQCResults <- fData(dat)[["QCFlags"]]
+
+# Probe QC summary
+qc_df <- data.frame(
+  Passed = sum(rowSums(ProbeQCResults[, -1]) == 0),
+  Global = sum(ProbeQCResults$GlobalGrubbsOutlier),
+  Local  = sum(rowSums(ProbeQCResults[, -2:-1]) > 0 & !ProbeQCResults$GlobalGrubbsOutlier)
+)
+
+# Collapse probe counts for each gene
+# This is important since multiple probes are included for some genes
+# Remove neg_geomean columns from pData since aggregateCounts()
+# will add these columns
+pData(dat) <- pData(dat)[, !colnames(pData(dat)) %in% negCols]
+gene_dat   <- aggregateCounts(dat)
+
+# In addition to Segment and Probe QC, also need to determine the limit of
+# quantification (LOQ) per segment. The LOQ is calculated based on the
+# distribution of negative control probes and is intended to approximate the
+# quantifiable limit of gene expression per segment. It should be noted that this
+# process is more stable for larger segments. Likewise, the LOQ may not be as
+# accurately reflective of true signal detection rates in segments with low
+# negative probe counts (e.g. <2).
+# 
+# Use 2 geometric standard deviations (n = 2) above the geometric mean as the LOQ, which is reasonable for most studies.
+# Nanostring also recommends that a minimum LOQ of 2 be used if the LOQ calculated in a segment is below this threshold.
+
+# Define LOQ SD threshold and minimum value
+cutoff <- 2
+minLOQ <- 2
+
+# Calculate LOQ per module tested
+LOQ <- data.frame(row.names = colnames(gene_dat))
+
+for (module in modules) {
+    vars <- paste0(c("NegGeoMean_", "NegGeoSD_"), module)
+    
+    if(all(vars[1:2] %in% colnames(pData(gene_dat)))) {
+        LOQ[, module] <- pmax(minLOQ, pData(gene_dat)[, vars[1]] * pData(gene_dat)[, vars[2]] ^ cutoff)
+    }
+}
+
+# Add LOQ to gene-level data
+pData(gene_dat)$LOQ <- LOQ
+
+# Calculate detected genes in each segment
+LOQ_Mat <- c()
+
+for(module in modules) {
+  ind     <- fData(gene_dat)$Module == module
+  Mat_i   <- t(esApply(gene_dat[ind, ], MARGIN = 1, FUN = function(x) x > LOQ[, module]))
+  LOQ_Mat <- rbind(LOQ_Mat, Mat_i)
+}
+
+# Ensure ordering since this is stored outside of the geomxSet
+LOQ_Mat <- LOQ_Mat[fData(gene_dat)$TargetName, ]
+
+# Save detection rate information to pheno data
+pData(gene_dat)$GenesDetected     <- colSums(LOQ_Mat, na.rm = TRUE)
+pData(gene_dat)$GeneDetectionRate <- pData(gene_dat)$GenesDetected / nrow(gene_dat)
+
+# Determine detection thresholds
+# Bin segments based on detection rate
+pData(gene_dat)$DetectionThreshold <- cut(
+  pData(gene_dat)$GeneDetectionRate,
+  breaks = c(0, 0.01, 0.05, 0.1, 0.15, 1),
+  labels = c("<1%", "1-5%", "5-10%", "10-15%", ">15%")
+)
+
+# Filter segments
+rate_cutoff <- 0.01
+
+gene_dat <- gene_dat[, pData(gene_dat)$GeneDetectionRate >= rate_cutoff]
+
+# Calculate detection rate
+LOQ_Mat <- LOQ_Mat[, colnames(gene_dat)]
+
+fData(gene_dat)$DetectedSegments <- rowSums(LOQ_Mat, na.rm = TRUE)
+fData(gene_dat)$DetectionRate    <- fData(gene_dat)$DetectedSegments / nrow(pData(gene_dat))
+
+# Plot detection rate:
+plot_detect <- data.frame(Freq = c(1, 5, 10, 20, 30, 50))
+
+plot_detect$Number <- unlist(lapply(
+  c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5),
+  function(x) sum(fData(gene_dat)$DetectionRate >= x)
+))
+
+plot_detect$Rate <- plot_detect$Number / nrow(fData(gene_dat))
+
+rownames(plot_detect) <- plot_detect$Freq
+
+# USING CUTOFF OF 1%
+# Subset to target genes detected in at least 1% of the samples.
+# Also manually include the negative control probe, for downstream use
+rate_cutoff <- 0.01
+
+negativeProbefData <- subset(fData(gene_dat), CodeClass == "Negative")
+neg_probes         <- unique(negativeProbefData$TargetName)
+
+gene_dat <- gene_dat[fData(gene_dat)$DetectionRate >= rate_cutoff | fData(gene_dat)$TargetName %in% neg_probes, ]
+
+# Background normalization for WTA/CTA without custom spike-in
+gene_dat <- gene_dat %>%
+  normalize(norm_method = "neg", fromElt = "exprs", toElt = "neg_norm")
+
+# Q3 norm (75th percentile) for WTA/CTA  with or without custom spike-ins
+gene_dat <- gene_dat %>%
+  normalize(norm_method = "quant", desiredQuantile = 0.75, toElt = "q_norm")
+
+# update defaults for umap to contain a stable random_state (seed)
+custom_umap <- umap::umap.defaults
+
+custom_umap$random_state <- 42
+
+# run UMAP
+# exclude data for Ag tags and control tags
+exclude <- rownames(gene_dat)
+exclude <- grepl("^(Custom|Barcode)|_CTL$", exclude)
+u_dat   <- gene_dat[!exclude, ]
+
+umap_out <- umap(
+  t(log2(assayDataElement(u_dat, elt = "q_norm"))),  
+  config = custom_umap
+)
+
+pData(gene_dat)[, c("UMAP1", "UMAP2")] <- umap_out$layout[, c(1,2)]
+```
+
+```{r "GEOMX PLOT DATA", eval = FALSE}
+# THIS SYNTAX DOES NOT WORK, WHY?
+# pData(plt_dat)[, "Barcode01"] <- gn_dat$Barcode01
+rf_gns <- c(
+  "Barcode01", "Barcode02",
+  rf_feats$cLEC$low
+  # rf_feats$cLEC$high
+)
+
+rf_gns <- rf_gns[rf_gns %in% rownames(gene_dat)]
+
+gn_dat <- gene_dat[rf_gns, ] %>%
+  assayDataElement(elt = "q_norm") %>%
+  # assayDataElement(elt = "neg_norm") %>%
+  # assayDataElement(elt = "exprs") %>%
+  t() %>%
+  as_tibble(rownames = "dcc")
+
+plt_dat <- pData(gene_dat) %>%
+  as_tibble(rownames = "dcc") %>%
+  left_join(gn_dat, by = "dcc")
+
+# Format segment names
+plt_dat <- plt_dat %>%
+  mutate(
+    LN = str_remove(LN, "(?<=LN) "),
+    sample = str_remove(LN, " LN[0-9]+$"),
+    sample = str_remove(sample, "^ova-GeoMX\\+VV "),
+    sample = str_replace_all(sample, "week", "wk"),
+    sample = str_replace_all(sample, " and ", "-"),
+    rep    = str_extract(LN, "LN[ 0-9]+"),
+    rep    = str_remove_all(rep, " "),
+    slide  = as.numeric(str_extract(`Slide Name`, "[0-9]+$"))
+  )
+
+# Set sample colors
+sam_cols <- c("naive", "3wk", "6wk", "6wk-3wk")
+
+sam_cols <- set_names(
+  ito_cols[seq_along(sam_cols)],
+  sam_cols
+)
+
+ag_cols <- c(`ova-3wk` = "#56B4E9", `ova-6wk` = "#6A51A3")
+
+# Assign barcode signals
+bc_key <- plt_dat %>%
+  filter(sample %in% c("3wk", "6wk")) %>%
+  group_by(slide, sample) %>%
+  summarize(across(starts_with("Barcode0"), mean), .groups = "drop") %>%
+  pivot_longer(starts_with("Barcode0")) %>%
+  group_by(slide, sample) %>%
+  filter(value == max(value)) %>%
+  split(.$slide) %>%
+  map(~ set_names(.x$name, .x$sample))
+
+plt_dat <- plt_dat %>%
+  group_by(slide) %>%
+  rowwise() %>%
+  mutate(
+    `ova-3wk` = bc_key[[as.character(slide)]][["3wk"]],
+    `ova-6wk` = bc_key[[as.character(slide)]][["6wk"]]
+  ) %>%
+  ungroup() %>%
+  mutate(
+    across(matches("ova-[0-9]+wk"), ~ {
+      case_when(
+        .x == "Barcode01" ~ Barcode01,
+        .x == "Barcode02" ~ Barcode02
+      )
+    }),
+    # Segment = fct_relevel(Segment, names(seg_cols)),
+    sample  = fct_relevel(sample, names(sam_cols))
+  )
+
+plt_dat <- plt_dat %>%
+  rowwise() %>%
+  mutate(top_ova = max(c(`ova-3wk`, `ova-6wk`))) %>%
+  ungroup()
+```
+
+```{R "GEOMX PLOTS", eval = FALSE}
+# Boxplots
+plt_dat %>%
+  pivot_longer(all_of(rf_gns)) %>%
+  mutate(name = fct_relevel(name, rf_gns)) %>%
+  ggplot(aes(region_2, value, fill = region_2, color = region_2)) +
+  geom_boxplot(alpha = 0.5, key_glyph = draw_key_point) +
+  facet_wrap(~ name, scales = "free_y") +
+  # scale_color_manual(values = seg_cols) +
+  # scale_fill_manual(values = seg_cols) +
+  # labs(x = "Segment type", y = "Normalized expression") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.2,
+    legend.position = "none",
+    axis.text.x     = element_text(angle = 45, hjust = 1)
+  )
+
+# Heatmap
+ht_dat <- plt_dat %>%
+  pivot_longer(all_of(rf_gns)) %>%
+  group_by(name, region_2) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  group_by(name) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup()
+
+# ht_dat %>%
+#   ggplot(aes(region_2, name, fill = value)) +
+#   geom_tile() +
+#   scale_fill_gradientn(colours = c("lightblue", "white", "red")) +
+#   base_theme
+
+# Complex Heatmap
+ht_dat %>%
+  pivot_wider(names_from = name, values_from = value) %>%
+  column_to_rownames("region_2") %>%
+  as.matrix() %>%
+  t() %>%
+  Heatmap()
+```
 
 ## Session info
 

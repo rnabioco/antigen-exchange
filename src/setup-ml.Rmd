@@ -460,7 +460,8 @@ create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10,
   res
 }
 
-create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs) {
+create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
+                            pt_size = 0.15, pt_stroke = 0.6) {
   res <- so_in %>%
     plot_scatter(
       dat_col,
@@ -469,9 +470,9 @@ create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs) {
       outline     = TRUE,
       plot_colors = clrs,
       panel_nrow  = 1,
-      size        = 0.15,
-      stroke      = 0.6,
-      label_params = list(size = ttl_pt1)
+      size        = pt_size,
+      stroke      = pt_stroke,
+      label_params = list(size = ttl_pt2)
     ) +
     guides(fill = guide_colorbar(
       ticks = FALSE, title.position = "top",
@@ -480,7 +481,7 @@ create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs) {
     base_theme +
     theme(
       plot.margin     = margin(),
-      plot.title      = element_text(size = ttl_pt2),
+      plot.title      = element_text(size = 18),
       legend.margin   = margin(),
       legend.position = "bottom",
       legend.title    = element_blank(),
@@ -495,7 +496,7 @@ create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs) {
 
 create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
                             lvls = c("Ag-competent", "Ag-low", "Ag-high", "other"),
-                            pt_size = 0.25, ...) {
+                            pt_size = 0.25, pt_stroke = 0.8, ...) {
   so_in %>%
     plot_scatter(
       dat_col,
@@ -506,9 +507,9 @@ create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
       plot_lvls   = lvls,
       panel_nrow  = 1,
       size        = pt_size,
-      stroke      = 0.8,
+      stroke      = pt_stroke,
       color       = ln_col,
-      label_params = list(size = ttl_pt1),
+      label_params = list(size = ttl_pt2),
       trace_position = "bottom",
       ...
     ) +
