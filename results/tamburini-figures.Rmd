@@ -136,9 +136,6 @@ create_marker_heatmap(cd45pos_so, markers)
 
 # Load data for other figures
 rm(cd45neg_so, cd45pos_so)
-
-lec_so <- qread(here(params$so_dir, "lec_so.qs"))
-dc_so  <- qread(here(params$so_dir, "dc_so.qs"))
 ```
 
 ```{r "MARKER PLOTS", eval = FALSE}
@@ -196,6 +193,48 @@ Antigen persists in discrete cell subsets within the lymph node
   are lower quality.
 * Subsets are only shown if there are >= `r min_cells` cells for each timepoint
 * CHECK AG ACORES FOR NEUTROPHILS
+
+```{r "load data"}
+# Load data
+lec_so <- qread(here(params$so_dir, "lec_so.qs"))
+dc_so  <- qread(here(params$so_dir, "dc_so.qs"))
+
+# Format prediction labels
+# training data was removed before predicting
+lec_so <- lec_so %>%
+  AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds)))
+
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    pred_grp = ifelse(
+      rf_pred == "high" & !rf_correct,
+      "Ag-competent", str_c("Ag-", !!sym(rf_dat_clmn))
+    ),
+    rf_pred       = str_c("Ag-", rf_pred),
+    mouse         = fct_relevel(mouse, mice),
+    training_data = subtype %in% rf_mods$subtype & is.na(rf_pred)
+  )
+
+# Add module scores
+rf_feats %>%
+  iwalk(~ {
+    clmn_nms <- str_c(.y, "_", names(.x))
+
+    clmn_nms <- set_names(
+      str_c(clmn_nms, seq_along(clmn_nms)),
+      clmn_nms
+    )
+
+    lec_so <<- lec_so %>%
+      mutate_meta(dplyr::select, -any_of(names(clmn_nms))) %>%
+      AddModuleScore(
+        features = .x,
+        name     = names(clmn_nms)
+      ) %>%
+      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
+  })
+```
 
 ```{r "type frequency"}
 # Format data for plotting
@@ -976,7 +1015,7 @@ mod_bxs <- plt_dat %>%
         size = 11 / .pt,
         data = p_dat,
         hjust = 0,
-        vjust = c(2.4, 3, 2.4),
+        vjust = 2.4,
         parse = TRUE
       ) +
       
@@ -1536,7 +1575,7 @@ c("exp-1", "exp-2") %>%
 
 Expression of Ag-high gene modules is shown for each LEC subset.
 
-```{r "AG-EX DOUBLE POSITIVE EXTENDED", fig.width = 9, fig.height = 5.5}
+```{r "AG-EX DOUBLE POSITIVE EXTENDED", fig.width = 9, fig.height = 3}
 # Format plot data
 # lvls <- c("low", "6wk-high", "3wk-high", "single-high", "double-high")
 lvls <- c("Ag-low", "Ag-high", "single-high", "double-high")

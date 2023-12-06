@@ -1889,47 +1889,6 @@ rf_preds_2 %>%
   write_tsv(here(params$mod_dir, "ag-high_cLEC_preds.tsv.gz"))
 ```
 
-```{r "format data", eval = run_rf}
-# Format prediction labels
-# training data was removed before predicting
-lec_so <- lec_so %>%
-  AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds)))
-
-lec_so <- lec_so %>%
-  mutate_meta(
-    mutate,
-    pred_grp = ifelse(
-      rf_pred == "high" & !rf_correct,
-      "Ag-competent", str_c("Ag-", !!sym(rf_dat_clmn))
-    ),
-    rf_pred       = str_c("Ag-", rf_pred),
-    mouse         = fct_relevel(mouse, mice),
-    training_data = subtype %in% rf_mods$subtype & is.na(rf_pred)
-  )
-
-# Add module scores
-rf_feats %>%
-  iwalk(~ {
-    clmn_nms <- str_c(.y, "_", names(.x))
-
-    clmn_nms <- set_names(
-      str_c(clmn_nms, seq_along(clmn_nms)),
-      clmn_nms
-    )
-
-    lec_so <<- lec_so %>%
-      mutate_meta(dplyr::select, -any_of(names(clmn_nms))) %>%
-      AddModuleScore(
-        features = .x,
-        name     = names(clmn_nms)
-      ) %>%
-      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
-  })
-
-# Save LEC object with additional RF results
-save_objs(lec_so, ob_dir = params$so_dir)
-```
-
 ```{r "load models"}
 # Load saved objects
 rf_mods <- qread(here(params$mod_dir, "ag-high_models.qs"))
