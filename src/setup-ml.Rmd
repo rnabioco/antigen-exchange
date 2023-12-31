@@ -338,60 +338,84 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
   res
 }
 
-create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10,
-                            p_test = wilcox.test, draw_line = TRUE, pt_size = 1) {
+create_gn_plots <- function(so_in, ag_high_gns = NULL, ag_low_gns = NULL,
+                            x = "pred_grp", plt_clrs, x_lvls, p_alt = NULL,
+                            n_gns = 10, top_gns = NULL,
+                            p_test = wilcox.test, draw_line = TRUE, pt_size = 1,
+                            sort = TRUE) {
+  
+  # Set gene lists
+  gns <- c(ag_high_gns, ag_low_gns)
+  
+  if (is.null(gns)) stop("Must provide Ag-high or -low genes")
+  
+  alt_high <- alt_low <- p_alt
+  alt_high <- alt_high %||% "greater"
+  alt_low  <- alt_low  %||% "less"
+  
+  alt_key <- set_names(
+    c(rep(alt_high, length(ag_high_gns)), rep(alt_low, length(ag_low_gns))),
+    gns
+  )
   
   # Format data
   n_mice <- n_distinct(so_in$mouse)
   
   gn_dat <- so_in %>%
-    FetchData(c("mouse", "tm", "subtype", "pred_grp", "training_data", gns)) %>%
+    FetchData(c("mouse", "tm", "subtype", x, "training_data", gns)) %>%
     as_tibble(rownames = ".cell_id") %>%
     filter(!training_data) %>%
     pivot_longer(all_of(gns)) %>%
     mutate(
-      name = fct_relevel(name, gns),
-      tm = str_c("day ", tm)
-    )
+      name      = fct_relevel(name, gns),
+      tm        = str_c("day ", tm),
+      x         = str_c(!!sym(x), "-", tm),
+      !!sym(x) := fct_relevel(!!sym(x), x_lvls),
+      p_alt     = alt_key[name]                            # order boxes for
+    ) %>%                                                  # each timepoint
+    arrange(!!sym(x)) %>%
+    mutate(x = fct_inorder(x))
   
   plt_dat <- gn_dat %>%
-    group_by(name, mouse, tm, subtype, pred_grp) %>%
+    group_by(name, mouse, tm, subtype, !!sym(x), x, p_alt) %>%
     summarize(
+      n   = n_distinct(.cell_id),
       med = median(value),
       q1  = quantile(value, 0.25),
       q3  = quantile(value, 0.75),
       .groups = "drop"
     ) %>%
-    mutate(pred_grp = fct_relevel(pred_grp, names(pred_clrs))) %>%
     group_by(name, mouse, tm, subtype) %>%
     
-    filter(sum(med) > 0) %>%
-    mutate(cor = cor(as.numeric(pred_grp), med)) %>%
+    filter(sum(med) > 0) %>%  # remove genes where median is 0 for all
+    mutate(cor = cor(as.numeric(!!sym(x)), med)) %>%
     
     group_by(name) %>%
     filter(n_distinct(mouse) == n_mice) %>%
     ungroup()
   
   # Calculate p-values
-  clmn2 <- names(pred_clrs[2])
-  clmn3 <- names(pred_clrs[3])
+  # adjust p-values based on number of plotted genes
+  clmn2 <- x_lvls[2]
+  clmn3 <- x_lvls[3]
   
   p_clmns <- c(clmn2, clmn3)
   
   p_dat <- gn_dat %>%
-    group_by(mouse, tm, subtype, pred_grp, name) %>%
+    group_by(mouse, tm, subtype, !!sym(x), x, name, p_alt) %>%
     mutate(y = quantile(value, 0.75)) %>%
-    group_by(mouse, tm, subtype, name) %>%
+    group_by(mouse, tm, subtype, name, p_alt) %>%
     summarize(
       y = max(y),
+      n = n(),
       
       !!sym(clmn2) := p_test(
-        value[pred_grp == clmn2], value[pred_grp == "Ag-low"],
-        alternative = p_alt
+        value[!!sym(x) == clmn2], value[!!sym(x) == "Ag-low"],
+        alternative = unique(p_alt)
       )$p.value,
       !!sym(clmn3) := p_test(
-        value[pred_grp == clmn3], value[pred_grp == "Ag-low"],
-        alternative = p_alt
+        value[!!sym(x) == clmn3], value[!!sym(x) == "Ag-low"],
+        alternative = unique(p_alt)
       )$p.value,
       .groups = "drop"
     ) %>%
@@ -402,35 +426,50 @@ create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10,
     mutate(across(all_of(p_clmns), ~ p.adjust(.x, method = "bonferroni"))) %>%
     ungroup() %>%
     
-    pivot_longer(all_of(p_clmns), names_to = "pred_grp", values_to = "p")
+    pivot_longer(all_of(p_clmns), names_to = x, values_to = "p") %>%
+    mutate(
+      top = name %in% top_gns,
+      x   = str_c(!!sym(x), "-", tm)
+    )
   
   # Rank genes by number of significant p-values
   gns <- p_dat %>%
-    group_by(name) %>%
-    summarize(n = sum(p < 0.05)) %>%
+    group_by(name, top, p_alt) %>%
+    summarize(n = sum(p < 0.05), .groups = "drop") %>%
     filter(name %in% plt_dat$name) %>%
-    arrange(desc(n)) %>%
-    head(n_gns) %>%
+    mutate(p_alt = fct_relevel(p_alt, unique(alt_key))) %>%
+    arrange(p_alt, desc(top), desc(n)) %>%
+    group_by(p_alt) %>%
+    dplyr::slice(1:n_gns) %>%
+    
+    arrange(p_alt, desc(n)) %>%
+    
     pull(name) %>%
     as.character()
   
   # Create plots
   names(plt_clrs) <- str_c("day ", names(plt_clrs))
   
+  x_lab <- plt_dat %>%
+    mutate(xlab = str_c(!!sym(x), " (n = ", scales::label_comma()(n), ")")) %>%
+    distinct(xlab, x)
+  
+  x_lab <- set_names(x_lab$xlab, x_lab$x)
+  
   res <- plt_dat %>%
     filter(name %in% gns) %>%
     mutate(name = fct_relevel(name, gns)) %>%
-    ggplot(aes(pred_grp, med, color = tm)) +
+    ggplot(aes(x, med, color = tm)) +
     geom_segment(
-      aes(x = pred_grp, xend = pred_grp, y = q1, yend = q3),
+      aes(x = x, xend = x, y = q1, yend = q3),
       linewidth = pt_size, color = ln_col
     ) +
-    geom_point(aes(size = pred_grp))
+    geom_point(aes(size = !!sym(x)))
   
   if (draw_line) {
     res <- res +
       geom_smooth(
-        aes(x = as.numeric(as.factor(pred_grp))),
+        aes(x = as.numeric(as.factor(!!sym(x)))),
         method = "lm", linewidth = 0.25, linetype = 2,
         se = FALSE, formula = y ~ x
       )
@@ -443,10 +482,11 @@ create_gn_plots <- function(so_in, gns, plt_clrs, p_alt = "greater", n_gns = 10,
       position = position_nudge(y = 0.2),
       color = "black", shape = 6, stroke = 1, size = pt_size
     ) +
-    facet_grid(name ~ tm, scales = "free_y", switch = "y") +
+    facet_grid(name ~ tm, scales = "free", switch = "y") +
     scale_size_manual(values = c(pt_size, pt_size * 1.25, pt_size * 1.25)) +
     scale_color_manual(values = plt_clrs) +
     scale_y_continuous(breaks = ~ c(ceiling(min(.x)), floor(max(.x)))) +
+    scale_x_discrete(labels = x_lab) +
     base_theme +
     theme(
       aspect.ratio    = 1,
@@ -1587,14 +1627,16 @@ rf_mods <- rf_stats %>%
 
 # Format CHIKV RF data
 # need to add zeros for missing genes
-chikv_so <- qread(params$chikv_so) %>%
+chikv_so <- qread(file.path(params$chikv_dir, "so_lec.qs"))
+
+chikv_rf_so <- chikv_so %>%
   subset(treatment == "mock" & tm == "24hpi" & rep == 1)
 
 chikv_feats <- degs %>%
   pull(feature) %>%
   unique()
 
-chikv_dat <- chikv_so %>%
+chikv_dat <- chikv_rf_so %>%
   FetchData(c("lec_type", chikv_feats))
 
 missing_gns <- chikv_feats[!chikv_feats %in% colnames(chikv_dat)]
@@ -1605,9 +1647,9 @@ chikv_dat <- chikv_dat %>%
   rename_with(~ str_replace_all(.x, "-", "_")) %>%
   rename_with(~ str_c("x", .x), matches("^[0-9]"))
 
+### CLEAN THIS UP ###
 # Check model performance using some CHIKV data
 # assess fold change in module score for one mock CHIKV replicate
-# CLEAN THIS UP
 # rf_stats <- rf_stats %>%
 rf_mods <- rf_mods %>%
   pmap_dfr(~ {
@@ -1666,7 +1708,7 @@ rf_mods <- rf_mods %>%
       dplyr::select(.cell_id, pred) %>%
       column_to_rownames(".cell_id")
     
-    chikv_so <- chikv_so %>%
+    chikv_rf_so <- chikv_rf_so %>%
       subset(lec_type == mod$subtype) %>%
       AddMetaData(chikv_preds)
     
@@ -1678,7 +1720,7 @@ rf_mods <- rf_mods %>%
       names(mod_feats)
     )
     
-    chikv_so <- chikv_so %>%
+    chikv_rf_so <- chikv_rf_so %>%
       AddModuleScore(
         features = mod_feats,
         name     = names(clmn_nms)
@@ -1686,7 +1728,7 @@ rf_mods <- rf_mods %>%
       mutate_meta(dplyr::rename, !!!syms(clmn_nms))
     
     # Calculate fold change for low and high groups
-    chikv_stats <- chikv_so@meta.data %>%
+    chikv_stats <- chikv_rf_so@meta.data %>%
       mutate(
         min_val = min(c(high, low)),
         across(c(high, low), ~ ifelse(min_val < 0, .x + abs(min_val), .x)),  # correct negative values
@@ -1760,7 +1802,7 @@ rf_mods_best %>%
   qsave(here(params$mod_dir, "ag-high_models.qs"))
 ```
 
-```{r "RF STACKING", eval = FALSE}
+```{r "RF MODEL STACKING", eval = FALSE}
 feats <- degs %>%
   pull(feature) %>%
   unique()
@@ -1857,7 +1899,7 @@ rf_preds <- rf_mods_best %>%
       })
   })
 
-# Predict Ag class using cLEC model
+# Predict Ag class for all subsets using cLEC model
 rf_preds_2 <- rf_mods_best %>%
   filter(subtype == rf_cell_type) %>%
   pmap_dfr(~ {
@@ -1889,31 +1931,9 @@ rf_preds_2 %>%
   write_tsv(here(params$mod_dir, "ag-high_cLEC_preds.tsv.gz"))
 ```
 
-```{r "load models"}
-# Load saved objects
-rf_mods <- qread(here(params$mod_dir, "ag-high_models.qs"))
-degs    <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
-
-rf_preds <- read_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz")) %>%
-  column_to_rownames(".cell_id")
-
-rf_feats <- qread(here(params$mod_dir, "ag-high_features.qs"))
-
-all_feats <- rf_feats %>%
-  unlist(use.names = FALSE) %>%
-  unique()
-```
-
-
-
-```{r "PREDICT CHIKV", eval = FALSE}
-# Load CHIKV data
-chikv_so <- qread(params$chikv_so)
-
+```{r "predict CHIKV"}
 # Format RF data
 # need to add zeros for missing genes
-# scaling genes across entire dataset yields predications more in line with
-# Ag data (e.g. fraction Ag-high is roughly the same)
 clmns <- c(
   "orig.ident", "rep", "treatment", "tm",
   "cell_type_2", "cell_type", "lec_type", "subtype",
@@ -1974,6 +1994,24 @@ chikv_preds %>%
   rownames_to_column(".cell_id") %>%
   write_tsv(here(params$mod_dir, "ag-high_chikv_preds.tsv.gz"))
 ```
+
+```{r "load models"}
+# Load saved objects
+rf_mods <- qread(here(params$mod_dir, "ag-high_models.qs"))
+degs    <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
+
+rf_preds <- read_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz")) %>%
+  column_to_rownames(".cell_id")
+
+rf_feats <- qread(here(params$mod_dir, "ag-high_features.qs"))
+
+all_feats <- rf_feats %>%
+  unlist(use.names = FALSE) %>%
+  unique()
+```
+
+
+
 
 ```{r "AG CLASS 2", eval = FALSE}
 # Try splitting into Ag-low/high separately for each cell type

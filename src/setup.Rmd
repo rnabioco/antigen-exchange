@@ -255,8 +255,19 @@ format_ag_data <- function(so_in, norm_factors, ag_key) {
     )
 }
 
-create_exchange_boxes <- function(dat, tm_clmn, ag_clmn, typs = NULL,
-                                  clrs, fill_clrs, p_hjust = 0.5) {
+create_exchange_boxes <- function(dat, tm = NULL, tm_clmn, ag_clmn, typs = NULL,
+                                  clrs, p_hjust = 0.5, p_size = 8) {
+  
+  # Set plot colors
+  ln_clrs   <- clrs
+  ln_clrs[] <- "black"
+  lgnd_clr  <- "black"
+  
+  if (!is.null(tm)) {
+    ln_clrs[names(ln_clrs) != tm] <- "grey65"
+    clrs[names(clrs) != tm]       <- "white"
+    lgnd_clr                      <- clrs[[tm]]
+  }
   
   # Format plot data
   dat <- dat %>%
@@ -307,7 +318,11 @@ create_exchange_boxes <- function(dat, tm_clmn, ag_clmn, typs = NULL,
       color = "grey85", linewidth = 0.5, linetype = 2
     ) +
     geom_boxplot(
-      aes(fill = as.character(!!sym(tm_clmn)), color = as.character(!!sym(tm_clmn)), alpha = vaccination),
+      aes(
+        fill = as.character(!!sym(tm_clmn)),
+        color = as.character(!!sym(tm_clmn)),
+        alpha = vaccination
+      ),
       outlier.size = 0.2, width = 5, key_glyph = draw_key_point,
       position = position_dodge2(preserve = "single")
     ) +
@@ -316,17 +331,18 @@ create_exchange_boxes <- function(dat, tm_clmn, ag_clmn, typs = NULL,
       data = p_dat,
       parse = TRUE,
       show.legend = FALSE,
-      # size = txt_pt1 / .pt
-      size = 8 / .pt,
+      size  = p_size / .pt,
       hjust = p_hjust
     ) +
     facet_grid(~ subtype) +
     scale_alpha_manual(values = c(single = 0.35, dual = 1)) +
-    scale_fill_manual(values = fill_clrs) +
-    scale_color_manual(values = clrs) +
+    scale_fill_manual(values = clrs) +
+    scale_color_manual(values = ln_clrs) +
     guides(
       fill = "none", color = "none",
-      alpha = guide_legend(override.aes = list(shape = 15, size = 4))
+      alpha = guide_legend(override.aes = list(
+        shape = 15, size = 4, color = lgnd_clr
+      ))
     ) +
     labs(x = "days post vaccination", y = "Ag-score") +
     base_theme +
