@@ -1614,7 +1614,34 @@ rf_stats %>%
   write_tsv(here(params$mod_dir, "ag-high_models.tsv.gz"))
 ```
 
-```{r "assess model performance with CHIKV data", eval = run_rf}
+```{r "load CHIKV data", eval = run_rf}
+# Load CHIKV data
+chikv_so <- qread(here(params$chikv_dir, "so_lec.qs"))
+
+chikv_feats <- degs %>%
+  pull(feature) %>%
+  unique()
+
+chikv_clmns <- c(
+  "orig.ident", "rep", "treatment", "tm",
+  "cell_type_2", "cell_type", "lec_type", "subtype",
+  "UMAP_1", "UMAP_2"
+)
+
+chikv_dat <- chikv_so %>%
+  FetchData(c(chikv_clmns, chikv_feats))
+
+# Add zeros for missing genes
+missing_gns <- chikv_feats[!chikv_feats %in% colnames(chikv_dat)]
+
+chikv_dat[, missing_gns] <- 0
+
+chikv_dat <- chikv_dat %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+```
+
+```{r "assess model performance using CHIKV data", eval = run_rf}
 # Identify top models for each cell type
 # !! stats in rf_stats do not match stats produced during model training !!
 # !! a key difference is the number of test and training cells           !!
@@ -1626,26 +1653,10 @@ rf_mods <- rf_stats %>%
   ungroup()
 
 # Format CHIKV RF data
-# need to add zeros for missing genes
-chikv_so <- qread(file.path(params$chikv_dir, "so_lec.qs"))
-
 chikv_rf_so <- chikv_so %>%
   subset(treatment == "mock" & tm == "24hpi" & rep == 1)
 
-chikv_feats <- degs %>%
-  pull(feature) %>%
-  unique()
-
-chikv_dat <- chikv_rf_so %>%
-  FetchData(c("lec_type", chikv_feats))
-
-missing_gns <- chikv_feats[!chikv_feats %in% colnames(chikv_dat)]
-
-chikv_dat[, missing_gns] <- 0
-
-chikv_dat <- chikv_dat %>%
-  rename_with(~ str_replace_all(.x, "-", "_")) %>%
-  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+chikv_rf_dat <- chikv_dat[Cells(chikv_rf_so), ]
 
 ### CLEAN THIS UP ###
 # Check model performance using some CHIKV data
@@ -1800,6 +1811,9 @@ rf_mods_best <- rf_mods_best %>%
 # Save filtered models
 rf_mods_best %>%
   qsave(here(params$mod_dir, "ag-high_models.qs"))
+
+# Remove CHIKV objects
+rm(chikv_so, chikv_rf_so, chikv_rf_dat)
 ```
 
 ```{r "RF MODEL STACKING", eval = FALSE}
@@ -1932,25 +1946,6 @@ rf_preds_2 %>%
 ```
 
 ```{r "predict CHIKV"}
-# Format RF data
-# need to add zeros for missing genes
-clmns <- c(
-  "orig.ident", "rep", "treatment", "tm",
-  "cell_type_2", "cell_type", "lec_type", "subtype",
-  "UMAP_1", "UMAP_2"
-)
-
-chikv_dat <- chikv_so %>%
-  FetchData(c(clmns, all_feats))
-
-missing_gns <- all_feats[!all_feats %in% colnames(chikv_dat)]
-
-chikv_dat[, missing_gns] <- 0
-
-chikv_dat <- chikv_dat %>%
-  rename_with(~ str_replace_all(.x, "-", "_")) %>%
-  rename_with(~ str_c("x", .x), matches("^[0-9]"))
-
 # Predict using models for each LEC subset
 chikv_preds <- rf_mods_best %>%
   pmap_dfr(~ {
@@ -1958,7 +1953,7 @@ chikv_preds <- rf_mods_best %>%
     
     dat <- chikv_dat %>%
       filter(lec_type == args$subtype) %>%
-      dplyr::select(-all_of(clmns))
+      dplyr::select(-all_of(chikv_clmns))
     
     args$mod %>%
       rf_predict(
@@ -1967,26 +1962,6 @@ chikv_preds <- rf_mods_best %>%
       ) %>%
       dplyr::select(.cell_id, pred) %>%
       column_to_rownames(".cell_id")
-  })
-
-chikv_so <- chikv_so %>%
-  AddMetaData(chikv_preds)
-
-rf_feats %>%
-  iwalk(~ {
-    clmn_nms <- str_c(.y, "_", names(.x))
-
-    clmn_nms <- set_names(
-      str_c(clmn_nms, seq_along(clmn_nms)),
-      clmn_nms
-    )
-
-    chikv_so <<- chikv_so %>%
-      AddModuleScore(
-        features = .x,
-        name     = names(clmn_nms)
-      ) %>%
-      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
   })
 
 # Save predictions
@@ -2008,6 +1983,10 @@ rf_feats <- qread(here(params$mod_dir, "ag-high_features.qs"))
 all_feats <- rf_feats %>%
   unlist(use.names = FALSE) %>%
   unique()
+
+# Load CHIKV predictions
+chikv_preds <- read_tsv(here(params$mod_dir, "ag-high_chikv_preds.tsv.gz")) %>%
+  column_to_rownames(".cell_id")
 ```
 
 

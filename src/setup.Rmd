@@ -1059,8 +1059,9 @@ lec_clrs <- set_names(
   lec_clrs
 )
 
-lec_clrs["fLEC"] <- "#E69F00"
+lec_clrs["fLEC"]     <- "#E69F00"
 lec_clrs["Ptx3_LEC"] <- "#F0E442"
+lec_clrs["tzLEC"]    <- "black"
 
 dc_clrs <- dc_so@meta.data %>%
   pull(subtype) %>%
