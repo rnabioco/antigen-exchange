@@ -1945,7 +1945,7 @@ rf_preds_2 %>%
   write_tsv(here(params$mod_dir, "ag-high_cLEC_preds.tsv.gz"))
 ```
 
-```{r "predict CHIKV"}
+```{r "predict CHIKV", eval = run_rf}
 # Predict using models for each LEC subset
 chikv_preds <- rf_mods_best %>%
   pmap_dfr(~ {
