@@ -2423,16 +2423,21 @@
     },
     "ggtrace": {
       "Package": "ggtrace",
-      "Version": "0.2.0",
-      "Source": "Repository",
-      "Repository": "RSPM",
+      "Version": "0.2.0.9000",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteRepo": "ggtrace",
+      "RemoteUsername": "rnabioco",
+      "RemoteRef": "HEAD",
+      "RemoteSha": "7fbf0740b4c21fa099cbd813bf3a053e8a592a8f",
       "Requirements": [
         "R",
         "ggplot2",
         "grid",
         "rlang"
       ],
-      "Hash": "9bc407d3d793c217b06ed22aba4123cb"
+      "Hash": "3ab357035827c6b299322f093abb225c"
     },
     "ggtree": {
       "Package": "ggtree",

@@ -155,6 +155,9 @@ create_marker_heatmap(cd45neg_so, markers)
 create_marker_heatmap(cd45pos_so, markers)
 
 # Load data for other figures
+lec_so <- qread(here(params$so_dir, "lec_so.qs"))
+dc_so  <- qread(here(params$so_dir, "dc_so.qs"))
+
 rm(cd45neg_so, cd45pos_so)
 ```
 
@@ -199,7 +202,7 @@ cd45pos_so %>%
 
 ## Figure 1
 
-Antigen persists in discrete stromal cell populations within the lymph node
+Antigen persists in discrete cell populations within the lymph node
 
 A.  Experimental design
 B.  Mean Ag-score is shown for each cell type for 2, 14, 21, and 42 days post
@@ -213,6 +216,8 @@ F.  UMAP projections show Ag-scores for DC subsets for each timepoint.
 G.  Mean Ag-score is shown for DC subsets for each timepoint.
 H.  Ag-scores are shown for each timepoint for each DC subset.
 
+<u>Notes</u>
+
 * Experiment 1 is shown for the LEC 21 and 42 day timepoints. Experiment 2 data
   include very few LECs for the 21 day timepoint.
 * Experiment 2 is shown for the DC 21 and 42 day timepoints. Experiment 1 data
@@ -222,11 +227,9 @@ H.  Ag-scores are shown for each timepoint for each DC subset.
   respectively.
 
 ```{r "load data"}
-# Load data
-lec_so <- qread(here(params$so_dir, "lec_so.qs"))
-dc_so  <- qread(here(params$so_dir, "dc_so.qs"))
-
 # Format prediction labels
+# make sure the correct predictions and module scores are being used
+# once the models are finalized, this information can be saved in the meta.data
 # training data was removed before predicting
 lec_so <- lec_so %>%
   AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds)))
@@ -286,6 +289,8 @@ freq_dat <- fig1_dat %>%
   )
 
 # Create bargraphs
+# these results are not very convincing since CD45 sorting varied significantly
+# between our two experiments
 group_lab <- c(CD45pos = "CD45+", CD45neg = "CD45-")
 
 x_labs <- get_nlab_fun(freq_dat, "tm_group", l = "\n", r = "")
@@ -357,21 +362,6 @@ typ_heat <- heat_dat %>%
     axis.title.x = element_blank(),
     axis.text.x  = element_text(angle = 45, hjust = 1),
   )
-
-# Create mock panel A
-mock_a <- ggplot() +
-  geom_blank() +
-  theme(panel.background = element_blank())
-
-# Create final panel
-top <- plot_grid(
-  mock_a, typ_heat,
-  labels = c("A", "B"),
-  label_size = ttl_pt2 * 1.5,
-  align = "h",
-  axis  = "tb",
-  nrow  = 1
-)
 ```
 
 ```{r "LEC Ag UMAPs"}
@@ -560,16 +550,6 @@ dc_ag_bxs <- dc_dat %>%
 # Create heatmaps
 heat_clrs <- c(LEC = "#D7301F", DC = "#6A51A3")
 exps      <- c(LEC = "exp-1",   DC = "exp-2")  
-
-# heat_args <- list(
-#   ttl = c("LEC", "DC"),
-#   dat = list(
-#     LEC = lec_so@meta.data,
-#     DC = dc_so@meta.data
-#   ),
-#   clrs = 
-#   # clrs = c("#D7301F", "#0072B2")
-# )
   
 ag_heats <- list(
   LEC = lec_so@meta.data,
@@ -621,21 +601,23 @@ ag_heats <- list(
   })
 ```
 
-```{r "Fig 1", fig.width = 15.5, fig.height = 15}
-lec_fig <- (lec_typ_u$LEC + lec_ag_u$LEC) /
+```{r "Fig 1", fig.width = 15.5, fig.height = 17}
+# Create mock panel A
+mock_a <- ggplot() +
+  geom_blank() +
+  theme(panel.background = element_blank())
+
+# Create final figure
+fig1 <- (mock_a + typ_heat) /
+  (lec_typ_u$LEC + lec_ag_u$LEC) /
   (ag_heats[[1]] + lec_ag_bxs) /
   (lec_typ_u$DC + lec_ag_u$DC) /
   (ag_heats[[2]] + dc_ag_bxs) +
-  plot_layout(heights = c(1, 0.7, 1, 0.7)) +
+  plot_layout(heights = c(0.7, 1, 0.7, 1, 0.7), tag_level = "keep") +
   plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
 
-plot_grid(
-  top, lec_fig,
-  ncol       = 1,
-  label_size = ttl_pt2 * 1.5,
-  rel_heights = c(1, 3)
-)
+fig1
 ```
 
 
@@ -766,10 +748,17 @@ A.  Ag-score is shown for day 14 Ag-high and -low cells identified for LEC
 B.  The fraction of cells predicted to be Ag-competent is shown for each LEC
     subset 14, 21, and 42 days post vaccination.
 C.  Ag-high module score is shown for Ag-high and predicted Ag-competent LECs
-    for each timepoint.
-D.  UMAP projections show Ag-high module scores for cLECs for each timepoint.
-E.  The expression of select genes from the Ag-high (top) and Ag-low (bottom)
-    modules is shown.
+    for each timepoint. P values were calculated by pooling cells from all three
+    timepoints for each Ag class.
+    P values were calculated using a one-sided t test with Bonferroni correction
+    to compare Ag-high vs Ag-competent and Ag-competent vs Ag-low cells for each
+    LEC subset.
+D.  UMAP projections show cLEC Ag-high module scores for each timepoint.
+E.  The expression of select genes from the Ag-high (top four) and Ag-low
+    (bottom four) gene modules is shown for cLECs. Genes identified as top
+    predictors for all three LEC subsets are shown.
+
+<u>Notes</u>
 
 * Ag-low and -high cells were identified by separately clustering each d14 LEC
   subset for each sample into two groups based on Ag-score.
@@ -1258,7 +1247,30 @@ plot_grid(
 
 ## Figure 3
 
-* p-values were calculated using a t test with bonferroni correction
+Antigen archiving is enhanced by successive vaccinations
+
+A.  Mean 21 day Ag-score is shown for LECs from mice that received a single
+    vaccination (21 day or 42 day) or dual vaccination (21 day and 42 day).
+B.  UMAP projections show 21 day Ag-scores for LEC subsets for single and dual
+    vaccinations.
+C.  Prior vaccination enhances antigen archiving.
+    Ag-score is shown for single and dual vaccinations for the 21 day timepoint
+    for each LEC subset. Other timepoints are shown in grey. P values
+    were calculated using a one-sided t test with Bonferroni correction.
+D.  Mean 42 day Ag-score is shown as described in A.
+E.  UMAP projections show 42 day Ag-scores for LEC subsets as described in B.
+F.  Successive vaccinations enhances retention of previously archived antigen.
+    Ag-score is shown for the 42 day timepoint as described in C.
+G.  21 day and 42 day Ag-score is compared for each LEC subset.
+H.  Ag-high module scores described in Figure 2 are shown for LECs that archived
+    antigens from both vaccinations (double-high), from only one vaccination
+    (single-high), or have low levels of both antigens (Ag-low).
+
+<u>Notes</u>
+
+* H shows that the best archivers (the ones that archive Ag from both
+  vaccinations) show strongest expression of the Ag-high gene modules.
+  Need to add p values.
 
 ```{r "exchange UMAPs", fig.width = 16, fig.height = 4}
 # Format plot data
@@ -1760,6 +1772,24 @@ ex_mod_bxs %>%
 <br>
 
 ## Figure 4
+
+Antigen uptake by DCs is enhanced by successive vaccinations
+
+A.  Mean 21 day Ag-score is shown for DCs from mice that received a single
+    vaccination (21 day or 42 day) or dual vaccination (21 day and 42 day).
+B.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
+    for DC subsets with highest Ag-score. Other timepoints are shown in grey.
+    P values were calculated using a one-sided t test with Bonferroni
+    correction.
+C.  Mean 42 day Ag-score is shown for DCs from mice that received single or
+    dual vaccination as described in A.
+D.  Ag-score is shown for single and dual vaccinations for the 42 day timepoint
+    as described in B.
+    
+<u>Notes</u>
+
+* Need to add GeoMx figures showing Ag signal is highest in medula and sinus
+  regions for both LECs and DCs.
 
 ```{r "DC exchange heatmaps", fig.width = 16, fig.height = 4}
 # Format plot data
@@ -2326,6 +2356,26 @@ sc <- plt_dat %>%
 <br>
 
 ## Figure 5
+
+Antigen archiving is impaired during CHIKV infection
+
+A.  UMAP projections show LEC subsets for mock and CHIKV-infected mice.
+B.  UMAP projections show predicted Ag-competent cLECs for mock and
+    CHIKV-infected mice.
+C.  The fraction of predicted Ag-competent cLECs is shown for mock and
+    CHIKV-infected mice for each biological replicate.
+D.  UMAP projections show cLEC Ag-high module scores for mock and CHIKV-infected
+    mice.
+E.  cLEC Ag-high module scores are shown for mock and CHIKV-infected mice for
+    each biological replicate.
+F.  Expression of cLEC Ag-high gene module is shown for mock and CHIKV-infected
+    mice for top LEC subsets.
+    
+<u>Notes</u>
+
+* Need to add p values for C and E.
+* Predicted Ag-competent fLECs and collecting LECs can be shown as a
+  supplemental figure (no difference between mock and CHIKV).
 
 ```{r "CHIKV data"}
 # Load CHIKV data

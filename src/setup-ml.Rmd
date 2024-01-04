@@ -1641,6 +1641,162 @@ chikv_dat <- chikv_dat %>%
   rename_with(~ str_c("x", .x), matches("^[0-9]"))
 ```
 
+```{r "OLD MODELS 58d69d9", eval = FALSE}
+## CODE USED FOR 2023-11-01 MODELS ##
+# https://github.com/sheridar/antigen-exchange/blob/58d69d9974d5779cfcdc38f7ec19dfc48686f0b4/results/tamburini-ml.Rmd
+
+# Identify top models for each cell type
+# !! stats in rf_stats do not match stats produced during model training !!
+# !! a key difference is the number of test and training cells           !!
+# rf_stats <- read_tsv(here(params$mod_dir, "ag-high_stats.tsv.gz"))
+rf_stats <- rf_stats %>%
+  distinct(high / low, F1, `Balanced Accuracy`, .keep_all = TRUE) %>%
+  group_by(subtype) %>%
+  slice_max(`Balanced Accuracy`, prop = 0.2) %>%
+  slice_max(F1, n = 100, with_ties = FALSE) %>%
+  ungroup()
+
+# Format CHIKV RF data
+# need to add zeros for missing genes
+chikv_so <- qread(params$chikv_so) %>%
+  subset(treatment == "mock" & tm == "24hpi" & rep == 1)
+
+chikv_feats <- degs %>%
+  pull(feature) %>%
+  unique()
+
+chikv_dat <- chikv_so %>%
+  FetchData(c("lec_type", chikv_feats))
+
+missing_gns <- chikv_feats[!chikv_feats %in% colnames(chikv_dat)]
+
+chikv_dat[, missing_gns] <- 0
+
+chikv_dat <- chikv_dat %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+
+# Check model performance using some CHIKV data
+# assess fold change in module score for one mock CHIKV replicate
+# CLEAN THIS UP
+rf_stats <- rf_stats %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    
+    # Train model
+    feats <- degs %>%
+      filter(subtype == args$subtype) %>%
+      pull(feature) %>%
+      unique()
+    
+    rf_dat <- lec_so %>%
+      subset(subtype == args$subtype & mouse == rf_mouse) %>%
+      FetchData(unique(c(rf_dat_clmn, feats)))
+    
+    stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
+    
+    mod <- rf_dat %>%
+      train_rf(
+        data_clmn       = rf_dat_clmn,
+        param_lst       = args[stats],
+        include_objects = TRUE
+      ) %>%
+      mutate(subtype = args$subtype)
+    
+    # Pull top features
+    mod_feats <- mod$feats[[1]] %>%
+      unlist(use.names = FALSE) %>%
+      str_replace_all("_", "-") %>%
+      str_remove("^x")
+    
+    mod_feats <- degs %>%
+      filter(feature %in% mod_feats) %>%
+      mutate(label_rank = case_when(
+        subtype == args$subtype & mouse == rf_mouse ~ 1,
+        subtype == args$subtype                     ~ 2,
+        mouse   == rf_mouse                         ~ 3,
+        TRUE                                        ~ 4
+      )) %>%
+      group_by(feature) %>%
+      filter(label_rank == min(label_rank)) %>%
+      ungroup() %>%
+      split(.$group) %>%
+      map(~ unique(pull(.x, feature)))
+    
+    # Predict using models for each LEC subset
+    chikv_dat <- chikv_dat %>%
+      filter(lec_type == mod$subtype) %>%
+      dplyr::select(-lec_type)
+    
+    chikv_preds <- mod$mod[[1]] %>%
+      rf_predict(
+        dat = chikv_dat,
+        return_stats = FALSE
+      ) %>%
+      dplyr::select(.cell_id, pred) %>%
+      column_to_rownames(".cell_id")
+    
+    chikv_so <- chikv_so %>%
+      subset(lec_type == mod$subtype) %>%
+      AddMetaData(chikv_preds)
+    
+    # Add module scores
+    clmn_nms <- names(mod_feats)
+    
+    clmn_nms <- set_names(
+      str_c(clmn_nms, seq_along(clmn_nms)),
+      names(mod_feats)
+    )
+    
+    chikv_so <- chikv_so %>%
+      AddModuleScore(
+        features = mod_feats,
+        name     = names(clmn_nms)
+      ) %>%
+      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
+    
+    # Calculate fold change for low and high groups
+    chikv_stats <- chikv_so@meta.data %>%
+      mutate(
+        min_val = min(c(high, low)),
+        across(c(high, low), ~ ifelse(min_val < 0, .x + abs(min_val), .x)),  # correct negative values
+        
+        high_mod_p = wilcox.test(                                            # calculate p-values
+          high[pred == "high"], high[pred == "low"],
+          alternative = "greater"
+        )$p.value,
+        low_mod_p = wilcox.test(
+          low[pred == "high"], low[pred == "low"], 
+          alternative = "less"
+        )$p.value
+      ) %>%
+      group_by(pred, high_mod_p, low_mod_p) %>%                              # calculate median
+      summarize(across(c(high, low), median), .groups = "drop") %>%
+      summarize(                                                             # calculate fold change
+        across(ends_with("_mod_p"), unique),
+        high_mod_fc = high[pred == "high"] / high[pred == "low"],
+        low_mod_fc  = low[pred == "high"]  / low[pred == "low"]
+      )
+    
+    # Return stats
+    res <- mod %>%
+      bind_cols(chikv_stats)
+    
+    res
+  })
+
+## KEY DIFFERENCE WITH THIS VERSION IS FILTERING BASED ON CHIKV PERFORMANCE ##
+# Select best model
+# train models based on best parameters
+# sort based on fold change in module score
+rf_mods <- rf_stats %>%
+  filter(high_mod_fc >= 1.2, low_mod_fc < 0.9) %>%
+  arrange(desc(F1), desc(high_mod_fc), low_mod_fc) %>%
+  group_by(subtype) %>%
+  dplyr::slice(1) %>%
+  ungroup()
+```
+
 ```{r "assess model performance using CHIKV data", eval = run_rf}
 # Identify top models for each cell type
 # !! stats in rf_stats do not match stats produced during model training !!
