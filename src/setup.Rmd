@@ -255,8 +255,14 @@ format_ag_data <- function(so_in, norm_factors, ag_key) {
     )
 }
 
-create_exchange_boxes <- function(dat, tm = NULL, tm_clmn, ag_clmn, typs = NULL,
-                                  clrs, p_hjust = 0.5, p_size = 8) {
+
+#' Create boxplots comparing single and dual vaccinated mice
+#' 
+#' Used for figures 3 and 4
+create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
+                                  typs = NULL, clrs, facet_vars = "subtype",
+                                  p_vars = NULL, p_hjust = 0.5, p_size = 8,
+                                  p_cutoff = 0.05) {
   
   # Set plot colors
   ln_clrs   <- clrs
@@ -270,7 +276,7 @@ create_exchange_boxes <- function(dat, tm = NULL, tm_clmn, ag_clmn, typs = NULL,
   }
   
   # Format plot data
-  dat <- dat %>%
+  dat <- df_in %>%
     mutate(
       subtype = fct_reorder(subtype, !!sym(ag_clmn), mean, .desc = TRUE),
       vaccination = fct_relevel(vaccination, vacs)
@@ -284,12 +290,14 @@ create_exchange_boxes <- function(dat, tm = NULL, tm_clmn, ag_clmn, typs = NULL,
   # Data to draw line connecting timepoints
   ln_dat <- dat %>%
     filter(mouse != "6wk-3wk") %>%
-    group_by(!!sym(tm_clmn), subtype) %>%
+    group_by(!!!syms(c(tm_clmn, facet_vars))) %>%
     summarize(!!sym(ag_clmn) := median(!!sym(ag_clmn)), .groups = "drop")
   
   # p-values for vaccination
+  y_max <- max(pull(dat, ag_clmn))
+  
   p_dat <- dat %>%
-    group_by(!!sym(tm_clmn), subtype) %>%
+    group_by(!!!syms(c(tm_clmn, facet_vars))) %>%
     filter(all(vacs %in% vaccination)) %>%
     summarize(
       pval = t.test(
@@ -298,18 +306,31 @@ create_exchange_boxes <- function(dat, tm = NULL, tm_clmn, ag_clmn, typs = NULL,
         alternative = "less"
       )$p.value,
       y = max(!!sym(ag_clmn)),
-      y = y + (y * 0.1),
+      y = y + (y_max * 0.15),
       .groups = "drop"
-    ) %>%
+    )
+  
+  # Adjust p-values separately for each replicate
+  if (!is.null(p_vars)) {
+    p_dat <- p_dat %>%
+      group_by(!!!syms(p_vars))
+  }
+  
+  p_dat <- p_dat %>%
     mutate(padj = p.adjust(pval, method = "bonferroni")) %>%
     rowwise() %>%
     mutate(
       plab = .format_pvalue(padj),
       plab = str_c("italic(p) == ", plab)
     ) %>%
-    filter(padj < 0.05)
+    ungroup() %>%
+    filter(padj < p_cutoff)
   
   # Create boxplots
+  if (length(facet_vars) == 1) facet_vars <- c("", facet_vars)
+  
+  facet_vars <- str_c(facet_vars, collapse = "~")
+  
   res <- dat %>%
     ggplot(aes(!!sym(tm_clmn), !!sym(ag_clmn))) +
     
@@ -334,7 +355,7 @@ create_exchange_boxes <- function(dat, tm = NULL, tm_clmn, ag_clmn, typs = NULL,
       size  = p_size / .pt,
       hjust = p_hjust
     ) +
-    facet_grid(~ subtype) +
+    facet_grid(as.formula(facet_vars)) +
     scale_alpha_manual(values = c(single = 0.35, dual = 1)) +
     scale_fill_manual(values = clrs) +
     scale_color_manual(values = ln_clrs) +
@@ -347,6 +368,54 @@ create_exchange_boxes <- function(dat, tm = NULL, tm_clmn, ag_clmn, typs = NULL,
     labs(x = "days post vaccination", y = "Ag-score") +
     base_theme +
     theme(aspect.ratio = 0.7)
+  
+  res
+}
+
+#' Create boxplots comparing Ag-score for each LEC and DC subset
+#' 
+#' Used for figure 1
+create_ag_boxes <- function(df_in, clrs, facet_vars = "subtype") {
+  
+  # Line data
+  grp_vars <- unique(c(facet_vars, "tm"))
+  
+  ln_dat <- df_in %>%
+    group_by(!!!syms(grp_vars)) %>%
+    summarize(Ag_score = median(Ag_score), .groups = "drop")
+  
+  # Create boxplots
+  if (length(facet_vars) == 1) facet_vars <- c("", facet_vars)
+  
+  facet_vars <- str_c(facet_vars, collapse = "~")
+  
+  res <- df_in %>%
+    ggplot(aes(tm, Ag_score, fill = subtype)) +
+    geom_line(
+      data = ln_dat,
+      color = "grey85", linewidth = 0.5, linetype = 2
+    ) +
+    geom_boxplot(
+      aes(group = mouse),
+      outlier.size = 0.2,
+      width = 3,
+      key_glyph = draw_key_point
+    ) +
+    
+    guides(
+      fill     = guide_legend(override.aes = list(size = 4, shape = 22), order = 1),
+      linetype = guide_legend(override.aes = list(color = "black"), title = NULL)
+    ) +
+    facet_grid(as.formula(facet_vars)) +
+    
+    scale_fill_manual(values = clrs) +
+    labs(x = "days post vaccination", y = "Ag-score") +
+    base_theme +
+    theme(
+      aspect.ratio    = 0.9,
+      legend.position = "none",
+      plot.margin     = margin(0, 15, 0, 15)
+    )
   
   res
 }
