@@ -276,20 +276,25 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
   }
   
   # Format plot data
+  x_facet <- dplyr::last(facet_vars)
+  
   dat <- df_in %>%
     mutate(
-      subtype = fct_reorder(subtype, !!sym(ag_clmn), mean, .desc = TRUE),
+      !!sym(x_facet) := fct_reorder(
+        !!sym(x_facet), !!sym(ag_clmn), mean,
+        .desc = TRUE
+      ),
       vaccination = fct_relevel(vaccination, vacs)
     )
   
   if (!is.null(typs)) {
     dat <- dat %>%
-      filter(subtype %in% typs)
+      filter(!!sym(x_facet) %in% typs)
   }
   
   # Data to draw line connecting timepoints
   ln_dat <- dat %>%
-    filter(mouse != "6wk-3wk") %>%
+    filter(vaccination == "single") %>%
     group_by(!!!syms(c(tm_clmn, facet_vars))) %>%
     summarize(!!sym(ag_clmn) := median(!!sym(ag_clmn)), .groups = "drop")
   
@@ -378,19 +383,25 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
 create_ag_boxes <- function(df_in, clrs, facet_vars = "subtype") {
   
   # Line data
+  # make sure tm is numeric
   grp_vars <- unique(c(facet_vars, "tm"))
+  
+  df_in <- df_in %>%
+    mutate(tm = as.numeric(as.character(tm)))
   
   ln_dat <- df_in %>%
     group_by(!!!syms(grp_vars)) %>%
     summarize(Ag_score = median(Ag_score), .groups = "drop")
   
   # Create boxplots
+  x_facet <- dplyr::last(facet_vars)
+  
   if (length(facet_vars) == 1) facet_vars <- c("", facet_vars)
   
   facet_vars <- str_c(facet_vars, collapse = "~")
   
   res <- df_in %>%
-    ggplot(aes(tm, Ag_score, fill = subtype)) +
+    ggplot(aes(tm, Ag_score, fill = !!sym(x_facet))) +
     geom_line(
       data = ln_dat,
       color = "grey85", linewidth = 0.5, linetype = 2
@@ -1028,6 +1039,7 @@ rm(all_meta, cd45neg_so, cd45pos_so, lec_so, frc_so, dc_so)
 ```
 
 ```{r "load seurat objects"}
+# Load objects
 all_meta <- read_tsv(here(params$so_dir, "all_meta.tsv.gz"))
 lec_so   <- qread(here(params$so_dir, "lec_so.qs"))
 dc_so    <- qread(here(params$so_dir, "dc_so.qs"))
@@ -1035,6 +1047,28 @@ dc_so    <- qread(here(params$so_dir, "dc_so.qs"))
 # frc_so   <- qread(here(params$so_dir, "frc_so.qs"))
 # cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
 # cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+
+# Load cell type markers
+xlsx_path <- here(params$ref_dir, "cell-type-markers.xlsx")
+markers   <- xlsx::read.xlsx(xlsx_path, sheetName = "markers")
+
+markers <- markers %>%
+  mutate(
+    cell_type = fct_inorder(cell_type),
+    subtype   = fct_inorder(subtype)
+  ) %>%
+  group_by(gene) %>%
+  summarize(
+    label      = str_c(cell_type, collapse = "/"),
+    cell_type  = dplyr::first(cell_type),
+    annotation = dplyr::first(subtype),
+    .groups    = "drop"
+  ) %>%
+  arrange(cell_type, annotation) %>%
+  mutate(
+    gene  = fct_inorder(gene),
+    label = fct_inorder(label)
+  )
 ```
 
 ```{r "theme"}

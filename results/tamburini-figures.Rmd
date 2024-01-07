@@ -71,6 +71,9 @@ ag_exps <- list(LEC = "exp-1", DC = "exp-2")
 
 # Objects to use for each cell type
 ag_objs <- list(LEC = lec_so, DC = dc_so)
+
+# LEC/DC subset colors
+subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
 ```
 
 ---
@@ -224,8 +227,9 @@ H.  Ag-scores are shown for each timepoint for each DC subset.
 
 <u>Notes</u>
 
-* Experiment 1 is shown for the LEC 21 and 42 day timepoints. Experiment 2 data
-  include very few LECs for the 21 day timepoint.
+* Only experiment 1 is shown for the LEC 21 and 42 day timepoints (including
+  for the UMAPs). Experiment 2 data include very few LECs for the 21 day
+  timepoint.
 * Experiment 2 is shown for the DC 21 and 42 day timepoints. Experiment 1 data
   are lower quality (sparse signal, mostly zeros).
 * Subsets are only shown if there are >= `r min_cells` cells for each timepoint
@@ -272,7 +276,7 @@ rf_feats %>%
   })
 ```
 
-```{r "type frequency"}
+```{r "CELL TYPE FREQUENCY", eval = FALSE}
 # Format data for plotting
 typ_dat <- all_meta %>%
   filter(
@@ -326,16 +330,30 @@ typ_freq <- freq_dat %>%
 ```
 
 ```{r "type Ag heat", fig.width = 16, fig.height = 5}
-# Create heatmap summarize Ag scores
+# Format Ag data for broad cell types
 # exclude CD45+ cell types from CD45- datasets and vice versa
 cd45neg_typs <- c("LEC", "BEC", "Fibroblasts", "Epithelial cells")
 
-heat_dat <- typ_dat %>%
+typ_ag_dat <- all_meta %>%
+  filter(
+    vaccination == "single",
+    cell_type != "unassigned"
+  ) %>%
+  group_by(cell_sort) %>%
+  mutate(
+    tm        = fct_relevel(as.character(tm), tms),
+    cell_type = fct_infreq(cell_type),
+    cell_type = fct_relevel(cell_type, c("LEC", "Fibroblasts", "DC"))
+  ) %>%
+  ungroup() %>%
   filter(
     (cell_sort == "CD45neg" & cell_type %in% cd45neg_typs) |
       (cell_sort == "CD45pos" & !cell_type %in% cd45neg_typs)
-  ) %>%
-  
+  )
+
+# Format data for heatmap
+# exclude unassigned cells since these likely include multiple cell types
+heat_dat <- typ_ag_dat %>%
   group_by(tm, cell_type) %>%
   summarize(
     Ag_score = mean(Ag_score), .groups = "drop",
@@ -345,10 +363,11 @@ heat_dat <- typ_dat %>%
   mutate(cell_type = str_c(cell_type, "\nn = ", label_comma()(sum(n)))) %>%
   ungroup() %>%
   mutate(
-    tm = fct_relevel(as.character(tm), rev(as.character(tms))),
+    tm      = fct_relevel(as.character(tm), rev(as.character(tms))),
     cell_type = fct_reorder(cell_type, Ag_score, mean, .desc = TRUE)
   )
 
+# Create heatmap summarizing Ag scores
 typ_heat <- heat_dat %>%
   ggplot(aes(cell_type, tm, fill = Ag_score)) +
   geom_tile() +
@@ -379,7 +398,7 @@ fig1_dat <- ag_objs %>%
       as_tibble(rownames = ".cell_id") %>%
       filter(
         exp %in% c("exp-0", ag_exps[[.y]]),
-        mouse != "6wk-3wk"
+        vaccination == "single"
       ) %>%
       mutate(tm_lab = factor(as.character(tm), tms))    
   })
@@ -468,10 +487,8 @@ ag_bx_dat <- fig1_dat %>%
   })
   
 # Create boxplots
-bx_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
-
 ag_bxs <- ag_bx_dat %>%
-  imap(~ create_ag_boxes(.x, clrs = bx_clrs[[.y]]))
+  imap(~ create_ag_boxes(.x, clrs = subtype_clrs[[.y]]))
 
 # Pull subsets used for main figures
 ag_plt_typs <- ag_bx_dat %>%
@@ -542,14 +559,14 @@ fig1
 ### Figure S1
 
 A.  UMAP projections show cell types identified for CD45- and CD45+ samples.
-B.  Ag-scores are shown for each timepoint for each LEC subset. Two biological
-    replicates are shown for the day 21 and day 42 timepoints. The number of
-    cells identified for each LEC subset is shown above each timepoint.
-C.  Ag-scores are shown for each timepoint fo each DC subset, as described in B.
+B.  UMAP projections show LEC subsets identified for each timepoint.
+C.  UMAP projections show DC subsets identified for each timepoint.
+D.  The expression of key marker genes is shown for LEC subsets.
+E.  The expression of key marker genes is shown for DC subsets.
 
-```{r "type UMAPs", fig.width = 14, fig.height = 5}
+```{r "type UMAPs"}
 # Format data
-u_dat <- all_meta %>%
+typ_dat <- all_meta %>%
   mutate(
     vaccination = str_c(vaccination, "\nvaccination"),
     tm          = ifelse(is.na(tm), vaccination, str_c("day ", tm)),
@@ -558,12 +575,12 @@ u_dat <- all_meta %>%
     cell_sort   = recode(cell_sort, CD45neg = "CD45-", CD45pos = "CD45+")
   )
 
-n_dat <- u_dat %>%
+n_dat <- typ_dat %>%
   group_by(tm, cell_sort) %>%
   summarize(n = str_c("n = ", label_comma()(n())), .groups = "drop")
 
 # Create UMAP projections
-typ_u <- u_dat %>%
+typ_u <- typ_dat %>%
   plot_scatter(
     "cell_type",
     "hUMAP_1", "hUMAP_2",
@@ -581,8 +598,167 @@ typ_u <- u_dat %>%
   umap_theme_2 +
   theme(
     legend.position = "bottom",
-    legend.title = element_blank()
+    legend.title    = element_blank()
   )
+```
+
+```{r "subtype UMAPs"}
+# Marker genes to plot
+typ_gns <- list(
+  LEC = c(
+    "Lyve1", "Marco", "Madcam1",
+    "Vcam1", "Ptx3",  "Ackr4"
+  ),
+  DC = c(
+    "Xcr1", "Itgax", "Sirpa",
+    "Lyz2", "Ccr7",  "Siglech"
+  )
+)
+
+# Format data for subtype plots
+subtype_dat <- ag_objs %>%
+  imap(~ {
+    clmns <- c("subtype", "tm", "vaccination", "hUMAP_1", "hUMAP_2")
+    
+    .x %>%
+      FetchData(c(clmns, typ_gns[[.y]])) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      mutate(
+        vaccination = str_c(vaccination, "\nvaccination"),
+        tm          = ifelse(is.na(tm), vaccination, str_c("day ", tm)),
+        tm          = fct_relevel(tm, str_c("day ", tms)),
+        subtype     = fct_relevel(subtype, levels(markers$annotation))
+      )
+  })
+
+# Create UMAPs
+subtype_u <- subtype_dat %>%
+  imap(~ {
+    .x %>%
+      plot_scatter(
+        "subtype", "hUMAP_1", "hUMAP_2",
+        group_col    = "tm", panel_nrow = 2,
+        n_label      = "corner",
+        label_params = list(size = 14),
+        size         = 0.1,
+        plot_colors  = subtype_clrs[[.y]],
+        plot_lvls    = levels(.x$subtype)
+      ) +
+      umap_theme_2 +
+      theme(
+        legend.position  = c(0.85, 0.25),
+        legend.title     = element_blank()
+      )
+  })
+```
+
+```{r "subtype boxplots"}
+# Create LEC/DC subtype boxplots
+subtype_bxs <- subtype_dat %>%
+  imap(~ {
+    dat <- .x %>%
+      pivot_longer(all_of(typ_gns[[.y]])) %>%
+      mutate(
+        subtype_tm = str_c(subtype, "_", tm),
+        name       = fct_relevel(name, typ_gns[[.y]])
+      ) %>%
+      arrange(subtype) %>%
+      mutate(subtype_tm = fct_inorder(subtype_tm))
+    
+    # Data for n labels
+    n_labs <- dat %>%
+      group_by(subtype, tm, subtype_tm) %>%
+      summarize(
+        n = label_comma()(n_distinct(.cell_id)),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        n_lab = str_replace(subtype, "_", " "),
+        n_lab = str_c(n_lab, " (", n, ")")
+      )
+    
+    n_labs <- set_names(n_labs$n_lab, n_labs$subtype_tm)
+
+    # Create boxplots
+    n_typs <- n_distinct(dat$subtype)
+
+    dat %>%
+      ggplot(aes(subtype_tm, value, fill = subtype)) +
+      geom_boxplot(outlier.size = 0.1, key_glyph = draw_key_point, alpha = 0.9) +
+      facet_grid(name ~ tm, scales = "free") +
+      guides(fill = guide_legend(override.aes = list(shape = 22, size = 4))) +
+      scale_x_discrete(labels = n_labs) +
+      scale_fill_manual(values = subtype_clrs[[.y]]) +
+      base_theme +
+      theme(
+        aspect.ratio    = 4 / n_typs,
+        legend.position = "none",
+        strip.clip      = "off",
+        axis.title      = element_blank(),
+        axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5)
+      )
+  })
+```
+
+```{r "Fig S1", fig.width = 16, fig.height = 20}
+figS1 <- typ_u /
+  (subtype_u$LEC + subtype_u$DC) /
+  wrap_plots(subtype_bxs$LEC, subtype_bxs$DC, widths = c(1, 0.63)) +
+  plot_layout(heights = c(0.7, 0.7, 1)) +
+  plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
+
+figS1
+```
+
+<br>
+
+<br>
+
+### Figure S2
+
+A.  Ag-scores are shown for each timepoint for CD45- cell types. Two biological
+    replicates are shown for the day 21 and day 42 timepoints. The number of
+    cells identified for each cell type is shown above each timepoint.
+B.  Ag-scores are shown for each timepoint for CD45+ cell types, as described in
+    A.
+C.  Ag-scores are shown for each timepoint for LEC subsets, as described in A.
+D.  Ag-scores are shown for each timepoint for DC subsets, as described in A.
+
+```{r "type Ag boxplots"}
+# Format data for boxplots
+dat <- c("exp-1", "exp-2") %>%
+  map_dfr(~ {
+    typ_ag_dat %>%
+      filter(exp %in% c("exp-0", .x)) %>%
+      mutate(
+        exp       = str_replace(.x, "exp-", "r"),
+        tm        = as.numeric(as.character(tm)),
+        cell_sort = recode(cell_sort, CD45neg = "CD45-", CD45pos = "CD45+")
+      )
+  })
+
+# Create boxplots
+typ_ag_bxs <- c("CD45-", "CD45+") %>%
+  set_names() %>%
+  map(~ {
+    dat <- dat %>%
+      filter(cell_sort == .x)
+      
+    n_dat <- dat %>%
+      group_by(cell_sort, exp, tm, cell_type) %>%
+      summarize(n = label_comma()(n()), .groups = "drop")
+    
+    dat %>%
+      create_ag_boxes(clrs = typ_clrs, facet_vars = c("exp", "cell_type")) +
+      geom_text_repel(
+        aes(y = Inf, label = n), data = n_dat,
+        seed = 42, force = 0.005,
+        size = 8 / .pt, vjust = 1.2
+      ) +
+      scale_y_continuous(expand = expansion(c(0.05, 0.15))) +
+      theme(plot.margin = margin(15, 15, 30, 15))
+  })
 ```
 
 ```{r "all subtype Ag boxplots"}
@@ -591,7 +767,7 @@ bx_dat <- ag_objs %>%
   map(~ {
     .x@meta.data %>%
       as_tibble(rownames = ".cell_id") %>%
-      filter(mouse != "6wk-3wk") %>%
+      filter(vaccination == "single") %>%
       group_by(mouse, subtype, exp) %>%
       ungroup() %>%
       mutate(
@@ -618,7 +794,7 @@ all_ag_bxs <- bx_dat %>%
       summarize(n = label_comma()(n()), .groups = "drop")
     
     dat %>%
-      create_ag_boxes(clrs = bx_clrs[[.y]], facet_vars = c("exp", "subtype")) +
+      create_ag_boxes(clrs = subtype_clrs[[.y]], facet_vars = c("exp", "subtype")) +
       geom_text_repel(
         aes(y = Inf, label = n), data = n_dat,
         seed = 42, force = 0.005,
@@ -629,18 +805,19 @@ all_ag_bxs <- bx_dat %>%
   })
 ```
 
-```{r "Fig S1", fig.width = 14, fig.height = 15}
+```{r "Fig S2", fig.width = 15, fig.height = 17}
 # Create final figure
-figS1 <- plot_grid(
-  typ_u, all_ag_bxs$LEC, all_ag_bxs$DC,
-  labels = c("A", "B", "C"),
+figS2 <- plot_grid(
+  typ_ag_bxs$`CD45-`, typ_ag_bxs$`CD45+`,
+  all_ag_bxs$LEC, all_ag_bxs$DC,
+  labels = c("A", "B", "C", "D"),
   label_size = ttl_pt2 * 1.5,
-  rel_heights = c(1.6, 1, 1.1),
+  rel_heights = c(1.1, 1.2, 1, 1.2),
   align = "v", axis = "rl",
   ncol = 1
 )
 
-figS1
+figS2
 ```
 
 
