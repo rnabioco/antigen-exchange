@@ -216,14 +216,14 @@ Antigen persists in discrete cell populations within the lymph node
 A.  Experimental design
 B.  Mean Ag-score is shown for each cell type for 2, 14, 21, and 42 days post
     vaccination.
-A.  UMAP projection shows LEC subsets.
-B.  UMAP projections show Ag-scores for LEC subsets for each timepoint.
-C.  Mean Ag-score is shown for LEC subsets for each timepoint.
-D.  Ag-scores are shown for each timepoint for each LEC subset.
-E.  UMAP projection shows DC subsets.
-F.  UMAP projections show Ag-scores for DC subsets for each timepoint.
-G.  Mean Ag-score is shown for DC subsets for each timepoint.
-H.  Ag-scores are shown for each timepoint for each DC subset.
+C.  UMAP projection shows LEC subsets.
+D.  UMAP projections show Ag-scores for LEC subsets for each timepoint.
+E.  Mean Ag-score is shown for LEC subsets for each timepoint.
+F.  Ag-scores are shown for each timepoint for each LEC subset.
+G.  UMAP projection shows DC subsets.
+H.  UMAP projections show Ag-scores for DC subsets for each timepoint.
+I.  Mean Ag-score is shown for DC subsets for each timepoint.
+J.  Ag-scores are shown for each timepoint for each DC subset.
 
 <u>Notes</u>
 
@@ -450,7 +450,7 @@ fig1_ag_u <- fig1_dat %>%
         group_col    = "tm_lab",
         panel_nrow   = 1,
         outline      = TRUE,
-        size         = 0.7,
+        size         = 0.2,
         stroke       = 0.7
       ) +
       facet_wrap(
@@ -720,8 +720,8 @@ figS1
 A.  Ag-scores are shown for each timepoint for CD45- cell types. Two biological
     replicates are shown for the day 21 and day 42 timepoints. The number of
     cells identified for each cell type is shown above each timepoint.
-B.  Ag-scores are shown for each timepoint for CD45+ cell types, as described in
-    A.
+B.  Ag-scores are shown for each timepoint for CD45+ cell types,
+    as described in A.
 C.  Ag-scores are shown for each timepoint for LEC subsets, as described in A.
 D.  Ag-scores are shown for each timepoint for DC subsets, as described in A.
 
@@ -805,14 +805,14 @@ all_ag_bxs <- bx_dat %>%
   })
 ```
 
-```{r "Fig S2", fig.width = 15, fig.height = 17}
+```{r "Fig S2", fig.width = 15, fig.height = 17.5}
 # Create final figure
 figS2 <- plot_grid(
   typ_ag_bxs$`CD45-`, typ_ag_bxs$`CD45+`,
   all_ag_bxs$LEC, all_ag_bxs$DC,
   labels = c("A", "B", "C", "D"),
   label_size = ttl_pt2 * 1.5,
-  rel_heights = c(1.1, 1.2, 1, 1.2),
+  # rel_heights = c(1.1, 1.2, 1, 1.2),
   align = "v", axis = "rl",
   ncol = 1
 )
@@ -1412,7 +1412,7 @@ D.  Mean 42 day Ag-score is shown as described in A.
 E.  UMAP projections show 42 day Ag-scores for LEC subsets as described in B.
 F.  Successive vaccinations enhances retention of previously archived antigen.
     Ag-score is shown for the 42 day timepoint as described in C.
-G.  21 day and 42 day Ag-score is compared for each LEC subset.
+G.  21 day and 42 day Ag-score is compared for LEC subsets.
 H.  Ag-high module scores described in Figure 2 are shown for LECs that archived
     antigens from both vaccinations (double-high), from only one vaccination
     (single-high), or have low levels of both antigens (Ag-low).
@@ -1424,33 +1424,29 @@ H.  Ag-high module scores described in Figure 2 are shown for LECs that archived
   Need to add p values.
 
 ```{r "exchange UMAPs", fig.width = 16, fig.height = 4}
-# Format plot data
-# Using experiment 1 since, experiment is missing 3wk LECs
-
-
-# DON'T FILTER CELL TYPES HERE, SHOW ALL FOR UMAP
-dat <- lec_so@meta.data %>%
-  group_by(subtype) %>%
-  filter(all(table(mouse) >= min_cells)) %>%
-  ungroup() %>%
-  mutate(mouse = fct_relevel(mouse, names(m_key))) %>%
-  filter(exp == "exp-1") %>%
-  arrange(mouse) %>%
+# Format Ag exchange plot data
+# use experiment 1 since, experiment 2 is missing 3wk LECs
+ex_dat <- lec_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(exp %in% c("exp-0", ag_exps$LEC)) %>%
   mutate(
     mouse = m_key[as.character(mouse)],
-    mouse = fct_inorder(mouse)
+    mouse = fct_relevel(mouse, unname(m_key))
   )
 
 # Create UMAPs
-plt_args <- list(
+ex_heat_args <- list(
   ag_clmns = ag_clmns,
   clr      = tm_clrs[c("21", "42")]
 )
 
-mx_sig <- max(dat[plt_args$ag_clmns])
-
-ex_u <- plt_args %>%
+ex_u <- ex_heat_args %>%
   pmap(~ {
+    dat <- ex_dat %>%
+      filter(exp == ag_exps$LEC)
+    
+    # mx_sig <- max(dat[ex_heat_args$ag_clmns])
+    
     dat %>%
       plot_scatter(
         ..1,
@@ -1459,7 +1455,7 @@ ex_u <- plt_args %>%
         group_col   = "mouse",
         panel_nrow  = 1,
         outline     = TRUE,
-        size        = 1,
+        size        = 0.6,
         stroke      = 0.7,
         plot_colors = c("lightblue", "white", ..2),
         label_params = list(size = ttl_pt1)
@@ -1476,180 +1472,88 @@ ex_u <- plt_args %>%
         panel.border    = element_rect(color = ln_col, linewidth = ln_pt)
       )
   })
+```
 
-# Create heatmaps
-heat_dat <- dat %>%
+```{r "exchange heatmaps"}
+# Format data for heatmaps
+heat_dat <- ex_dat %>%
+  filter(
+    exp == ag_exps$LEC,
+    subtype %in% ag_plt_typs$LEC
+  ) %>%
   group_by(mouse, subtype) %>%
   summarize(across(all_of(ag_clmns), mean), .groups = "drop")
 
-ex_heat <- plt_args %>%
+# Create heatmaps
+ex_heat <- ex_heat_args %>%
   pmap(~ {
     heat_dat %>%
-      mutate(subtype = fct_reorder(subtype, !!sym(..1), mean)) %>%
-      ggplot(aes(mouse, subtype, fill = !!sym(..1))) +
-      geom_tile() +
-      labs(x = "vaccination group") +
-      scale_fill_gradientn(colours = c("lightblue", "white", ..2)) +
-      scale_x_discrete(labels = ~ str_replace(.x, " day", "d")) +
-      guides(fill = guide_colorbar(
-        ticks = FALSE,
-        title = ag_labs[.x],
-        barheight = unit(150, "pt"), barwidth = unit(10, "pt")
-      )) +
-      base_theme +
-      theme(
-        aspect.ratio = n_distinct(heat_dat$subtype) / n_distinct(heat_dat$mouse),
-        plot.margin  = margin(0, 15, 0, 15),
-        axis.title.y = element_blank(),
-        axis.text.y  = element_text(size = ttl_pt2)
+      create_exchange_heats(
+        ag_clmn = .x,
+        ttl     = ag_labs[[.x]],
+        clr     = .y
       )
   })
-
-# Create final panel
-ex_panels <- map2(ex_heat, ex_u, ~ {
-  plot_grid(
-    .x, .y,
-    nrow = 1,
-    align = "h",
-    axis  = "tb",
-    rel_widths = c(0.37, 1)
-  )
-})
 ```
 
-```{r "exchange 3wk boxes", fig.width = 10, fig.height = 2}
-# Effect of previous vaccination on uptake of new antigen
-# Comparison using exp-2 isn't very useful since we captured very few LECs
-# for the 3wk timepoint
-# Use LEC subsets shown in Fig 1
-ex_3_bxs <- lec_so@meta.data %>%
-  filter(
-    !subtype %in% c("unassigned"),
-    exp %in% c("exp-0", "exp-1")
-  ) %>%
-  create_exchange_boxes(
-    tm        = "21",
-    tm_clmn   = "tm_3",
-    ag_clmn   = "Ag_score_3",
-    typs      = ag_plt_typs$LEC,
-    clrs      = tm_clrs
-  )
-```
+```{r "exchange boxes"}
+# Effect of successive vaccinations on antigen uptake/retention
+# use LEC subsets shown in Fig 1
+ex_bx_args <- list(
+  tm      = c("21", "42"),
+  tm_clmn = c("tm_3", "tm_6"),
+  ag_clmn = c("Ag_score_3", "Ag_score_6"),
+  p_hjust = c(0.5, 0.8)
+)
 
-```{r "exchange 6wk boxes", fig.width = 10, fig.height = 2.15}
-# Effect of previous vaccination on uptake of new antigen
-# Comparison using exp-2 isn't very useful since we captured very few LECs
-# for the 3wk timepoint
-# Use LEC subsets shown in Fig 1
-ex_6_bxs <- lec_so@meta.data %>%
-  filter(
-    !subtype %in% c("unassigned"),
-    exp %in% c("exp-0", "exp-1")
-  ) %>%
-  create_exchange_boxes(
-    tm        = "42",
-    tm_clmn   = "tm_6",
-    ag_clmn   = "Ag_score_6",
-    typs      = ag_plt_typs$LEC,
-    clrs      = tm_clrs,
-    p_hjust   = 0.75
-  )
+ex_bxs <- ex_bx_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    ex_dat %>%
+      create_exchange_boxes(
+        tm        = args$tm,
+        tm_clmn   = args$tm_clmn,
+        ag_clmn   = args$ag_clmn,
+        typs      = ag_plt_typs$LEC,
+        clrs      = tm_clrs,
+        p_size    = 10,
+        p_hjust   = args$p_hjust,
+        p_vjust   = 0.7
+      )
+  })
 ```
 
 ```{r "exchange correlation", fig.width = 10, fig.height = 4}
-# Plot data
-dat <- lec_so@meta.data %>%
-  as_tibble(rownames = "cell_id") %>%
+# Format scatter plot data
+scat_dat <- lec_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
   filter(
-    exp == "exp-1",
-    mouse == "6wk-3wk",
-    # cell_type == "LEC",
-    subtype != "unassigned"
+    vaccination == "dual",
+    subtype %in% ag_plt_typs$LEC,
   ) %>%
-  group_by(subtype) %>%
-  filter(n() > 50) %>%
-  ungroup() %>%
   mutate(subtype = fct_relevel(subtype, ag_plt_typs$LEC))
 
-# Calculate correlation
-lab_dat <- dat %>%
-  group_by(subtype) %>%
-  summarize(
-    cor   = cor.test(Ag_3wk_score, Ag_6wk_score, method = "pearson")$estimate[[1]],
-    p_val = cor.test(Ag_3wk_score, Ag_6wk_score, method = "pearson")$p.value,
-    n     = n_distinct(cell_id),
-    .groups = "drop"
-  ) %>%
-  mutate(p_adj = p.adjust(p_val, method = "bonferroni")) %>%
-  rowwise() %>%
-  mutate(
-    p_lab = .format_pvalue(p_adj),
-    r_lab = str_c("r = ", round(cor, digits = 2), "\nn = ", n)
-    # r_lab = str_c("atop(italic(r) == ", round(cor, digits = 2), ", n == ", n, ")")
-    # r_lab = str_c("italic(r) == ", round(cor, digits = 2), " ~~ n == ", n)
-    # r_lab = str_c("italic(r) == ", round(cor, digits = 2))
-    # r_lab = str_c("italic(r) == ", round(cor, digits = 2), " ~~ italic(p) == ", p_lab)
-  )
-
-# Create scatter plots
-x_var <- "Ag_6wk_score"
-y_var <- "Ag_3wk_score"
-
-ag_labs <- c(
-  Ag_3wk_score = "Ag-score (21 day)",
-  Ag_6wk_score = "Ag-score (42 day)"
-)
-
-ex_scat <- dat %>%
-  ggplot(aes(!!sym(x_var), !!sym(y_var), color = subtype)) +
-  geom_abline(slope = 1, intercept = 0, linewidth = 0.5, color = "grey90") +
-  geom_point(size = 1.5) +
-  geom_smooth(
-    method    = "lm",
-    linetype  = 2,
-    linewidth = 0.5,
-    color     = "black",
-    se        = FALSE,
-    formula   = "y ~ x"
-  ) +
-  geom_text(
-    aes(x = -Inf, y = Inf, label = r_lab),
-    data  = lab_dat,
-    hjust = -0.1,
-    vjust = 1.1,
-    color = "black",
-    size  = ttl_pt1 / .pt
-  ) +
-  facet_wrap(~ subtype, nrow = 1) +
-  
-  scale_color_manual(values = lec_clrs) +
-  coord_cartesian(
-    xlim = c(0, max(c(dat[[x_var]], dat[[y_var]]))),
-    ylim = c(0, max(c(dat[[x_var]], dat[[y_var]])))
-  ) +
-  labs(
-    x = ag_labs[x_var],
-    y = ag_labs[y_var]
-  ) +
-  base_theme +
-  theme(
-    aspect.ratio = 1,
-    legend.position = "none"
-  )
+ex_scat <- scat_dat %>%
+  split(.$exp) %>%
+  map(create_exchange_scatter)
 ```
 
 ```{r "exchange Ag-high module scores", fig.width = 9, fig.height = 5.5}
-## CHECK FOR ANY DIFFERENCE BETWEEN THE BIOLOGICAL REPLICATES ##
-# replicates are similar
-# pool all cells together to increase power
-
 # Format plot data
-lvls <- c("Ag-low", "Ag-high", "single-high", "double-high")
+# module scores for biological replicates are similar
+# pool all cells together to increase power
+lvls <- c("Ag-low", "single-high", "double-high")
+
+clmns <- c(
+  "subtype", "mouse", "vaccination",
+  "Ag_class_dual", "exp", ag_modules
+)
 
 plt_dat <- lec_so %>%
-  FetchData(c("subtype", "mouse", "Ag_class_dual", "exp", ag_modules)) %>%
+  FetchData(clmns) %>%
   filter(
-    mouse %in% c("6wk", "3wk", "6wk-3wk"),
+    vaccination == "dual",
     subtype %in% rf_typs
   ) %>%
   pivot_longer(all_of(ag_modules)) %>%
@@ -1660,13 +1564,13 @@ plt_dat <- lec_so %>%
   filter(
     subtype == module_type,
     module_ag == "high"
-  ) %>%
+  )
   
-  # Group all low cells together under single mouse, otherwise three boxplots
-  # are shown
+# Group all low cells together under single mouse, otherwise three boxplots
+# are shown
+plt_dat <- plt_dat %>%
   mutate(
     subtype       = fct_relevel(subtype, rf_typs),
-    mouse         = m_key[as.character(mouse)],
     Ag_class_dual = str_replace(Ag_class_dual, "^[0-9]+wk", "Ag"),
     Ag_class_dual = recode(Ag_class_dual, low = "Ag-low"),
     Ag_class_dual = fct_relevel(Ag_class_dual, lvls)
@@ -1676,30 +1580,40 @@ plt_dat <- lec_so %>%
     mouse_class = fct_inorder(str_c(mouse, "-", subtype, "-", Ag_class_dual))
   )
 
+## FIX P ADJUST ##
 # Calculate p-values
 p_dat <- plt_dat %>%
-  filter(mouse == "dual") %>%
   split(.$subtype) %>%
   map(~ {
       pairwise.t.test(
         .x$value, .x$Ag_class_dual,
-        alternative = "greater",
-        p.adjust.method = "bonferroni"
+        alternative     = "greater",
+        p.adjust.method = "none"
       ) %>%
-      broom::tidy()
+      broom::tidy() %>%
+      mutate(
+        ymax = max(.x$value),
+        ymin = min(.x$value)
+      )
     }) %>%
   bind_rows(.id = "subtype") %>%
   filter(group1 == "double-high") %>%
   mutate(
-    ln_x = match(group2, lvls[lvls %in% group2]),
-    x    = (3 + ln_x) / 2
+    padj    = p.adjust(p.value, method = "bonferroni"),
+    ln_x    = match(group2, lvls),
+    ln_xend = match(group1, lvls),
+    y_fctr  = ((ymax - abs(ymin)) * 0.1),
+    ln_y    = ymax + (y_fctr * ln_x),
+    y       = ymax + (y_fctr * (ln_x + 1)),
+    x       = ln_x + 0.5
+    # x       = (3 + ln_x) / 2
   ) %>%
   rowwise() %>%
-  mutate(padj = .format_pvalue(p.value))
+  mutate(padj = .format_pvalue(padj)) %>%
+  ungroup()
 
 # Format n labels
 n_dat <- plt_dat %>%
-  filter(mouse == "dual") %>%
   group_by(Ag_class_dual, mouse_class, subtype, module_ag) %>%
   summarize(n = n(), .groups = "drop") %>%
   mutate(
@@ -1711,9 +1625,21 @@ n_lab <- set_names(n_dat$n, n_dat$mouse_class)
 
 # Create boxplots
 ex_mod_bxs <- plt_dat %>%
-  filter(mouse == "dual") %>%
   ggplot(aes(mouse_class, value, fill = subtype)) +
   geom_boxplot(notch = TRUE, outlier.size = 0.1) +
+  
+  geom_segment(
+    aes(x = ln_x, xend = ln_xend, y = ln_y, yend = ln_y),
+    data = p_dat,
+    color = ln_col
+  ) +
+  
+  geom_text(
+    aes(x = x, y = y, label = padj),
+    data = p_dat,
+    parse = TRUE,
+    size = 9 / .pt
+  ) +
   
   facet_wrap(~ subtype, scales = "free") +
   scale_fill_manual(values = lec_clrs) +
@@ -1721,7 +1647,7 @@ ex_mod_bxs <- plt_dat %>%
   labs(y = "Ag-high module score") +
   base_theme +
   theme(
-    aspect.ratio    = 1.3,
+    aspect.ratio    = 1.6,
     legend.position = "none",
     axis.text.x     = element_text(angle = 45, hjust = 1),
     axis.title.x    = element_blank()
@@ -1729,9 +1655,9 @@ ex_mod_bxs <- plt_dat %>%
 ```
 
 ```{r "Fig 3", fig.width = 14, fig.height = 20}
-(ex_heat[[1]] + ex_u[[1]]) / ex_3_bxs /
-  (ex_heat[[2]] + ex_u[[2]]) / ex_6_bxs /
-  ex_scat /
+fig3 <- (ex_heat[[1]] + ex_u[[1]]) / ex_bxs[[1]] /
+  (ex_heat[[2]] + ex_u[[2]]) / ex_bxs[[2]] /
+  ex_scat[[ag_exps$LEC]] /
   wrap_plots(ex_mod_bxs, plot_spacer()) +
   # wrap_plots(ex_mod_bxs, nrow = 1) +
   # wrap_plots(append(list(plot_spacer()), ex_mod_bxs), nrow = 1, widths = c(0, 1, 1, 1)) +
@@ -1740,6 +1666,8 @@ ex_mod_bxs <- plt_dat %>%
   plot_layout(heights = c(1, 0.55, 1, 0.55, 0.8, 0.8)) +
   plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
+
+fig3
 ```
 
 <br>
@@ -1749,44 +1677,47 @@ ex_mod_bxs <- plt_dat %>%
 ### Figure S3
 
 A.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
-    for each LEC subset. Other timepoints are shown in grey. P values
-    were calculated using a one-sided t test with Bonferroni correction.
-B.  Ag-score is shown for the 21 day timepoint for DC subsets,
-    as described in A.
-C.  Ag-score is shown for the 42 day timepoint for LEC subsets,
-    as described in A.
-D.  Ag-score is shown for the 42 day timepoint for DC subsets,
-    as described in C. 
+    for DC subsets from a biological replicate.
+    This analysis was not performed for a biological replicate for LEC subsets
+    due to the low number of LECs recovered (<40 total cells).
+    Other timepoints are shown in grey.
+    P values were calculated using a one-sided t test with Bonferroni
+    correction.
+B.  Ag-score is shown for the 42 day timepoint for LEC subsets from a
+    biological replicate, as described in A.
+C.  Ag-score is shown for the 42 day timepoint for DC subsets from a biological
+    replicate, as described in A.
+D.  21 day and 42 day Ag-score is compared for LEC subsets from a biological
+    replicate.
 
-```{r "Fig S3", fig.width = 18, fig.height = 8}
+```{r "rep exchange boxes"}
 # Set input data
-exps <- c("exp-1", "exp-2")
+# plot replicates not shown in main figure
+exps        <- c("exp-1", "exp-2")
+plt_lec_exp <- exps[exps != ag_exps$LEC]
+plt_dc_exp  <- exps[exps != ag_exps$DC]
 
-bx_args <- list(
-  tm      = c("21", "42"),
-  tm_clmn = c("tm_3", "tm_6"),
-  ag_clmn = c("Ag_score_3", "Ag_score_6"),
-  p_hjust = c(0.5, 0.9),
-  exps    = list(
-    list(LEC = "exp-1", DC = exps),
-    list(LEC = exps, DC = exps)
-  )
+ex_bx_args$exps <-list(
+  list(LEC = NULL,        DC = plt_dc_exp),
+  list(LEC = plt_lec_exp, DC = plt_dc_exp)
 )
 
-# Create boxplots
-all_ex_bxs <- bx_args %>%
+# Create boxplots for biological replicates
+rep_ex_bxs <- ex_bx_args %>%
   pmap(~ {
     bx_args <- list(...)
     
-    ag_objs %>%
+    objs <- purrr::discard(bx_args$exps, is.null)
+    objs <- ag_objs[names(objs)]
+    
+    objs %>%
       imap(~ {
         dat <- .x@meta.data
         
         dat <- bx_args$exps[[.y]] %>%
           map_dfr(~ {
             dat %>%
-              filter(exp %in% c("exp-0", .x)) %>%
-              mutate(exp = str_replace(.x, "exp-", "r"))
+              filter(exp %in% c("exp-0", .x))
           })
         
         dat %>%
@@ -1796,9 +1727,9 @@ all_ex_bxs <- bx_args %>%
             ag_clmn    = bx_args$ag_clmn,
             clrs       = tm_clrs,
             typs       = ag_plt_typs[[.y]],
+            p_size     = 10,
             p_hjust    = bx_args$p_hjust,
-            facet_vars = c("exp", "subtype"),
-            p_vars     = "exp",
+            facet_vars = "subtype",
             p_cutoff   = Inf
           ) +
           scale_y_continuous(expand = expansion(c(0.05, 0.15))) +
@@ -1806,20 +1737,23 @@ all_ex_bxs <- bx_args %>%
       })
   }) %>%
   flatten()
+```
 
+```{r "Fig S3", fig.width = 10, fig.height = 12}
 # Create final figure
-plot_grid(
-  plotlist = all_ex_bxs,
+figS3 <- plot_grid(
+  plotlist = append(rep_ex_bxs, list(ex_scat$`exp-2`)),
   labels = c("A", "B", "C", "D"),
   label_size = ttl_pt2 * 1.5,
-  # rel_heights = c(0.7, 0.7, 1, 0.7),
-  ncol = 2, align = "v", axis = "rl"
+  ncol = 1, align = "v", axis = "rl"
 )
+
+figS3
 ```
 
 
 
-```{r "extended scatter plots", fig.width = 14, fig.height = 4, eval = FALSE}
+```{r "EXCHANGE SCATTER PLOTS EXTENDED", fig.width = 14, fig.height = 4, eval = FALSE}
 # Plot data
 dat <- lec_so@meta.data %>%
   as_tibble(rownames = "cell_id") %>%
@@ -1975,100 +1909,69 @@ D.  Ag-score is shown for single and dual vaccinations for the 42 day timepoint
   regions for both LECs and DCs.
 
 ```{r "DC exchange heatmaps", fig.width = 16, fig.height = 4}
-# Format plot data
-# EXPERIMENT 2
-plt_args <- list(
-  ag_clmns = ag_clmns,
-  clr      = tm_clrs[c("21", "42")]
-)
-
-dat <- dc_so@meta.data %>%
-  group_by(subtype) %>%
-  filter(all(table(mouse) >= min_cells)) %>%
-  ungroup() %>%
-  mutate(mouse = fct_relevel(mouse, names(m_key))) %>%
-  filter(exp == "exp-2") %>%
-  arrange(mouse) %>%
+# Format data for DC exchange plots
+dc_ex_dat <- dc_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(
+    exp %in% c("exp-0", ag_exps$DC),
+    subtype %in% ag_plt_typs$DC
+  ) %>%
   mutate(
     mouse = m_key[as.character(mouse)],
-    mouse = fct_inorder(mouse)
+    mouse = fct_relevel(mouse, unname(m_key))
   )
 
-# Create heatmaps
-heat_dat <- dat %>%
+# Format data for heatmaps
+dc_heat_dat <- dc_ex_dat %>%
+  filter(exp == ag_exps$DC) %>%
   group_by(mouse, subtype) %>%
   summarize(across(all_of(ag_clmns), mean), .groups = "drop")
 
-ex_heat <- plt_args %>%
+# Create heatmaps
+dc_ex_heat <- ex_heat_args %>%
   pmap(~ {
-    heat_dat %>%
-      mutate(subtype = fct_reorder(subtype, !!sym(..1), mean)) %>%
-      ggplot(aes(mouse, subtype, fill = !!sym(..1))) +
-      geom_tile() +
-      labs(x = "vaccination group") +
-      scale_fill_gradientn(colours = c("lightblue", "white", ..2)) +
-      scale_x_discrete(labels = ~ str_replace(.x, " day", "d")) +
-      guides(fill = guide_colorbar(
-        ticks = FALSE,
-        title = ag_labs[.x],
-        barheight = unit(150, "pt"), barwidth = unit(10, "pt")
-      )) +
-      base_theme +
-      theme(
-        aspect.ratio = n_distinct(heat_dat$subtype) / n_distinct(heat_dat$mouse),
-        plot.margin  = margin(0, 15, 0, 15),
-        axis.title.y = element_blank(),
-        axis.text.y  = element_text(size = ttl_pt2)
+    dc_heat_dat %>%
+      create_exchange_heats(
+        ag_clmn = .x,
+        ttl     = ag_labs[[.x]],
+        clr     = .y
       )
   })
 ```
 
-```{r "DC exchange 3wk boxes", fig.width = 10, fig.height = 2}
-# Effect of previous vaccination on uptake of new antigen
-ex_3_bxs <- dc_so@meta.data %>%
-  filter(
-    !subtype %in% c("unassigned"),
-    exp %in% c("exp-0", "exp-2")
-  ) %>%
-  create_exchange_boxes(
-    tm        = "21",
-    tm_clmn   = "tm_3",
-    ag_clmn   = "Ag_score_3",
-    typs      = ag_plt_typs$DC[1:3],
-    clrs      = tm_clrs,
-    p_size    = 10
-  ) +
-  theme(legend.position = "bottom")
-```
-
-```{r "DC exchange 6wk boxes", fig.width = 10, fig.height = 2.15}
-# Effect of previous vaccination on uptake of new antigen
-ex_6_bxs <- dc_so@meta.data %>%
-  filter(
-    !subtype %in% c("unassigned"),
-    exp %in% c("exp-0", "exp-2")
-  ) %>%
-  create_exchange_boxes(
-    tm        = "42",
-    tm_clmn   = "tm_6",
-    ag_clmn   = "Ag_score_6",
-    typs      = ag_plt_typs$DC[1:3],
-    clrs      = tm_clrs,
-    p_size    = 10,
-    p_hjust   = 0.75
-  ) +
-  theme(legend.position = "bottom")
+```{r "DC exchange boxes", fig.width = 10, fig.height = 2}
+# Effect of successive vaccinations on antigen uptake/retention
+# use DC subsets shown in figure 1
+dc_ex_bxs <- ex_bx_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    dc_ex_dat %>%
+      create_exchange_boxes(
+        tm        = args$tm,
+        tm_clmn   = args$tm_clmn,
+        ag_clmn   = args$ag_clmn,
+        typs      = ag_plt_typs$DC[1:3],
+        clrs      = tm_clrs,
+        p_size    = 10,
+        p_hjust   = args$p_hjust,
+        p_vjust   = 0.7
+      ) +
+      theme(legend.position = "bottom")
+  })
 ```
 
 ```{r "Fig 4", fig.width = 15, fig.height = 9}
-wrap_plots(
-  ex_heat[[1]], ex_3_bxs,
-  ex_heat[[2]], ex_6_bxs,
+fig4 <- wrap_plots(
+  dc_ex_heat[[1]], dc_ex_bxs[[1]],
+  dc_ex_heat[[2]], dc_ex_bxs[[2]],
   nrow = 2,
   widths = c(0.25, 1)
 ) +
   plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
+
+fig4
 ```
 
 

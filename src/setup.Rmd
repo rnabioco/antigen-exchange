@@ -261,8 +261,8 @@ format_ag_data <- function(so_in, norm_factors, ag_key) {
 #' Used for figures 3 and 4
 create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
                                   typs = NULL, clrs, facet_vars = "subtype",
-                                  p_vars = NULL, p_hjust = 0.5, p_size = 8,
-                                  p_cutoff = 0.05) {
+                                  p_vars = NULL, p_hjust = 0.5, p_vjust = 0.5,
+                                  p_size = 8, p_cutoff = 0.05) {
   
   # Set plot colors
   ln_clrs   <- clrs
@@ -331,11 +331,12 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
     ungroup() %>%
     filter(padj < p_cutoff)
   
-  # Create boxplots
+  # Set facet variables
   if (length(facet_vars) == 1) facet_vars <- c("", facet_vars)
   
   facet_vars <- str_c(facet_vars, collapse = "~")
   
+  # Create boxplots
   res <- dat %>%
     ggplot(aes(!!sym(tm_clmn), !!sym(ag_clmn))) +
     
@@ -354,11 +355,12 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
     ) +
     geom_text(
       aes(y = y, label = plab, alpha = NULL),
-      data = p_dat,
-      parse = TRUE,
       show.legend = FALSE,
+      data  = p_dat,
+      parse = TRUE,
       size  = p_size / .pt,
-      hjust = p_hjust
+      hjust = p_hjust,
+      vjust = p_vjust
     ) +
     facet_grid(as.formula(facet_vars)) +
     scale_alpha_manual(values = c(single = 0.35, dual = 1)) +
@@ -373,6 +375,103 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
     labs(x = "days post vaccination", y = "Ag-score") +
     base_theme +
     theme(aspect.ratio = 0.7)
+  
+  res
+}
+
+#' Create heatmaps comparing single and dual vaccinated mice
+#' 
+#' Used for figures 3 and 4
+create_exchange_heats <- function(df_in, ag_clmn, ttl, clr) {
+
+  # Format data for heatmaps  
+  dat <- df_in %>%
+    mutate(subtype = fct_reorder(subtype, !!sym(ag_clmn), mean))
+  
+  # Create heatmaps
+  res <- dat %>%
+    ggplot(aes(mouse, subtype, fill = !!sym(ag_clmn))) +
+    geom_tile() +
+    labs(x = "vaccination group") +
+    scale_fill_gradientn(colours = c("lightblue", "white", clr)) +
+    scale_x_discrete(labels = ~ str_replace(.x, " day", "d")) +
+    guides(fill = guide_colorbar(
+      ticks = FALSE,
+      title = ttl,
+      barheight = unit(150, "pt"), barwidth = unit(10, "pt")
+    )) +
+    base_theme +
+    theme(
+      aspect.ratio = n_distinct(dat$subtype) / n_distinct(dat$mouse),
+      plot.margin  = margin(0, 15, 0, 15),
+      axis.title.y = element_blank(),
+      axis.text.y  = element_text(size = ttl_pt2)
+    )
+  
+  res
+}
+
+#' Create scatter plots comparing Ag-scores for dual vaccinated mice
+#' 
+#' Used for figure 3 
+create_exchange_scatter <- function(df_in, x = c(Ag_3wk_score = "Ag-score (21 day)"),
+                              y = c(Ag_6wk_score = "Ag-score (42 day)"),
+                              clrs = lec_clrs) {
+  
+  # Set x y variables
+  x_var <- names(x)
+  y_var <- names(y)
+  
+  # Calculate correlation
+  lab_dat <- df_in %>%
+    group_by(subtype, exp) %>%
+    summarize(
+      cor_res = list(cor.test(!!sym(x_var), !!sym(y_var), method = "pearson")),
+      cor     = map_dbl(cor_res, ~ .x$estimate[[1]]),
+      p_val   = map_dbl(cor_res, ~ .x$p.value),
+      n       = label_comma()(n_distinct(.cell_id)),
+      .groups = "drop"
+    ) %>%
+    mutate(p_adj = p.adjust(p_val, method = "bonferroni")) %>%
+    rowwise() %>%
+    mutate(
+      p_lab = .format_pvalue(p_adj),
+      r_lab = str_c("r = ", round(cor, digits = 2), "\nn = ", n)
+      # r_lab = str_c("atop(italic(r) == ", round(cor, digits = 2), ", n == ", n, ")")
+      # r_lab = str_c("italic(r) == ", round(cor, digits = 2), " ~~ n == ", n)
+      # r_lab = str_c("italic(r) == ", round(cor, digits = 2))
+      # r_lab = str_c("italic(r) == ", round(cor, digits = 2), " ~~ italic(p) == ", p_lab)
+    )
+  
+  # Create scatter plot
+  res <- df_in %>%
+    ggplot(aes(!!sym(x_var), !!sym(y_var), color = subtype)) +
+    geom_point(size = 1.5) +
+    geom_smooth(
+      method    = "lm",
+      linetype  = 2,
+      linewidth = 0.5,
+      color     = "black",
+      se        = FALSE,
+      formula   = "y ~ x"
+    ) +
+    geom_text(
+      aes(x = -Inf, y = Inf, label = r_lab),
+      data  = lab_dat,
+      hjust = -0.1,
+      vjust = 1.1,
+      color = "black",
+      size  = ttl_pt1 / .pt
+    ) +
+    facet_wrap(~ subtype, nrow = 1) +
+    
+    scale_color_manual(values = clrs) +
+    labs(x = unname(x), y = unname(y)) +
+    base_theme +
+    theme(
+      aspect.ratio = 1,
+      legend.position = "none"
+    )
   
   res
 }
