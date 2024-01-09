@@ -261,8 +261,9 @@ format_ag_data <- function(so_in, norm_factors, ag_key) {
 #' Used for figures 3 and 4
 create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
                                   typs = NULL, clrs, facet_vars = "subtype",
-                                  p_vars = NULL, p_hjust = 0.5, p_vjust = 0.5,
-                                  p_size = 8, p_cutoff = 0.05) {
+                                  p_method = wilcox.test, p_vars = NULL,
+                                  p_hjust = 0.5, p_vjust = 0.5, p_size = 10,
+                                  p_cutoff = Inf) {
   
   # Set plot colors
   ln_clrs   <- clrs
@@ -305,7 +306,7 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
     group_by(!!!syms(c(tm_clmn, facet_vars))) %>%
     filter(all(vacs %in% vaccination)) %>%
     summarize(
-      pval = t.test(
+      pval = p_method(
         (!!sym(ag_clmn))[vaccination == vacs[1]],
         (!!sym(ag_clmn))[vaccination == vacs[2]],
         alternative = "less"
@@ -461,7 +462,7 @@ create_exchange_scatter <- function(df_in, x = c(Ag_3wk_score = "Ag-score (21 da
       hjust = -0.1,
       vjust = 1.1,
       color = "black",
-      size  = ttl_pt1 / .pt
+      size  = txt_pt2 / .pt
     ) +
     facet_wrap(~ subtype, nrow = 1) +
     
@@ -472,6 +473,225 @@ create_exchange_scatter <- function(df_in, x = c(Ag_3wk_score = "Ag-score (21 da
       aspect.ratio = 1,
       legend.position = "none"
     )
+  
+  res
+}
+
+#' Create boxplots comparing RF module scores and Ag-classes 
+#' 
+#' Used for figure 3
+create_module_boxes <- function(df_in, module_clmns, module_title, lvls,
+                                p_alt = "two.sided") {
+  
+  # Format plotting data
+  # cell types filtered based on module_clmns names
+  # module score is only plotted for the corresponding cell type
+  # group all low cells together under single mouse, otherwise three boxplots
+  # are shown
+  typs <- str_remove(module_clmns, "_[^_]+$")
+  
+  dat <- df_in %>%
+    pivot_longer(all_of(module_clmns)) %>%
+    separate_wider_regex(
+      name,
+      c(module_type = ".*", "_", module_ag = ".*")
+    ) %>%
+    filter(subtype == module_type) %>%
+    mutate(
+      subtype       = fct_relevel(subtype, typs),
+      Ag_class_dual = fct_relevel(Ag_class_dual, lvls)
+    ) %>%
+    arrange(Ag_class_dual) %>%
+    mutate(
+      mouse_class = fct_inorder(str_c(mouse, "-", subtype, "-", Ag_class_dual))
+    )
+  
+  # Calculate p-values
+  p_dat <- dat %>%
+    split(.$subtype) %>%
+    map(~ {
+      pairwise.wilcox.test(
+        .x$value, .x$Ag_class_dual,
+        alternative     = p_alt,
+        p.adjust.method = "none"  # adjust below using all p-values
+      ) %>%
+        broom::tidy() %>%
+        mutate(
+          ymax = max(.x$value),
+          ymin = min(.x$value)
+        )
+    }) %>%
+    bind_rows(.id = "subtype") %>%
+    filter(group1 == "double-high") %>%
+    mutate(
+      padj    = p.adjust(p.value, method = "bonferroni"),
+      ln_x    = match(group2, lvls),
+      ln_xend = match(group1, lvls),
+      y_fctr  = ((ymax - ymin) * 0.1),
+      ln_y    = ymax + (y_fctr * ln_x),
+      y       = ymax + (y_fctr * (ln_x + 1)),
+      x       = ln_x + 0.5,
+      ln_x    = ln_x + 0.1,
+      ln_xend = ln_xend - 0.1
+    ) %>%
+    rowwise() %>%
+    mutate(padj = .format_pvalue(padj)) %>%
+    ungroup()
+  
+  # Format n labels for x axis
+  n_dat <- dat %>%
+    group_by(Ag_class_dual, mouse_class, subtype, module_ag) %>%
+    summarize(n = n(), .groups = "drop") %>%
+    mutate(
+      n = str_c(Ag_class_dual, "\nn = ", scales::label_comma()(n))
+    )
+  
+  n_lab <- set_names(n_dat$n, n_dat$mouse_class)
+  
+  # Create boxplots
+  res <- dat %>%
+    ggplot(aes(mouse_class, value, fill = subtype)) +
+    geom_boxplot(notch = TRUE, outlier.size = 0.1) +
+    
+    geom_segment(
+      aes(x = ln_x, xend = ln_xend, y = ln_y, yend = ln_y),
+      data = p_dat,
+      color = ln_col
+    ) +
+    
+    geom_text(
+      aes(x = x, y = y, label = padj),
+      # direction = "x", seed = 42, force = 0.1, force_pull = 0, box.padding = 0.5,
+      data = p_dat,
+      parse = TRUE,
+      size = 9 / .pt
+    ) +
+    
+    facet_wrap(~ subtype, scales = "free") +
+    scale_fill_manual(values = lec_clrs) +
+    scale_x_discrete(labels = n_lab) +
+    labs(y = module_title) +
+    base_theme +
+    theme(
+      aspect.ratio    = 1.6,
+      legend.position = "none",
+      axis.text.x     = element_text(angle = 70, hjust = 1),
+      axis.title.x    = element_blank()
+    )
+  
+  res
+}
+
+#' Create scatter plots comparing RF module scores and Ag-scores
+#'
+#' Used for figure 3
+create_module_scatter <- function(df_in, ag_clmns, module_clmns, module_title,
+                                  clrs, label_x = -Inf,
+                                  label_hjust = -0.1, label_start = -0.5,
+                                  label_pad = 0.15) {
+  
+  # Format plotting data
+  # cell types are filtered based on the module_clmns names
+  typs <- str_remove(module_clmns, "_[^_]+$")
+  
+  dat <- df_in %>%
+    pivot_longer(
+      all_of(ag_clmns),
+      names_to = "ag_clmn", values_to = "Ag-score"
+    ) %>%
+    pivot_longer(
+      all_of(module_clmns),
+      names_to = "module_name", values_to = module_title
+    ) %>%
+    filter(subtype == str_remove(module_name, "_[^_]+$")) %>%
+    mutate(
+      subtype       = fct_relevel(subtype, typs),
+      Ag_class_dual = fct_relevel(Ag_class_dual, rev(names(clrs)))
+    )
+  
+  # Format r label data
+  lab_dat <- dat %>%
+    group_by(ag_clmn) %>%
+    mutate(
+      min_score = min(`Ag-score`),
+      max_score = max(`Ag-score`)
+    ) %>%
+    group_by(subtype, ag_clmn, min_score, max_score) %>%
+    summarize(
+      cor_res = list(cor.test(!!sym(module_title), `Ag-score`, method = "pearson")),
+      cor     = map_dbl(cor_res, ~ .x$estimate[[1]]),
+      p_val   = map_dbl(cor_res, ~ .x$p.value),
+      n       = n_distinct(.cell_id),  # tricky to include commas with plotmath
+      # n       = label_comma()(n_distinct(.cell_id)),
+      .groups = "drop"
+    ) %>%
+    mutate(p_adj = p.adjust(p_val, method = "bonferroni")) %>%
+    rowwise() %>%
+    mutate(
+      r_lab = str_c("italic(r) == ", round(cor, digits = 2)),
+      p_lab = str_c("italic(p) == ", .format_pvalue(p_adj)),
+      n_lab = str_c("n == ", n)
+    )
+  
+  # Set label coordinates
+  lab_dat <- lab_dat %>%
+    mutate(
+      y_fctr = (max_score - min_score) * label_pad,
+      r_y    = max_score + (y_fctr * (label_start + 2)),
+      p_y    = max_score + (y_fctr * (label_start + 1)),
+      n_y    = max_score + (y_fctr * label_start)
+    )
+  
+  # Labelling function
+  lab_fn <- function(x) {
+    modify <- x %in% names(ag_labs_2)
+    
+    x[modify] <- ag_labs_2[x[modify]]
+    
+    x
+  }
+  
+  # Create scatter plots
+  res <- dat %>%
+    ggplot(aes(!!sym(module_title), `Ag-score`, color = Ag_class_dual)) +
+    geom_point(size = 0.7) +
+    geom_smooth(
+      method = "lm", formula = y ~ x,
+      color = "black", linetype = 2, linewidth = 1, alpha = 0.1
+    ) +
+    facet_grid(
+      ag_clmn ~ subtype,
+      scales = "free", switch = "y",
+      labeller = as_labeller(lab_fn)
+    ) +
+    scale_color_manual(values = clrs) +
+    guides(color = guide_legend(override.aes = list(size = 4))) +
+    base_theme +
+    theme(
+      aspect.ratio    = 1,
+      strip.placement = "outside",
+      legend.position = "bottom",
+      legend.title    = element_blank(),
+      axis.title.y    = element_blank()
+    )
+  
+  # Add labels
+  lab_args <- list(
+    y = str_c(c("r", "p", "n"), "_y"),
+    label = str_c(c("r", "p", "n"), "_lab")
+  )
+  
+  lab_args %>%
+    pwalk(~ {
+      res <<- res +
+        geom_text(
+          aes(!!label_x, !!sym(.x), color = NULL, label = !!sym(.y)),
+          data  = lab_dat,
+          hjust = label_hjust,
+          parse = TRUE,
+          show.legend = FALSE
+        )
+    })
   
   res
 }

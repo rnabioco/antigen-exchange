@@ -163,30 +163,9 @@ get_cell_types <- function(so_in, type_clmn, sample_clmn, n_cells = 3) {
   res
 }
 
-format_pvalue <- function(p, digits = 1, sig_level = 0.05) {
-  
-  ns <- p > sig_level
-  
-  p <- scales::label_scientific(digits = digits)(p)
-  
-  nm <- str_extract(p, "[+\\-][0-9]+$")
-  
-  p <- str_remove(p, str_c("\\", nm, "$"))
-  
-  nm <- nm %>%
-    as.numeric() %>%
-    as.character() %>%
-    str_c("<sup>", ., "</sup>")
-  
-  p <- str_replace(p, "e", "x10")
-  p <- str_c(p, nm)
-  
-  p[ns] <- "ns"
-  
-  p
-}
-
-# FROM djvdj
+#' Format p values for labels
+#' 
+#' taken from djvdj
 .format_pvalue <- function(p, digits = 1, cutoffs = NULL) {
   
   # Set p label based on vector of cutoffs
@@ -228,7 +207,8 @@ format_pvalue <- function(p, digits = 1, sig_level = 0.05) {
   }
   
   # Format p-value label
-  if (p >= 0.1) return(as.character(round(p, 1)))
+  # label_scientific will round 0.095 to 0.1 when digits = 1
+  if (round(p, digits + 1) >= 0.1) return(as.character(round(p, 1)))
   
   p <- scales::label_scientific(digits = digits)(p)
   

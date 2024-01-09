@@ -53,6 +53,11 @@ ag_modules <- rf_typs %>%
 ag_clmns <- c("Ag_3wk_score", "Ag_6wk_score")
 
 ag_labs <- set_names(
+  c("Ag-score (21 day)", "Ag-score (42 day)"),
+  ag_clmns
+)
+
+ag_labs_2 <- set_names(
   c("Ag-score\n21 day", "Ag-score\n42 day"),
   ag_clmns
 )
@@ -533,7 +538,7 @@ ag_heats <- ag_bx_dat %>%
   })
 ```
 
-```{r "Fig 1", fig.width = 15.5, fig.height = 17}
+```{r "Fig 1", fig.width = 15.5, fig.height = 15.5}
 # Create mock panel A
 mock_a <- ggplot() +
   geom_blank() +
@@ -547,7 +552,10 @@ fig1 <- (mock_a + typ_heat) /
   (ag_heats[[2]] + ag_bxs$DC) +
   plot_layout(heights = c(0.7, 1, 0.7, 1, 0.7), tag_level = "keep") +
   plot_annotation(tag_levels = "A") &
-  theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
+  theme(
+    plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
+    plot.tag.position = c(0, 1)
+  )
 
 fig1
 ```
@@ -901,9 +909,9 @@ B.  The fraction of cells predicted to be Ag-competent is shown for each LEC
 C.  Ag-high module score is shown for Ag-high and predicted Ag-competent LECs
     for each timepoint. P values were calculated by pooling cells from all three
     timepoints for each Ag class.
-    P values were calculated using a one-sided t test with Bonferroni correction
-    to compare Ag-high vs Ag-competent and Ag-competent vs Ag-low cells for each
-    LEC subset.
+    P values were calculated using a one-sided Wilcoxon rank sum test with
+    Bonferroni correction to compare Ag-high vs Ag-competent and
+    Ag-competent vs Ag-low cells for each LEC subset.
 D.  UMAP projections show cLEC Ag-high module scores for each timepoint.
 E.  The expression of select genes from the Ag-high (top four) and Ag-low
     (bottom four) gene modules is shown for cLECs. Genes identified as top
@@ -1114,12 +1122,12 @@ p_dat <- plt_dat %>%
     .x %>%
       group_by(subtype, module_ag) %>%
       summarize(
-        p_high = t.test(
+        p_high = wilcox.test(
           value[pred_grp == "Ag-high"],
           value[pred_grp == "Ag-competent"],
           alternative = switch(.y, high = "greater", low = "less")
         )$p.value,
-        p_comp = t.test(
+        p_comp = wilcox.test(
           value[pred_grp == "Ag-competent"],
           value[pred_grp == "Ag-low"],
           alternative = switch(.y, high = "greater", low = "less")
@@ -1407,7 +1415,8 @@ B.  UMAP projections show 21 day Ag-scores for LEC subsets for single and dual
 C.  Prior vaccination enhances antigen archiving.
     Ag-score is shown for single and dual vaccinations for the 21 day timepoint
     for each LEC subset. Other timepoints are shown in grey. P values
-    were calculated using a one-sided t test with Bonferroni correction.
+    were calculated using a one-sided Wilcoxon rank sum test with Bonferroni
+    correction.
 D.  Mean 42 day Ag-score is shown as described in A.
 E.  UMAP projections show 42 day Ag-scores for LEC subsets as described in B.
 F.  Successive vaccinations enhances retention of previously archived antigen.
@@ -1415,13 +1424,10 @@ F.  Successive vaccinations enhances retention of previously archived antigen.
 G.  21 day and 42 day Ag-score is compared for LEC subsets.
 H.  Ag-high module scores described in Figure 2 are shown for LECs that archived
     antigens from both vaccinations (double-high), from only one vaccination
-    (single-high), or have low levels of both antigens (Ag-low).
-
-<u>Notes</u>
-
-* H shows that the best archivers (the ones that archive Ag from both
-  vaccinations) show strongest expression of the Ag-high gene modules.
-  Need to add p values.
+    (single-high), or have low levels of both antigens (Ag-low). Module scores
+    are shown for the corresponding LEC subset. P values were calculated using
+    a one-sided Wilcoxon rank sum test with Bonferroni correction.
+I.  Ag-low module scores are shown for LEC subset as described in H.
 
 ```{r "exchange UMAPs", fig.width = 16, fig.height = 4}
 # Format Ag exchange plot data
@@ -1490,7 +1496,7 @@ ex_heat <- ex_heat_args %>%
     heat_dat %>%
       create_exchange_heats(
         ag_clmn = .x,
-        ttl     = ag_labs[[.x]],
+        ttl     = ag_labs_2[[.x]],
         clr     = .y
       )
   })
@@ -1517,7 +1523,7 @@ ex_bxs <- ex_bx_args %>%
         ag_clmn   = args$ag_clmn,
         typs      = ag_plt_typs$LEC,
         clrs      = tm_clrs,
-        p_size    = 10,
+        p_cutoff = Inf,
         p_hjust   = args$p_hjust,
         p_vjust   = 0.7
       )
@@ -1543,8 +1549,6 @@ ex_scat <- scat_dat %>%
 # Format plot data
 # module scores for biological replicates are similar
 # pool all cells together to increase power
-lvls <- c("Ag-low", "single-high", "double-high")
-
 clmns <- c(
   "subtype", "mouse", "vaccination",
   "Ag_class_dual", "exp", ag_modules
@@ -1552,120 +1556,46 @@ clmns <- c(
 
 plt_dat <- lec_so %>%
   FetchData(clmns) %>%
-  filter(
-    vaccination == "dual",
-    subtype %in% rf_typs
-  ) %>%
-  pivot_longer(all_of(ag_modules)) %>%
-  separate_wider_regex(
-    name,
-    c(module_type = ".*", "_", module_ag = ".*")
-  ) %>%
-  filter(
-    subtype == module_type,
-    module_ag == "high"
-  )
-  
-# Group all low cells together under single mouse, otherwise three boxplots
-# are shown
-plt_dat <- plt_dat %>%
-  mutate(
-    subtype       = fct_relevel(subtype, rf_typs),
-    Ag_class_dual = str_replace(Ag_class_dual, "^[0-9]+wk", "Ag"),
-    Ag_class_dual = recode(Ag_class_dual, low = "Ag-low"),
-    Ag_class_dual = fct_relevel(Ag_class_dual, lvls)
-  ) %>%
-  arrange(Ag_class_dual) %>%
-  mutate(
-    mouse_class = fct_inorder(str_c(mouse, "-", subtype, "-", Ag_class_dual))
-  )
-
-## FIX P ADJUST ##
-# Calculate p-values
-p_dat <- plt_dat %>%
-  split(.$subtype) %>%
-  map(~ {
-      pairwise.t.test(
-        .x$value, .x$Ag_class_dual,
-        alternative     = "greater",
-        p.adjust.method = "none"
-      ) %>%
-      broom::tidy() %>%
-      mutate(
-        ymax = max(.x$value),
-        ymin = min(.x$value)
-      )
-    }) %>%
-  bind_rows(.id = "subtype") %>%
-  filter(group1 == "double-high") %>%
-  mutate(
-    padj    = p.adjust(p.value, method = "bonferroni"),
-    ln_x    = match(group2, lvls),
-    ln_xend = match(group1, lvls),
-    y_fctr  = ((ymax - abs(ymin)) * 0.1),
-    ln_y    = ymax + (y_fctr * ln_x),
-    y       = ymax + (y_fctr * (ln_x + 1)),
-    x       = ln_x + 0.5
-    # x       = (3 + ln_x) / 2
-  ) %>%
-  rowwise() %>%
-  mutate(padj = .format_pvalue(padj)) %>%
-  ungroup()
-
-# Format n labels
-n_dat <- plt_dat %>%
-  group_by(Ag_class_dual, mouse_class, subtype, module_ag) %>%
-  summarize(n = n(), .groups = "drop") %>%
-  mutate(
-    n = str_c(Ag_class_dual, "\nn = ", scales::label_comma()(n))
-  ) %>%
-  filter(module_ag == "high")
-
-n_lab <- set_names(n_dat$n, n_dat$mouse_class)
+  filter(vaccination == "dual") %>%
+  mutate(Ag_class_dual = recode(Ag_class_dual, low = "Ag-low"))
 
 # Create boxplots
-ex_mod_bxs <- plt_dat %>%
-  ggplot(aes(mouse_class, value, fill = subtype)) +
-  geom_boxplot(notch = TRUE, outlier.size = 0.1) +
-  
-  geom_segment(
-    aes(x = ln_x, xend = ln_xend, y = ln_y, yend = ln_y),
-    data = p_dat,
-    color = ln_col
-  ) +
-  
-  geom_text(
-    aes(x = x, y = y, label = padj),
-    data = p_dat,
-    parse = TRUE,
-    size = 9 / .pt
-  ) +
-  
-  facet_wrap(~ subtype, scales = "free") +
-  scale_fill_manual(values = lec_clrs) +
-  scale_x_discrete(labels = n_lab) +
-  labs(y = "Ag-high module score") +
-  base_theme +
-  theme(
-    aspect.ratio    = 1.6,
-    legend.position = "none",
-    axis.text.x     = element_text(angle = 45, hjust = 1),
-    axis.title.x    = element_blank()
-  )
+bx_args <- list(
+  mod_typ = c("high", "low"),
+  p_alt   = c("greater", "less")
+)
+
+bx_lvls <- c("Ag-low", "single-high", "double-high")
+
+ex_mod_bxs <- bx_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    module_clmns <- str_c(rf_typs, "_", args$mod_typ)
+    module_title <- str_c("Ag-", args$mod_typ, " module score")
+    
+    plt_dat %>%
+      create_module_boxes(
+        module_clmns = module_clmns,
+        module_title = module_title,
+        lvls         = bx_lvls,
+        p_alt        = args$p_alt
+      ) +
+      theme(plot.margin = margin(15, 15, 5, 15))
+  })
 ```
 
-```{r "Fig 3", fig.width = 14, fig.height = 20}
+```{r "Fig 3", fig.width = 14, fig.height = 19}
 fig3 <- (ex_heat[[1]] + ex_u[[1]]) / ex_bxs[[1]] /
   (ex_heat[[2]] + ex_u[[2]]) / ex_bxs[[2]] /
   ex_scat[[ag_exps$LEC]] /
-  wrap_plots(ex_mod_bxs, plot_spacer()) +
-  # wrap_plots(ex_mod_bxs, nrow = 1) +
-  # wrap_plots(append(list(plot_spacer()), ex_mod_bxs), nrow = 1, widths = c(0, 1, 1, 1)) +
-  # (ex_mod_bxs[[1]] + ex_mod_bxs[[2]] + ex_mod_bxs[[3]]) +
-  # plot_grid(plotlist = ex_mod_bxs, nrow = 1) +
-  plot_layout(heights = c(1, 0.55, 1, 0.55, 0.8, 0.8)) +
+  (ex_mod_bxs[[1]] + ex_mod_bxs[[2]]) +
+  plot_layout(heights = c(1, 0.55, 1, 0.55, 0.8, 0.95)) +
   plot_annotation(tag_levels = "A") &
-  theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
+  theme(
+    plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
+    plot.tag.position = c(0, 1)
+  )
 
 fig3
 ```
@@ -1727,7 +1657,6 @@ rep_ex_bxs <- ex_bx_args %>%
             ag_clmn    = bx_args$ag_clmn,
             clrs       = tm_clrs,
             typs       = ag_plt_typs[[.y]],
-            p_size     = 10,
             p_hjust    = bx_args$p_hjust,
             facet_vars = "subtype",
             p_cutoff   = Inf
@@ -1739,14 +1668,58 @@ rep_ex_bxs <- ex_bx_args %>%
   flatten()
 ```
 
-```{r "Fig S3", fig.width = 10, fig.height = 12}
-# Create final figure
-figS3 <- plot_grid(
-  plotlist = append(rep_ex_bxs, list(ex_scat$`exp-2`)),
-  labels = c("A", "B", "C", "D"),
-  label_size = ttl_pt2 * 1.5,
-  ncol = 1, align = "v", axis = "rl"
+```{r "RF module exchange correlation", fig.height = 8}
+# Set plot colors
+ex_ag_clrs <- c(
+  `double-high` = "#D7301F",
+  `single-high` = "black",
+  `Ag-low`      = "#56B4E9"
+  # `single-high` = "#6A51A3",
 )
+
+# Format plotting data
+scat_dat <- lec_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(vaccination == "dual") %>%
+  mutate(Ag_class_dual = recode(Ag_class_dual, low = "Ag-low"))
+
+# Create scatter plots
+scat_args <- list(
+  mod_typ     = c("high", "low"),
+  label_x     = c(-Inf, Inf),
+  label_hjust = c(-0.1, 1.1)
+)
+
+ex_mod_scat <- scat_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    module_clmns <- str_c(rf_typs, "_", args$mod_typ)
+    module_title <- str_c("Ag-", args$mod_typ, " module score")
+    
+    scat_dat %>%
+      create_module_scatter(
+        ag_clmns     = ag_clmns,
+        module_clmns = module_clmns,
+        clrs         = ex_ag_clrs,
+        module_title = module_title,
+        label_x      = args$label_x,
+        label_hjust  = args$label_hjust
+      )
+  })
+```
+
+```{r "Fig S3", fig.width = 13, fig.height = 15}
+# Create final figure
+figS3 <- wrap_plots(rep_ex_bxs, ncol = 1) /
+  ex_scat$`exp-2` /
+  (ex_mod_scat[[1]] + ex_mod_scat[[2]]) +
+  plot_layout(heights = c(1, 1, 1, 1.5, 3)) +
+  plot_annotation(tag_levels = "A") &
+  theme(
+    plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
+    plot.tag.position = c(0, 1)
+  )
 
 figS3
 ```
@@ -1896,8 +1869,8 @@ A.  Mean 21 day Ag-score is shown for DCs from mice that received a single
     vaccination (21 day or 42 day) or dual vaccination (21 day and 42 day).
 B.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
     for DC subsets with highest Ag-score. Other timepoints are shown in grey.
-    P values were calculated using a one-sided t test with Bonferroni
-    correction.
+    P values were calculated using a one-sided Wilcoxon rank sum test with
+    Bonferroni correction.
 C.  Mean 42 day Ag-score is shown for DCs from mice that received single or
     dual vaccination as described in A.
 D.  Ag-score is shown for single and dual vaccinations for the 42 day timepoint
@@ -1933,7 +1906,7 @@ dc_ex_heat <- ex_heat_args %>%
     dc_heat_dat %>%
       create_exchange_heats(
         ag_clmn = .x,
-        ttl     = ag_labs[[.x]],
+        ttl     = ag_labs_2[[.x]],
         clr     = .y
       )
   })
@@ -1953,7 +1926,7 @@ dc_ex_bxs <- ex_bx_args %>%
         ag_clmn   = args$ag_clmn,
         typs      = ag_plt_typs$DC[1:3],
         clrs      = tm_clrs,
-        p_size    = 10,
+        p_size    = 11,
         p_hjust   = args$p_hjust,
         p_vjust   = 0.7
       ) +
@@ -1961,7 +1934,7 @@ dc_ex_bxs <- ex_bx_args %>%
   })
 ```
 
-```{r "Fig 4", fig.width = 15, fig.height = 9}
+```{r "Fig 4", fig.width = 14, fig.height = 7}
 fig4 <- wrap_plots(
   dc_ex_heat[[1]], dc_ex_bxs[[1]],
   dc_ex_heat[[2]], dc_ex_bxs[[2]],
@@ -1969,7 +1942,10 @@ fig4 <- wrap_plots(
   widths = c(0.25, 1)
 ) +
   plot_annotation(tag_levels = "A") &
-  theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
+  theme(
+    plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
+    plot.tag.position = c(0, 1)
+  )
 
 fig4
 ```
@@ -1997,7 +1973,7 @@ dat %>%
   # scale_fill_gradientn(colours = c("lightblue", "white", ..2), limits = c(0, mx_sig)) +
   guides(fill = guide_colorbar(
     ticks = FALSE,
-    # title = ag_labs[.x],
+    # title = ag_labs_2[.x],
     barheight = unit(150, "pt"), barwidth = unit(10, "pt")
   )) +
   umap_theme +
@@ -2037,7 +2013,7 @@ ex_u <- plt_args %>%
       # scale_fill_gradientn(colours = c("lightblue", "white", ..2), limits = c(0, mx_sig)) +
       guides(fill = guide_colorbar(
         ticks = FALSE,
-        title = ag_labs[.x],
+        title = ag_labs_2[.x],
         barheight = unit(150, "pt"), barwidth = unit(10, "pt")
       )) +
       umap_theme +
@@ -2522,12 +2498,12 @@ rf_feats %>%
   })
 ```
 
-```{r "CHIKV figure", fig.width = 15, fig.height = 19}
+```{r "CHIKV figure", fig.width = 15, fig.height = 17}
 # CHIKV color palette
 chikv_clrs <- c(`Ag-low` = "#56B4E9", `Ag-competent` = "#D7301F")
 treat_clrs <- set_names(chikv_clrs, c("mock", "CHIKV"))
 
-chikv_u_theme <- umap_theme +
+chikv_u_theme <- umap_theme_2 +
   theme(aspect.ratio = 0.7)
 
 # LEC subsets
@@ -2543,7 +2519,8 @@ top <- chikv_so %>%
   ) +
   chikv_u_theme +
   theme(
-    legend.title = element_blank()
+    legend.title = element_blank(),
+    panel.border = element_blank()
   )
 
 # Ag class UMAPs
@@ -2578,6 +2555,8 @@ ag_class_u <- plt_dat %>%
   )
 
 # Ag class bargraphs
+rat <- 1.5
+
 bar_dat <- plt_dat %>%
   filter(lec_subtype %in% rf_typs) %>%
   group_by(treatment, rep, lec_subtype) %>%
@@ -2598,7 +2577,7 @@ ag_class_bars <- bar_dat %>%
   labs(y = "cLEC fraction Ag-competent") +
   base_theme +
   theme(
-    # aspect.ratio    = 1.1,
+    aspect.ratio    = rat,
     legend.position = "none",
     axis.title.x    = element_blank(),
     axis.text.x     = element_text(size = ttl_pt2)
@@ -2610,7 +2589,9 @@ mid <- plot_grid(
   axis       = "tb",
   rel_widths = c(1, 0.3), 
   labels     = c("B", "C"),
-  label_size = ttl_pt2 * 1.5
+  label_size = ttl_pt2 * 1.5,
+  hjust      = 0.5,
+  vjust      = 1
 )
 
 # cLEC Ag-high module scores
@@ -2650,7 +2631,7 @@ ag_score_bx <- plt_dat %>%
   labs(y = "cLEC Ag-high module") +
   base_theme +
   theme(
-    # aspect.ratio    = 1.1,
+    aspect.ratio    = rat,
     legend.position = "none",
     axis.title.x    = element_blank(),
     axis.text.x     = element_text(size = ttl_pt2)
@@ -2662,7 +2643,8 @@ bot <- plot_grid(
   axis  = "tb",
   rel_widths = c(1, 0.3),
   labels     = c("D", "E"),
-  label_size = ttl_pt2 * 1.5
+  label_size = ttl_pt2 * 1.5,
+  hjust      = 0.5
 )
 
 # Ag-high heatmap data
@@ -2706,13 +2688,13 @@ heat <- heat_dat %>%
   )) +
   base_theme +
   theme(
-    aspect.ratio      = length(rf_typs) / length(heat_feats),
-    strip.placement   = "outside",
-    strip.clip        = "off",
-    legend.position   = "bottom",
-    legend.title      = element_blank(),
-    axis.title        = element_blank(),
-    axis.text.x       = element_text(angle = 90, hjust = 1, vjust = 0.5)
+    aspect.ratio    = length(rf_typs) / length(heat_feats),
+    strip.placement = "outside",
+    strip.clip      = "off",
+    legend.position = "bottom",
+    legend.title    = element_blank(),
+    axis.title      = element_blank(),
+    axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5)
   )
 
 # Final figure
@@ -2720,7 +2702,12 @@ plot_grid(
   top, mid, bot, heat,
   ncol       = 1,
   labels     = c("A", "", "", "F"),
-  label_size = ttl_pt2 * 1.5
+  label_size = ttl_pt2 * 1.5,
+  hjust      = c(-4.5, -0.5),
+  vjust      = c(1.5, 1),
+  rel_heights = c(1, 1, 1.2, 1),
+  align = "v",
+  axis  = "rl"
 )
 ```
 
