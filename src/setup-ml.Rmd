@@ -2031,16 +2031,18 @@ rf_feats %>%
 ```
 
 ```{r "predict Ag class", eval = run_rf}
-# Predict Ag class
-# remove cells used to train models
-train_cells <- unlist(rf_mods_best$training_bcs)
-keep_cells  <- Cells(lec_so)
-keep_cells  <- keep_cells[!keep_cells %in% train_cells]
+# # Predict Ag class
+# # remove cells used to train models
+# train_cells <- unlist(rf_mods_best$training_bcs)
+# keep_cells  <- Cells(lec_so)
+# keep_cells  <- keep_cells[!keep_cells %in% train_cells]
+
+### SHOULD TRAINING CELLS BE EXCLUDED ##
 
 info_clmns <- c("subtype", "mouse")
 
 pred_dat <- lec_so %>%
-  subset(cells = keep_cells) %>%
+  # subset(cells = keep_cells) %>%
   FetchData(unique(c(rf_dat_clmn, info_clmns, all_feats))) %>%
   as_tibble(rownames = ".cell_id") %>%
   rename_with(~ str_replace_all(.x, "-", "_")) %>%
@@ -2048,7 +2050,7 @@ pred_dat <- lec_so %>%
   mutate(mouse = as.character(mouse)) %>%
   column_to_rownames(".cell_id")
 
-rf_preds <- rf_mods_best %>%
+rf_preds <- rf_mods %>%
   pmap_dfr(~ {
     args <- list(...)
     

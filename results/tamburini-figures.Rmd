@@ -906,12 +906,11 @@ A.  Ag-score is shown for day 14 Ag-high and -low cells identified for LEC
     subsets with the highest Ag-score.
 B.  The fraction of cells predicted to be Ag-competent is shown for each LEC
     subset 14, 21, and 42 days post vaccination.
-C.  Ag-high module score is shown for Ag-high and predicted Ag-competent LECs
-    for each timepoint. P values were calculated by pooling cells from all three
-    timepoints for each Ag class.
-    P values were calculated using a one-sided Wilcoxon rank sum test with
-    Bonferroni correction to compare Ag-high vs Ag-competent and
-    Ag-competent vs Ag-low cells for each LEC subset.
+C.  Ag-high module score is shown for Ag-low, Ag-high, and predicted
+    Ag-competent LECs.
+    The Spearman correlation between Ag classes and Ag-high module score is
+    shown for each timepoint.
+    One-sided p values were calculated and adjusted using Bonferroni correction.
 D.  UMAP projections show cLEC Ag-high module scores for each timepoint.
 E.  The expression of select genes from the Ag-high (top four) and Ag-low
     (bottom four) gene modules is shown for cLECs. Genes identified as top
@@ -1043,8 +1042,8 @@ hsts <- wrap_plots(
 ```
 
 ```{r "RF Ag-competent bars", fig.width = 8, fig.height = 5}
-# Format data
-bar_dat <- lec_so@meta.data %>%
+# Format data for bargraphs
+rf_bar_dat <- lec_so@meta.data %>%
   filter(
     tm %in% rf_tms,
     subtype %in% rf_typs,
@@ -1060,18 +1059,7 @@ bar_dat <- lec_so@meta.data %>%
 bar_thm <- base_theme +
   theme(aspect.ratio = 1.4)
 
-# # Plot fraction predicted groups
-# bar_1 <- bar_dat %>%
-#   ggplot(aes(tm, fill = rf_pred, alpha = rf_correct)) +
-#   geom_bar(position = "fill") +
-#   scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
-#   scale_fill_manual(values = pred_clrs) +
-#   scale_y_continuous(breaks = c(0, 0.5, 1)) +
-#   facet_wrap(~ subtype) +
-#   labs(y = "fraction of cells", x = "days post vaccination") +
-#   bar_thm
-
-bar_2 <- bar_dat %>%
+rf_bar_1 <- rf_bar_dat %>%
   ggplot(aes(tm, fill = pred_grp)) +
   geom_bar(position = "fill", alpha = 0.85, key_glyph = draw_key_point) +
   facet_grid(~ subtype) +
@@ -1084,203 +1072,73 @@ bar_2 <- bar_dat %>%
     legend.title = element_blank(),
     legend.position = "bottom"
   )
-
-# plot_grid(
-#   bar_1, bar_2, 
-#   ncol = 1,
-#   align = "v",
-#   axis  = "rl"
-# )
 ```
 
 ```{r "RF module boxplots", fig.width = 10, fig.height = 4}
 # Format plot data
-clmns <- c("mouse", "tm", "subtype", "pred_grp", "training_data", ag_modules)
+# exclude dual vaccination data
+clmns <- c(
+  "tm", "subtype", "pred_grp", "training_data",
+  "Ag_score", ag_modules
+)
 
-plt_dat <- lec_so %>%
+rf_bx_dat <- lec_so %>%
   FetchData(clmns) %>%
+  as_tibble(rownames = ".cell_id") %>%
   filter(
     tm %in% rf_tms,
-    subtype %in% rf_typs,
     !training_data
-  ) %>%
-  pivot_longer(all_of(ag_modules)) %>%
-  separate_wider_regex(
-    name,
-    c(module_type = ".*", "_", module_ag = ".*")
-  ) %>%
-  filter(subtype == module_type) %>%
-  mutate(
-    subtype  = fct_relevel(subtype, rf_typs),
-    pred_grp = fct_relevel(pred_grp, names(pred_clrs))
   )
 
-# Calculate p-values
-p_dat <- plt_dat %>%
-  split(.$module_ag) %>%
-  imap_dfr(~ {
-    .x %>%
-      group_by(subtype, module_ag) %>%
-      summarize(
-        p_high = wilcox.test(
-          value[pred_grp == "Ag-high"],
-          value[pred_grp == "Ag-competent"],
-          alternative = switch(.y, high = "greater", low = "less")
-        )$p.value,
-        p_comp = wilcox.test(
-          value[pred_grp == "Ag-competent"],
-          value[pred_grp == "Ag-low"],
-          alternative = switch(.y, high = "greater", low = "less")
-        )$p.value,
-        .groups = "drop"
-      )
-  }) %>%
-  mutate(
-    across(
-      starts_with("p_"),
-      ~ p.adjust(.x, method = "bonferroni"),
-      .names = "{.col}_adj"
-    )
-  ) %>%
-  rowwise() %>%
-  mutate(
-    across(ends_with("_adj"), ~ str_c(": ", .format_pvalue(.x))),
-    
-    # plab = .format_pvalue(padj),
-    # plab = str_c('paste(', subtype, ', ":", ~ italic(p) == ', plab, ')')
-    # plab = str_c('paste(', subtype, ', ":", ~ italic(p), " == ', plab, '")')
-    # across(ends_with("_adj"), ~ {
-    #   if (!grepl("^", .x, fixed = TRUE)) .x <- str_c(.x, "^''")
-    #   .x
-    # }),
-    p_high_adj = str_c("high~v~comp", p_high_adj),
-    p_comp_adj = str_c("comp~v~low", p_comp_adj)
-  ) %>%
-  ungroup()
+rf_mod_args <- list(
+  mod_typ = c("high", "low"),
+  p_alt   = c("greater", "less"),
+  p_hjust = c(0.7, 0.55)
+)
 
-# Create boxplots
-mod_bxs <- plt_dat %>%
-  split(.$module_ag) %>%
-  imap(~ {
-    p_dat <- p_dat %>%
-      filter(module_ag == .y)
+mod_bxs <- rf_mod_args %>%
+  pmap(~ {
+    args <- list(...)
     
-    # labs <- set_names(p_dat$plab, p_dat$subtype)
-      
-    .x %>%
-      # mutate(subtype = labs[subtype]) %>%
-      ggplot(aes(as.character(tm), value, fill = pred_grp)) +
-      geom_boxplot(outlier.size = 0.1, key_glyph = draw_key_point) +
-      
-      geom_text(
-        aes(1.5, Inf, fill = NULL, label = p_high_adj),
-        size = 11 / .pt,
-        data = p_dat,
-        hjust = 0,
-        vjust = 1.2,
-        parse = TRUE
-      ) +
-      geom_text(
-        aes(1.5, Inf, fill = NULL, label = p_comp_adj),
-        size = 11 / .pt,
-        data = p_dat,
-        hjust = 0,
-        vjust = 2.4,
-        parse = TRUE
-      ) +
-      
-      scale_fill_manual(values = pred_clrs) +
-      scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
-      facet_wrap(~ subtype, nrow = 1, scales = "free_y") +
-      # facet_wrap(~ subtype, nrow = 1, scales = "free_y", labeller = label_parsed) +
-      labs(x = "days post vaccination", y = str_c("Ag-", .y, " module score")) +
-      guides(fill = guide_legend(override.aes = list(shape = 22, size = 5))) +
-      base_theme +
-      theme(
-        aspect.ratio    = 0.75,
-        plot.title      = element_text(hjust = 0.5),
-        legend.position = "bottom",
-        legend.title    = element_blank(),
-        plot.margin     = margin(t = 0, r = 5, b = 5, l = 5)
+    module_clmns <- str_c(rf_typs, "_", args$mod_typ)
+    module_title <- str_c("Ag-", args$mod_typ, " module score")
+    
+    rf_bx_dat %>%
+      create_rf_module_boxes(
+        module_clmns = module_clmns,
+        module_title = module_title,
+        p_alt        = args$p_alt,
+        p_hjust      = c(args$p_hjust, 0.5),
+        p_vjust      = c(1.2, 2),
+        clrs         = pred_clrs
       )
   })
 ```
 
 ```{r "RF cLEC module UMAPs", fig.width = 8, fig.height = 6.5}
 # Format plotting data
-plt_typ     <- "cLEC"
-module_clmn <- str_c(plt_typ, "_high")
+u_dat <- lec_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(tm %in% rf_tms) %>%
+  mutate(Ag_class_ml = str_c("Ag-", Ag_class_ml))
 
-u_so <- lec_so %>%
-  subset(tm %in% rf_tms) %>%
-  mutate_meta(
-    mutate,
-    pred_grp = ifelse(subtype == plt_typ, pred_grp, "other"),
-    pred_grp = recode(pred_grp, `Ag-competent` = "Ag-low"),
-    pred_grp = fct_relevel(pred_grp, c("other", names(pred_clrs))),
-    tm       = as.character(tm)
-  )
+# Create UMAPs
+u_args <- list(
+  typ = set_names(rf_typs),
+  pt_size = list(1, c(0.5, 0.1), c(0.5, 0.1))
+)
 
-# Set coordinates for drawing circle
-circ_dat <- lec_so@meta.data %>%
-  filter(subtype == rf_cell_type) %>%
-  group_by(tm) %>%
-  summarize(across(c(hUMAP_1, hUMAP_2), mean))
-
-# Plot module scores
-ag_mod_u <- rf_tms %>%
-  imap(~ {
-    u_so %>%
-      subset(tm == .x) %>%
-      create_sig_umap(
-        dat_col = module_clmn,
-        grp_col = "tm",
-        clrs    = c("lightblue", "lightblue", "white", pred_clrs[["Ag-high"]]),
-        pt_size    = 1,
-        pt_stroke  = 0.7
-      ) +
-      geom_circle(
-        aes(x0 = hUMAP_1, y0 = hUMAP_2, fill = NULL, color = NULL, r = 2.5),
-        data = filter(circ_dat, tm == .x),
-        linetype = 2
-      ) +
-      facet_wrap(~ tm, labeller = as_labeller(function(x) str_c("day ", x)))
-      # guides(fill = guide_colorbar(
-      #   title = str_c(plt_typ, " Ag-high module"),
-      #   ticks = FALSE, title.position = "top",
-      #   barheight = unit(6, "pt"), barwidth = unit(120, "pt"), 
-      # )) +
-      # theme(legend.title = element_text())
-  }) %>%
-  wrap_plots(nrow = 1) +
-  plot_annotation(
-    title = str_c(plt_typ, " Ag-high module"),
-    theme = theme(
-      plot.title = element_text(hjust = 0.5, size = 18)
-    )
-  )
-
-# Plot Ag-high cells
-clrs <- rev(pred_clrs)
-clrs["Ag-low"] <- "#56B4E9"
-clrs["other"]  <- "white"
-
-ag_low_u <- rf_tms %>%
-  imap(~ {
-    u_so %>%
-      subset(tm == .x) %>%
-      create_grp_umap(
-        dat_col = "pred_grp",
-        grp_col = "tm",
-        clrs    = clrs,
-        lvls    = c("Ag-high", "Ag-low", "other"),
-        pt_size = 1,
-        pt_stroke = 0.8
-      ) +
-      facet_wrap(~ tm, labeller = as_labeller(function(x) str_c("day ", x)))
-      # theme(strip.text = element_text(size = 14))
-  }) %>%
-  wrap_plots(nrow = 1)
+mod_u <- u_args %>%
+  pmap(~ {
+    u_dat %>%
+      create_rf_module_umaps(
+        typ           = .x,
+        ag_class_clmn = "Ag_class_ml",
+        module_clmn   = str_c(.x, "_high"),
+        module_title  = str_c(.x, " Ag-high module"),
+        pt_size       = .y
+      )
+  })
 ```
 
 ```{r "RF top features examples", fig.height = 8, fig.width = 8}
@@ -1329,6 +1187,37 @@ gene_examples <- lec_so %>%
   theme(plot.title = element_text(size = 18, hjust = 0.5))
 ```
 
+```{r "Fig 2", fig.width = 15, fig.height = 16.1}
+left <- plot_grid(
+  plot_grid(hsts, nrow = 2, rel_heights = c(1, 0.1)),
+  mod_bxs[[1]],
+  mod_u$cLEC[[1]],
+  mod_u$cLEC[[2]],
+  ncol = 1,
+  rel_heights = c(1, 1, 1.11, 1.1),
+  labels = c("A", "C", "D"),
+  label_size = ttl_pt2 * 1.5,
+  label_y = c(1, 1.1, 1)
+)
+
+right <- plot_grid(
+  rf_bar_1, gene_examples,
+  ncol = 1,
+  rel_heights = c(1, 3),
+  labels = c("B", "E"),
+  label_size = ttl_pt2 * 1.5
+)
+
+fig2 <- plot_grid(
+  left, right,
+  rel_widths = c(1, 0.5)
+)
+
+fig2
+```
+
+
+
 ```{r "RF GO", eval = FALSE}
 # # Load GO results
 # go <- qread(here(params$mod_dir, "ag-high_go.qs"))
@@ -1371,31 +1260,80 @@ gene_examples <- lec_so %>%
 # )
 ```
 
-```{r "Fig 2", fig.width = 15, fig.height = 16.1}
-left <- plot_grid(
-  plot_grid(hsts, nrow = 2, rel_heights = c(1, 0.1)),
-  mod_bxs$high,
-  ag_mod_u,
-  ag_low_u,
-  ncol = 1,
-  rel_heights = c(1, 1, 1.11, 1.1),
-  labels = c("A", "C", "D"),
+<br>
+
+<br>
+
+### Figure S3
+
+A.  The fraction of cells predicted to be Ag-low and Ag-high is shown for each
+    LEC subset.
+C.  Ag-low module score is shown for Ag-low, Ag-high, and predicted
+    Ag-competent LECs.
+    The Spearman correlation between Ag classes and Ag-high module score is
+    shown for each timepoint.
+    One-sided p values were calculated and adjusted using Bonferroni correction.
+D.  UMAP projections show fLEC Ag-high module scores for each timepoint.
+E.  UMAP projections show collecting LEC Ag-high module scores for each
+    timepoint.
+
+```{r "RF predicted Ag class", fig.width = 8, fig.height = 5}
+# Plot fraction predicted groups
+rf_bar_2 <- rf_bar_dat %>%
+  ggplot(aes(tm, fill = rf_pred, alpha = rf_correct)) +
+  geom_bar(position = "fill") +
+  scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
+  scale_fill_manual(values = pred_clrs) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  facet_grid(~ subtype) +
+  labs(y = "fraction of cells", x = "days post vaccination") +
+  guides(
+    fill = guide_legend(order = 1, title = "prediction"),
+    alpha = guide_legend(title.theme = element_blank())
+  ) +
+  bar_thm
+```
+
+```{r "Fig S3", fig.width = 20, fig.height = 12}
+top <- plot_grid(
+  rf_bar_2, mod_bxs[[2]],
+  rel_widths = c(0.75, 1),
+  labels = c("A", "B"),
   label_size = ttl_pt2 * 1.5,
-  label_y = c(1, 1.1, 1)
+  align = "h",
+  axis  = "tb"
+)
+
+left <- plot_grid(
+  plotlist = mod_u$fLEC,
+  ncol  = 1,
+  align = "v",
+  axis  = "rl"
 )
 
 right <- plot_grid(
-  bar_2, gene_examples,
-  ncol = 1,
-  rel_heights = c(1, 3),
-  labels = c("B", "E"),
-  label_size = ttl_pt2 * 1.5
+  plotlist = mod_u$Collecting,
+  ncol  = 1,
+  align = "v",
+  axis  = "rl"
 )
 
-plot_grid(
+bot <- plot_grid(
   left, right,
-  rel_widths = c(1, 0.5)
+  labels = c("C", "D"),
+  label_size = ttl_pt2 * 1.5,
+  nrow  = 1,
+  align = "h",
+  axis  = "tb"
 )
+
+figS3 <- plot_grid(
+  top, bot,
+  ncol = 1,
+  rel_heights = c(0.6, 1)
+)
+
+figS3
 ```
 
 ---
@@ -1550,42 +1488,48 @@ ex_scat <- scat_dat %>%
 # module scores for biological replicates are similar
 # pool all cells together to increase power
 clmns <- c(
-  "subtype", "mouse", "vaccination",
-  "Ag_class_dual", "exp", ag_modules
+  "exp", "subtype", "mouse", "vaccination",
+  "rf_pred", "Ag_class_dual", ag_modules
 )
 
-plt_dat <- lec_so %>%
+ex_mod_bx_dat <- lec_so %>%
   FetchData(clmns) %>%
   filter(vaccination == "dual") %>%
-  mutate(Ag_class_dual = recode(Ag_class_dual, low = "Ag-low"))
+  mutate(Ag_class_dual = recode(Ag_class_dual, low = "Ag-low")) %>%
+  
+  mutate(Ag_class_dual = ifelse(
+    Ag_class_dual == "Ag-low" & rf_pred == "Ag-high",
+    "Ag-competent",
+    Ag_class_dual)
+  )
 
 # Create boxplots
-bx_args <- list(
-  mod_typ = c("high", "low"),
-  p_alt   = c("greater", "less")
-)
+bx_lvls <- c("Ag-low", "Ag-competent", "single-high", "double-high")
 
-bx_lvls <- c("Ag-low", "single-high", "double-high")
+rf_mod_args$p_x <- c(1, 4)
+rf_mod_args$p_hjust <- c(0.2, 0.8)
 
-ex_mod_bxs <- bx_args %>%
+ex_mod_bxs <- rf_mod_args %>%
   pmap(~ {
     args <- list(...)
-    
+
     module_clmns <- str_c(rf_typs, "_", args$mod_typ)
     module_title <- str_c("Ag-", args$mod_typ, " module score")
-    
-    plt_dat %>%
+
+    ex_mod_bx_dat %>%
       create_module_boxes(
         module_clmns = module_clmns,
         module_title = module_title,
         lvls         = bx_lvls,
-        p_alt        = args$p_alt
+        p_alt        = args$p_alt,
+        p_x          = args$p_x,
+        p_hjust      = args$p_hjust
       ) +
       theme(plot.margin = margin(15, 15, 5, 15))
   })
 ```
 
-```{r "Fig 3", fig.width = 14, fig.height = 19}
+```{r "Fig 3", fig.width = 15.5, fig.height = 19}
 fig3 <- (ex_heat[[1]] + ex_u[[1]]) / ex_bxs[[1]] /
   (ex_heat[[2]] + ex_u[[2]]) / ex_bxs[[2]] /
   ex_scat[[ag_exps$LEC]] /
@@ -1604,7 +1548,7 @@ fig3
 
 <br>
 
-### Figure S3
+### Figure S4
 
 A.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
     for DC subsets from a biological replicate.
@@ -1635,16 +1579,16 @@ ex_bx_args$exps <-list(
 # Create boxplots for biological replicates
 rep_ex_bxs <- ex_bx_args %>%
   pmap(~ {
-    bx_args <- list(...)
+    args <- list(...)
     
-    objs <- purrr::discard(bx_args$exps, is.null)
+    objs <- purrr::discard(args$exps, is.null)
     objs <- ag_objs[names(objs)]
     
     objs %>%
       imap(~ {
         dat <- .x@meta.data
         
-        dat <- bx_args$exps[[.y]] %>%
+        dat <- args$exps[[.y]] %>%
           map_dfr(~ {
             dat %>%
               filter(exp %in% c("exp-0", .x))
@@ -1652,12 +1596,12 @@ rep_ex_bxs <- ex_bx_args %>%
         
         dat %>%
           create_exchange_boxes(
-            tm         = bx_args$tm,
-            tm_clmn    = bx_args$tm_clmn,
-            ag_clmn    = bx_args$ag_clmn,
+            tm         = args$tm,
+            tm_clmn    = args$tm_clmn,
+            ag_clmn    = args$ag_clmn,
             clrs       = tm_clrs,
             typs       = ag_plt_typs[[.y]],
-            p_hjust    = bx_args$p_hjust,
+            p_hjust    = args$p_hjust,
             facet_vars = "subtype",
             p_cutoff   = Inf
           ) +
@@ -1709,9 +1653,9 @@ ex_mod_scat <- scat_args %>%
   })
 ```
 
-```{r "Fig S3", fig.width = 13, fig.height = 15}
+```{r "Fig S4", fig.width = 13, fig.height = 15}
 # Create final figure
-figS3 <- wrap_plots(rep_ex_bxs, ncol = 1) /
+figS4 <- wrap_plots(rep_ex_bxs, ncol = 1) /
   ex_scat$`exp-2` /
   (ex_mod_scat[[1]] + ex_mod_scat[[2]]) +
   plot_layout(heights = c(1, 1, 1, 1.5, 3)) +
@@ -1721,7 +1665,7 @@ figS3 <- wrap_plots(rep_ex_bxs, ncol = 1) /
     plot.tag.position = c(0, 1)
   )
 
-figS3
+figS4
 ```
 
 
