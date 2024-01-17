@@ -501,17 +501,18 @@ create_gn_plots <- function(so_in, ag_high_gns = NULL, ag_low_gns = NULL,
 }
 
 create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
-                            pt_size = 0.15, pt_stroke = 0.6) {
+                            pt_size = 0.15, pt_stroke = 0.6,
+                            scale_limits = NULL, outline = TRUE) {
   res <- so_in %>%
     plot_scatter(
       dat_col,
       "hUMAP_1", "hUMAP_2",
-      group_col   = grp_col,
-      outline     = TRUE,
-      plot_colors = clrs,
-      panel_nrow  = 1,
-      size        = pt_size,
-      stroke      = pt_stroke,
+      group_col    = grp_col,
+      outline      = outline,
+      plot_colors  = clrs,
+      panel_nrow   = 1,
+      size         = pt_size,
+      stroke       = pt_stroke,
       label_params = list(size = ttl_pt2)
     ) +
     guides(fill = guide_colorbar(
@@ -531,26 +532,27 @@ create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
       aspect.ratio    = 0.9
     )
   
+  if (!is.null(scale_limits)) {
+    res <- res +
+      scale_fill_gradientn(colours = clrs, limits = scale_limits)
+  }
+  
   res
 }
 
 create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
                             lvls = c("Ag-competent", "Ag-low", "Ag-high", "other"),
-                            pt_size = 0.25, pt_stroke = 0.8, ...) {
-  so_in %>%
+                            ...) {
+  
+  res <- so_in %>%
     plot_scatter(
       dat_col,
       "hUMAP_1", "hUMAP_2",
-      group_col   = grp_col,
-      outline     = TRUE,
-      plot_colors = clrs,
-      plot_lvls   = lvls,
-      panel_nrow  = 1,
-      size        = pt_size,
-      stroke      = pt_stroke,
-      color       = ln_col,
+      group_col    = grp_col,
+      plot_colors  = clrs,
+      plot_lvls    = lvls,
+      panel_nrow   = 1,
       label_params = list(size = ttl_pt2),
-      trace_position = "bottom",
       ...
     ) +
     guides(fill = guide_legend(
@@ -569,6 +571,8 @@ create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
       axis.text       = element_blank(),
       aspect.ratio    = 0.9
     )
+  
+  res
 }
 
 create_heats <- function(so_in, gns, sort_gns = "up", lvls = names(pred_clrs),

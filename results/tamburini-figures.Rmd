@@ -25,7 +25,7 @@ params:
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
   chikv_so: "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs/so_merge.qs"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -1150,7 +1150,7 @@ shared_feats <- c("high", "low") %>%
   map(~ {
     ag <- .x
     
-    fts <- rf_feats %>%
+    fts <- rf_feats[rf_typs] %>%
       map(pluck, ag)
     
     fts <- fts %>%
@@ -1294,7 +1294,7 @@ rf_bar_2 <- rf_bar_dat %>%
   bar_thm
 ```
 
-```{r "Fig S3", fig.width = 20, fig.height = 12}
+```{r "Fig S3", fig.width = 20, fig.height = 12.5}
 top <- plot_grid(
   rf_bar_2, mod_bxs[[2]],
   rel_widths = c(0.75, 1),
@@ -1330,7 +1330,7 @@ bot <- plot_grid(
 figS3 <- plot_grid(
   top, bot,
   ncol = 1,
-  rel_heights = c(0.6, 1)
+  rel_heights = c(0.5, 1)
 )
 
 figS3
@@ -2402,16 +2402,26 @@ F.  Expression of cLEC Ag-high gene module is shown for mock and CHIKV-infected
     
 <u>Notes</u>
 
-* Need to add p values for C and E.
-* Predicted Ag-competent fLECs and collecting LECs can be shown as a
-  supplemental figure (no difference between mock and CHIKV).
+* Show cLEC Ag-low results in main figure?
 
 ```{r "CHIKV data"}
+# CHIKV theme
+chikv_clrs <- c(
+  `Ag-low`       = "#56B4E9",
+  `Ag-competent` = "#D7301F",
+  other          = "white"
+)
+
+treat_clrs <- set_names(chikv_clrs[1:2], c("mock", "CHIKV"))
+
+chikv_u_theme <- umap_theme_2 +
+  theme(aspect.ratio = 0.7)
+
 # Load CHIKV data
 rm(lec_so, dc_so)
 
 chikv_so <- qread(here(params$chikv_dir, "so_lec.qs"))
-  
+
 chikv_so <- chikv_so %>%
   subset(tm == "24hpi") %>%
   AddMetaData(chikv_preds, col.name = str_c("rf_", colnames(chikv_preds)))
@@ -2419,9 +2429,14 @@ chikv_so <- chikv_so %>%
 chikv_so <- chikv_so %>%
   mutate_meta(
     mutate,
-    pred_grp = dplyr::recode(rf_pred, high = "Ag-competent", low = "Ag-low"),
-    treatment = fct_relevel(treatment, c("mock", "CHIKV"))
-  )
+    pred_grp  = dplyr::recode(rf_pred, high = "Ag-competent", low = "Ag-low"),
+    pred_grp  = fct_relevel(pred_grp, rev(names(chikv_clrs))),
+    treatment = fct_relevel(treatment, c("mock", "CHIKV")),
+    subtype   = lec_subtype  # add subtype column to keep consistent with other
+  )                          # objects
+
+chikv_so <- chikv_so %>%
+  AddMetaData(FetchData(., c("hUMAP_1", "hUMAP_2")))
 
 # Add module scores
 rf_feats %>%
@@ -2440,16 +2455,13 @@ rf_feats %>%
       ) %>%
       mutate_meta(dplyr::rename, !!!syms(clmn_nms))
   })
+
+# Data for plotting
+chikv_dat <- chikv_so@meta.data %>%
+  as_tibble(rownames = ".cell_id")
 ```
 
-```{r "CHIKV figure", fig.width = 15, fig.height = 17}
-# CHIKV color palette
-chikv_clrs <- c(`Ag-low` = "#56B4E9", `Ag-competent` = "#D7301F")
-treat_clrs <- set_names(chikv_clrs, c("mock", "CHIKV"))
-
-chikv_u_theme <- umap_theme_2 +
-  theme(aspect.ratio = 0.7)
-
+```{r "CHIKV subsets"}
 # LEC subsets
 top <- chikv_so %>%
   plot_scatter(
@@ -2466,69 +2478,54 @@ top <- chikv_so %>%
     legend.title = element_blank(),
     panel.border = element_blank()
   )
+```
 
-# Ag class UMAPs
-clmns <- c(
-  "treatment", "rep", "lec_subtype", "pred_grp",
-  "hUMAP_1", "hUMAP_2",
-  "cLEC_high", "cLEC_low"
+```{r "CHIKV Ag class UMAPs"}
+# Create UMAPs
+u_args <- list(
+  typ = set_names(rf_typs),
+  pt_size = list(1, c(0.5, 0.1), c(0.5, 0.1))
 )
 
-plt_dat <- chikv_so %>%
-  FetchData(clmns) %>%
-  mutate(
-    treatment = fct_relevel(treatment, c("mock", "CHIKV")),
-    pred_grp  = fct_relevel(pred_grp, rev(names(chikv_clrs)))
-  )
+chikv_u <- u_args %>%
+  pmap(~ {
+    chikv_dat %>%
+      create_rf_module_umaps(
+        typ           = .x,
+        ag_class_clmn = "pred_grp",
+        module_clmn   = str_c(.x, "_high"),
+        module_title  = str_c(.x, "\nAg-high module"),
+        facet_var     = "treatment",
+        lab_fn        = "label_value",
+        class_clrs    = chikv_clrs,
+        ag_clrs       = c("lightblue", "white", "#D7301F"),
+        pt_size       = 0.75,
+        circle_cells  = FALSE,
+        show_scale_title = TRUE
+      )
+  })
+```
 
-ag_class_u <- plt_dat %>%
-  ggplot(aes(hUMAP_1, hUMAP_2, fill = pred_grp)) +
-  geom_point_trace(
-    trace_position = lec_subtype == "cLEC",
-    background_params = list(fill = "grey85", color = NA),
-    color = NA,
-    size = 0.75
-  ) +
-  facet_wrap(~ treatment) +
-  scale_fill_manual(values = chikv_clrs) +
-  guides(fill = guide_legend(override.aes = list(size = 4))) +
-  chikv_u_theme +
-  theme(
-    legend.position = "bottom",
-    legend.title = element_blank()
-  )
-
-# Ag class bargraphs
-rat <- 1.5
-
-bar_dat <- plt_dat %>%
-  filter(lec_subtype %in% rf_typs) %>%
-  group_by(treatment, rep, lec_subtype) %>%
+```{r "CHIKV Ag class bargraphs"}
+# Format data for bargraphs
+chikv_bar_dat <- chikv_dat %>%
+  filter(subtype %in% rf_typs) %>%
+  group_by(treatment, rep, subtype) %>%
   summarize(
     frac_high = sum(pred_grp == "Ag-competent") / n(),
     .groups = "drop"
-  )
+  ) %>%
+  mutate(subtype = fct_relevel(subtype, rf_typs))
 
-ag_class_bars <- bar_dat %>%
-  filter(lec_subtype == "cLEC") %>%
-  ggplot(aes(treatment, frac_high, fill = treatment, alpha = rep)) +
-  geom_col(position = position_dodge2(padding = 0.15)) +
-  # facet_wrap(~ lec_subtype) +
-  scale_fill_manual(values = treat_clrs) +
-  scale_alpha_manual(values = rep(1, n_distinct(plt_dat$rep))) +
-  scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
-  guides(alpha = "none") +
-  labs(y = "cLEC fraction Ag-competent") +
-  base_theme +
-  theme(
-    aspect.ratio    = rat,
-    legend.position = "none",
-    axis.title.x    = element_blank(),
-    axis.text.x     = element_text(size = ttl_pt2)
-  )
+# Create Ag class bargraphs
+chikv_ag_bars <- chikv_bar_dat %>%
+  filter(subtype == rf_cell_type) %>%
+  create_chikv_class_bars(ttl = str_c("fraction Ag-competent ", rf_cell_type, "s")) +
+  theme(strip.text = element_blank())
 
+# Create final panels
 mid <- plot_grid(
-  ag_class_u, ag_class_bars,
+  chikv_u$cLEC[[2]], chikv_ag_bars,
   align      = "h",
   axis       = "tb",
   rel_widths = c(1, 0.3), 
@@ -2537,52 +2534,27 @@ mid <- plot_grid(
   hjust      = 0.5,
   vjust      = 1
 )
+```
 
-# cLEC Ag-high module scores
-ag_score_u <- plt_dat %>%
-  plot_scatter(
-    "cLEC_high",
-    x           = "hUMAP_1",
-    y           = "hUMAP_2",
-    group_col   = "treatment",
-    plot_colors = c("#56B4E9", "white", "#D7301F"),
-    outline     = TRUE,
-    # size        = 0.5,
-    size        = 0.75,
-    stroke      = 0.7,
-    n_label     = "none"
+```{r "CHIKV Ag module score boxplots"}
+# Format data for plotting
+chikv_bx_dat <- chikv_dat %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(subtype = fct_relevel(subtype, rf_typs))
+
+# Plot Ag module scores
+chikv_ag_bxs <- chikv_bx_dat %>%
+  filter(lec_subtype == rf_cell_type) %>%
+  create_chikv_module_boxes(
+    module_clmns = "cLEC_high",
+    ttl          = "cLEC Ag-high module",
+    n_p          = length(ag_modules)
   ) +
-  guides(fill = guide_colorbar(
-    title = "cLEC\nAg-high module",
-    title.hjust = 0.5,
-    barwidth = unit(150, "pt"),
-    barheight = unit(10, "pt")
-  )) +
-  chikv_u_theme +
-  theme(
-    legend.position = "bottom"
-    # legend.title = element_blank()
-  )
-
-ag_score_bx <- plt_dat %>%
-  filter(lec_subtype == "cLEC") %>%
-  ggplot(aes(treatment, cLEC_high, fill = treatment, alpha = rep)) +
-  geom_boxplot(outlier.size = 0.5) +
-  scale_fill_manual(values = treat_clrs) +
-  scale_alpha_manual(values = rep(1, n_distinct(plt_dat$rep))) +
-  scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
-  guides(alpha = "none") +
-  labs(y = "cLEC Ag-high module") +
-  base_theme +
-  theme(
-    aspect.ratio    = rat,
-    legend.position = "none",
-    axis.title.x    = element_blank(),
-    axis.text.x     = element_text(size = ttl_pt2)
-  )
-
+  theme(strip.text = element_blank())
+  
+# Create final figure
 bot <- plot_grid(
-  ag_score_u, ag_score_bx,
+  chikv_u$cLEC[[1]], chikv_ag_bxs,
   align = "h",
   axis  = "tb",
   rel_widths = c(1, 0.3),
@@ -2590,7 +2562,9 @@ bot <- plot_grid(
   label_size = ttl_pt2 * 1.5,
   hjust      = 0.5
 )
+```
 
+```{r "CHIKV Ag-high heatmap"}
 # Ag-high heatmap data
 heat_feats <- rf_feats$cLEC$high
 heat_feats <- heat_feats[heat_feats %in% rownames(chikv_so)]
@@ -2598,7 +2572,6 @@ heat_feats <- heat_feats[heat_feats %in% rownames(chikv_so)]
 heat_dat <- chikv_so %>%
   FetchData(c("treatment", "lec_subtype", heat_feats)) %>%
   filter(lec_subtype %in% rf_typs) %>%
-  # filter(!lec_subtype %in% c("BEC", "unassigned")) %>%
   pivot_longer(all_of(heat_feats)) %>%
   group_by(lec_subtype, treatment, name) %>%
   summarize(value = mean(value), .groups = "drop")
@@ -2628,7 +2601,7 @@ heat <- heat_dat %>%
   facet_wrap(~ treatment, ncol = 1, strip.position = "left") +
   guides(fill = guide_colorbar(
     barwidth = unit(150, "pt"),
-    barheight = unit(10, "pt")
+    barheight = unit(6, "pt")
   )) +
   base_theme +
   theme(
@@ -2640,19 +2613,108 @@ heat <- heat_dat %>%
     axis.title      = element_blank(),
     axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5)
   )
+```
+
+```{r "Fig 5", fig.width = 12, fig.height = 17}
+# Combine center panels
+mid <- wrap_plots(
+  chikv_u$cLEC[[2]], chikv_ag_bars,
+  chikv_u$cLEC[[1]], chikv_ag_bxs,
+  widths = c(1, 0.3)
+)
 
 # Final figure
-plot_grid(
-  top, mid, bot, heat,
+fig5 <- plot_grid(
+  top, mid, heat,
   ncol       = 1,
-  labels     = c("A", "", "", "F"),
+  labels     = c("A", "", "F"),
   label_size = ttl_pt2 * 1.5,
-  hjust      = c(-4.5, -0.5),
-  vjust      = c(1.5, 1),
-  rel_heights = c(1, 1, 1.2, 1),
-  align = "v",
-  axis  = "rl"
+  # hjust      = c(-4.5, -0.5),
+  hjust      = c(0, 0, -0.5),
+  vjust      = c(1.5, 1, 0),
+  # vjust      = c(1.5, 1),
+  rel_heights = c(1, 2.5, 1)
+  # align = "v",
+  # axis  = "rl"
 )
+
+fig5
+
+# mid <- plot_grid(
+#   chikv_u$cLEC[[2]], chikv_ag_bars,
+#   chikv_u$cLEC[[1]], chikv_ag_bxs,
+#   rel_widths = c(1, 0.3),
+#   nrow = 2,
+#   align = "vh",
+#   axis  = "trbl"
+# )
+```
+
+
+```{r "OLD CHIKV Ag module score UMAPs", eval = FALSE}
+# cLEC Ag-high module scores
+ag_score_u <- chikv_dat %>%
+  plot_scatter(
+    "cLEC_high",
+    x           = "hUMAP_1",
+    y           = "hUMAP_2",
+    group_col   = "treatment",
+    plot_colors = c("#56B4E9", "white", "#D7301F"),
+    outline     = TRUE,
+    # size        = 0.5,
+    size        = 0.75,
+    stroke      = 0.7,
+    n_label     = "none"
+  ) +
+  guides(fill = guide_colorbar(
+    title = "cLEC\nAg-high module",
+    title.hjust = 0.5,
+    barwidth = unit(150, "pt"),
+    barheight = unit(10, "pt")
+  )) +
+  chikv_u_theme +
+  theme(
+    legend.position = "bottom"
+    # legend.title = element_blank()
+  )
+```
+
+<br>
+
+<br>
+
+### Figure S6
+
+A.  The fraction of cells predicted to be Ag-competent is shown for mock and
+    CHIKV-infected mice for each biological replicate.
+B.  Ag-high and Ag-low module scores are shown for mock and CHIKV-infected mice
+    for each biological replicate. P values were calculated using a two-sided
+    Wilcoxon rank sum test with Bonferroni correction.
+
+```{r "Fig S6", fig.width = 6, fig.height = 9, out.width = "50%"}
+# Bargraphs for all LEC subtypes
+all_chikv_bars <- chikv_bar_dat %>%
+  create_chikv_class_bars(ttl = "fraction Ag-competent")
+
+# Boxplots for all Ag modules
+all_chikv_bxs <- chikv_bx_dat %>%
+  create_chikv_module_boxes(
+    module_clmns = ag_modules,
+    ttl = "module score"
+  )
+
+# Create final figure
+figS6 <- plot_grid(
+  all_chikv_bars, all_chikv_bxs,
+  labels = c("A", "B"),
+  label_size = ttl_pt2 * 1.5,
+  ncol  = 1,
+  align = "v",
+  axis  = "rl",
+  rel_heights = c(0.6, 1)
+)
+
+figS6
 ```
 
 ---
@@ -2668,6 +2730,89 @@ sessionInfo()
 ```
 
 
+
+```{r "Pdpn Ag correlation", eval = FALSE}
+# Format data for plotting
+clmns <- c(
+  "Pdpn", "Ag_score",
+  "subtype", "mouse",
+  "pred_grp", "Ag_class", "training_data"
+)
+
+dat <- lec_so %>%
+  FetchData(clmns) %>%
+  mutate(
+    Ag_class = fct_relevel(Ag_class, c("low", "high")),
+    pred_grp = fct_relevel(pred_grp, names(pred_clrs)),
+    subtype  = fct_relevel(subtype, rf_typs)
+  ) %>%
+  filter(
+    subtype %in% rf_typs,
+    !training_data
+  )
+  
+# Plot Pdpn for Ag-class
+dat %>%
+  ggplot(aes(subtype, Pdpn, fill = pred_grp)) +
+  geom_boxplot(outlier.size = 0.5) +
+  scale_fill_manual(values = pred_clrs) +
+  facet_wrap(~ mouse) +
+  base_theme +
+  theme(
+    aspect.ratio = 0.6,
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(
+  here("results/Pdpn_Ag_class.png"),
+  dpi = 300
+)
+
+# Plot Pdpn for LEC subsets
+dat %>%
+  ggplot(aes(subtype, Pdpn, fill = subtype)) +
+  geom_boxplot(outlier.size = 0.5) +
+  scale_fill_manual(values = lec_clrs) +
+  facet_wrap(~ mouse) +
+  base_theme +
+  theme(
+    aspect.ratio = 0.6,
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(
+  here("results/Pdpn_LEC_subsets.png"),
+  dpi = 300
+)
+
+# Plot Ag-score for LEC subsets
+dat %>%
+  ggplot(aes(subtype, Ag_score, fill = subtype)) +
+  geom_boxplot(outlier.size = 0.5) +
+  scale_fill_manual(values = lec_clrs) +
+  facet_wrap(~ mouse) +
+  base_theme +
+  theme(
+    aspect.ratio = 0.6,
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(
+  here("results/Ag-score_LEC_subsets.png"),
+  dpi = 300
+)
+
+
+
+# dat %>%
+#   ggplot(aes(Ag_score, Pdpn, color = subtype)) + 
+#   geom_point() +
+#   scale_color_manual(values = lec_clrs) +
+#   base_theme +
+#   theme(
+#     aspect.ratio = 1
+#   )
+```
 
 ```{r "RF TEST 1", eval = FALSE}
 # GOALS
