@@ -14,7 +14,7 @@ output:
 params:
   template_dir:  "src"                                                     # template Rmarkdowns
   so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
-  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-11-01" # ML models
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-02-02" # ML models
   chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
   ref_dir:       "ref"                                                     # clustifyr references
   sample_info:   "sample_info.xlsx"
@@ -242,6 +242,9 @@ J.  Ag-scores are shown for each timepoint for each DC subset.
   respectively.
 
 ```{r "load data"}
+# FIX THIS #
+# DO NOT NEED TO REMOVE TRAINING DATA #
+
 # Format prediction labels
 # make sure the correct predictions and module scores are being used
 # once the models are finalized, this information can be saved in the meta.data

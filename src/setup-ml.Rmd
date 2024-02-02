@@ -19,6 +19,7 @@ pred_clrs <- c(
 rf_dat_clmn  <- "Ag_class_ml"
 rf_cell_type <- "cLEC"
 rf_mouse     <- "d14"
+rf_typs      <- c("cLEC", "fLEC", "Collecting")
 
 # Check for RF predictions
 run_rf <- !file.exists(here(params$mod_dir, "ag-high_preds.tsv.gz"))
@@ -1492,17 +1493,9 @@ lec_so <- lec_so %>%
     )
   )
 
-# Select LEC subsets to use for RF
-rf_typs <- lec_so@meta.data %>%
-  filter(mouse == rf_mouse) %>%
-  group_by(subtype, !!sym(rf_dat_clmn)) %>%
-  summarize(n = n(), .groups = "drop") %>%
-  group_by(subtype) %>%
-  filter(all(n > 60)) %>%
-  summarize(n = sum(n), .groups = "drop") %>%
-  arrange(desc(n)) %>%
-  pull(subtype) %>%
-  unique()
+# Save LEC object with Ag classifications
+lec_so %>%
+  qsave(here(params$so_dir, "lec_so.qs"))
 ```
 
 ```{r "identify Ag DEGs", eval = run_rf}
@@ -1607,7 +1600,7 @@ rf_stats <- rf_typs %>%
       splitrule     = c("gini", "hellinger"),
       num.trees     = seq(1, 1200, 200),
       low           = 1:5,           # include NAs so original class
-      high          = c(5, NA)      # distributions are also tested
+      high          = c(5, NA)       # distributions are also tested
     )
     
     # Train model
@@ -1619,7 +1612,7 @@ rf_stats <- rf_typs %>%
         include_objects = FALSE
       )
     
-    if (is.null(res)) return(res)  # If mtry is too high
+    if (is.null(res)) return(res)  # If mtry is too high will return NULL
     
     res <- res %>%
       arrange(desc(Kappa)) %>%
@@ -1631,45 +1624,47 @@ rf_stats <- rf_typs %>%
     res
   })
 
-# DOES THIS CODE ACTUALLY GET USED?? #
-# Train models based on best parameters
-# sort based on balanced accuracy and F1 score
-rf_mods <- rf_stats %>%
-  group_by(subtype) %>%
-  filter(abs(target_frac - frac_high_mean) < 0.05) %>%
-  slice_max(`Balanced Accuracy`, n = 1, with_ties = FALSE) %>%
-  ungroup() %>%
-  split(.$subtype)
 
-rf_mods <- rf_mods %>%
-  imap_dfr(~ {
-    feats <- degs %>%
-      filter(subtype == .y) %>%
-      pull(feature) %>%
-      unique()
-    
-    rf_dat <- lec_so %>%
-      subset(subtype == .y & mouse == rf_mouse) %>%
-      FetchData(unique(c(rf_dat_clmn, feats)))
-    
-    .x %>%
-      pmap_dfr(~ {
-        args <- list(...)
-        stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
-        
-        rf_dat %>%
-          train_rf(
-            data_clmn       = rf_dat_clmn,
-            param_lst       = args[stats],
-            include_objects = TRUE
-          ) %>%
-          mutate(subtype = args$subtype)
-      })
-  })
 
-# Save RF models
-rf_stats %>%
-  write_tsv(here(params$mod_dir, "ag-high_models.tsv.gz"))
+# # DOES THIS CODE ACTUALLY GET USED?? #
+# # Train models based on best parameters
+# # sort based on balanced accuracy and F1 score
+# rf_mods <- rf_stats %>%
+#   group_by(subtype) %>%
+#   filter(abs(target_frac - frac_high_mean) < 0.05) %>%
+#   slice_max(`Balanced Accuracy`, n = 1, with_ties = FALSE) %>%
+#   ungroup() %>%
+#   split(.$subtype)
+# 
+# rf_mods <- rf_mods %>%
+#   imap_dfr(~ {
+#     feats <- degs %>%
+#       filter(subtype == .y) %>%
+#       pull(feature) %>%
+#       unique()
+#     
+#     rf_dat <- lec_so %>%
+#       subset(subtype == .y & mouse == rf_mouse) %>%
+#       FetchData(unique(c(rf_dat_clmn, feats)))
+#     
+#     .x %>%
+#       pmap_dfr(~ {
+#         args <- list(...)
+#         stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
+#         
+#         rf_dat %>%
+#           train_rf(
+#             data_clmn       = rf_dat_clmn,
+#             param_lst       = args[stats],
+#             include_objects = TRUE
+#           ) %>%
+#           mutate(subtype = args$subtype)
+#       })
+#   })
+# 
+# # Save RF models
+# rf_stats %>%
+#   write_tsv(here(params$mod_dir, "ag-high_models.tsv.gz"))
 ```
 
 ```{r "load CHIKV data", eval = run_rf}
