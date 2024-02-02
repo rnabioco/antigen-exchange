@@ -82,14 +82,14 @@ rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
 #' @param feat_p p-value cutoff for selecting best features
 #' @param min_feats minimum number of features to allow after feature selection
 #' @param min_cells minimum number of cells required for each group in data_clmn
-#' @param scale_data Should independent variables be scaled
 #' @param select_feats should features be filtered based on p-value
+#' @param training_split fraction of cells that should be used for training,
+#' by default this is 1 since assessing accuracy using 10-fold cross validation
 #' @param df_list list of data.frames containing data for each mouse to use for
 #' comparing the fraction of predicted Ag-high cells. Want a model where the
 #' fraction of predicted Ag-high cells is roughly the same for all samples.
 #' @param frac_grp group in data_clmn that should be used for calculating and
 #' comparing fractions using data in df_list
-#' @param balance_groups downsample so groups have the same number of cells
 #' @param degs data.frame of DEGs, used to determine which DEGs are markers
 #' for each group
 #' @param include_objects in output tibble include ranger object, top features,
@@ -97,8 +97,8 @@ rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
 #' @param ... additional parameters to pass to ranger::ranger()
 train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
                      feat_p = 0.05, min_feats = 20, min_cells = 30,
-                     scale_data = FALSE, select_feats = TRUE, df_list = NULL,
-                     frac_grp = "high", balance_groups = FALSE,
+                     select_feats = TRUE, training_split = 1,
+                     df_list = NULL, frac_grp = "high",
                      degs = NULL, include_objects = FALSE, ...) {
   
   # Format input data
@@ -112,54 +112,33 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
     rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
     rename_with(~ str_c("x", .x), matches("^[0-9]"))
   
-  classes     <- as.character(unique(rf_dat[[data_clmn]]))
-  class_sizes <- table(rf_dat[[rf_dat_clmn]])
+  classes    <- as.character(unique(rf_dat[[data_clmn]]))
+  train_seed <- param_lst$seed %||% 42
   
-  # Scale data
-  if (scale_data) {
-    rf_dat <- rf_dat %>%
-      mutate(
-        across(-all_of(data_clmn), ~ as.numeric(scale(.x)))
-      )
-  }
+  # Set default training and testing groups
+  rf_train <- rf_dat
   
-  # Adjust groups so they are balanced
-  # split into train/test data
-  if (balance_groups) {
-    group_size  <- table(rf_dat[[data_clmn]])
-    target_frac <- group_size[[frac_grp]] / sum(group_size)
-    sample_size <- floor(min(group_size) / 2)
+  if (training_split < 1) {
+    set.seed(train_seed)
     
-    if (sample_size < min_cells) {
-      cli::cli_abort("All groups must have at least {min_cells} cells")
-    }
-
-    rf_train <- rf_dat %>%
-      rownames_to_column(".cell_id") %>%
-      group_by(!!sym(data_clmn))
-    
-    set.seed(42)
-    
-    rf_train <- rf_train %>%
-      dplyr::sample_n(sample_size) %>%
-      column_to_rownames(".cell_id")
-
-    rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
-    
-  } else {
-    set.seed(42)
-    
-    rf_split <- initial_split(rf_dat, prop = 0.5)
+    rf_split <- initial_split(rf_dat, prop = training_split)
     rf_train <- training(rf_split)
-    rf_test  <- testing(rf_split)
   }
+  
+  class_sizes <- table(rf_train[[rf_dat_clmn]])
   
   # Set parameters to test
   # if class weights are provided, remove repetitive combinations
+  grid_vars <- c("mtry", "min.node.size", "splitrule")
+  
+  if (any(!grid_vars %in% names(param_lst))) {
+    cli_abort("param_lst must include {grid_vars}.")
+  }
+  
   rf_params <- expand.grid(param_lst)
   rf_params <- bind_cols(rf_params, list(...))
   
-  weight_classes <- all(classes %in% names(rf_params)) && !balance_groups
+  weight_classes <- all(classes %in% names(param_lst))
   
   if (weight_classes) {
     clmns <- colnames(rf_params)
@@ -171,150 +150,194 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
       dplyr::select(-frac)
   }
   
-  n_params    <- nrow(rf_params)
-  rf_params$n <- 1:n_params
+  n_params           <- nrow(rf_params)
+  rf_params$param_id <- 1:n_params
   
   # Train models
   res <- pmap_dfr(rf_params, ~ {
     args <- list(...)
-
+    
+    grid_params <- as.data.frame(args[grid_vars])
+    caret_args  <- args[!names(args) %in% c(grid_vars, classes, "param_id")]
+    
     # Select training sample
     # if class weights are passed, downsample training data accordingly
-    if (weight_classes) {
-      train_sizes <- floor(class_sizes / 2)
+    # if either class weight is NA, skip. Passing an NA is how the user can
+    # specify to use the data asis
+    if (weight_classes && all(!is.na(args[classes]))) {
       
-      class_wts <- set_names(as.numeric(args[classes]), classes)
-      class_wts <- sort(class_wts, decreasing = TRUE)
-      
-      train_sizes <- train_sizes[names(class_wts)]
+      # Keep class weights and training class sizes ordered      
+      class_wts   <- set_names(as.numeric(args[classes]), classes)
+      class_wts   <- sort(class_wts, decreasing = TRUE)
+      class_sizes <- class_sizes[names(class_wts)]
       
       ratio  <- class_wts[[1]] / class_wts[[2]]
-      new_sz <- floor(train_sizes[[1]] / ratio)
+      new_sz <- floor(class_sizes[[1]] / ratio)
       new_sz <- max(new_sz, min_cells)
       
-      if (new_sz > train_sizes[[2]]) {
-        new_sz <- floor(train_sizes[[2]] * ratio)
+      if (new_sz > class_sizes[[2]]) {
+        new_sz <- floor(class_sizes[[2]] * ratio)
         new_sz <- max(new_sz, min_cells)
         
-        train_sizes[1] <- new_sz
+        class_sizes[1] <- new_sz
         
       } else {
-        train_sizes[2] <- new_sz
+        class_sizes[2] <- new_sz
       }
       
-      rf_train <- rf_dat %>%
+      rf_train <- rf_train %>%
         rownames_to_column(".cell_id") %>%
         split(.[[data_clmn]]) %>%
         imap_dfr(~ {
-          sz <- train_sizes[[.y]]
+          sz <- class_sizes[[.y]]
           
-          set.seed(42)
+          set.seed(train_seed)
           
           .x %>%
-            dplyr::sample_n(sz) %>%
+            slice_sample(n = sz, replace = FALSE) %>%
             column_to_rownames(".cell_id")
         })
       
-      rf_test <- rf_dat[!rownames(rf_dat) %in% rownames(rf_train), ]
-      
-      args[classes] <- NULL
+      if (any(duplicated(rownames(rf_train)))) {
+        cli_abort(
+          "Some cells are duplicated after downsampling.",
+          .internal = TRUE
+        )
+      }
     }
 
     # RF parameters
+    # mtry cannot be greater than the number of features
     if (args$mtry > (ncol(rf_train) - 1)) {
       cli::cli_warn("mtry ({args$mtry}) is greater than the number of features")
       
       return(NULL)
     }
     
-    args$data        <- rf_train
-    args$formula     <- as.formula(str_c(data_clmn, " ~ ."))
-    args$importance  <- args$importance %||% "impurity_corrected"
-    args$seed        <- args$seed %||% 42
-    args$num.threads <- args$num.threads %||% 12
-    args$probability <- args$probability %||% FALSE
+    calc_training_stats <- function(data, lev = NULL, model = NULL) {
+      res <- confusionMatrix(
+        data$pred, data$obs,
+        positive = lev[1]
+      )
       
+      c(res$overall, res$byClass)
+    }
+    
+    caret_control <- trainControl(
+      method          = "cv",
+      number          = 10,
+      seeds           = as.list(1:11),
+      summaryFunction = calc_training_stats
+    )
+    
+    predictors <- rf_train %>%
+      dplyr::select(-all_of(data_clmn))
+    
+    outcome <- rf_train[[data_clmn]]
+    
+    caret_args$x           <- predictors
+    caret_args$y           <- outcome
+    caret_args$method      <- "ranger"
+    caret_args$trControl   <- caret_control
+    caret_args$tuneGrid    <- grid_params
+    caret_args$importance  <- caret_args$importance %||% "impurity_corrected"
+    caret_args$seed        <- train_seed
+    caret_args$num.threads <- caret_args$num.threads %||% 12
+    caret_args$verbose     <- caret_args$verbose %||% FALSE
+
     # Train initial model
-    set.seed(42)
+    # pull out key features based on p-value
+    set.seed(train_seed)
     
-    raw_mod <- mod <- lift_dl(train_fn)(args)
+    raw_mod   <- mod <- lift_dl(train)(caret_args)
+    raw_f1    <- raw_mod$results$F1
+    raw_kappa <- raw_mod$results$Kappa
     
-    raw_err   <- raw_mod$prediction.error
-    key_feats <- importance(raw_mod)
+    key_feats <- importance_pvalues(raw_mod$finalModel)
+    
+    key_feats <- key_feats %>%
+      as_tibble(rownames = "gene") %>%
+      arrange(pvalue, desc(importance))
     
     # Feature selection
     # identify most important features, filter, re-train
     if (select_feats) {
-      key_feats <- importance_pvalues(raw_mod)
-      key_feats <- sort(key_feats[, "pvalue"])
-      
       max_p <- key_feats %>%
         head(min_feats) %>%
+        pull(pvalue) %>%
         max()
       
-      feat_p    <- max(max_p, feat_p)
-      key_feats <- names(key_feats[key_feats < feat_p])
-      n_feats   <- length(key_feats)
+      feat_p <- max(max_p, feat_p)
       
-      # Re-train model
-      args$mtry       <- min(args$mtry, n_feats)
-      args$data       <- rf_train[, c(data_clmn, key_feats)]
-      args$importance <- "none"
+      key_feats <- key_feats %>%
+        filter(pvalue < feat_p)
       
-      set.seed(42)
+      n_feats <- nrow(key_feats)
       
-      mod <- lift_dl(train_fn)(args)
+      if (feat_p > 0.05) {
+        cli_warn(
+          "Due to the low number of significant features,
+           a p-value cutoff of {round(feat_p, 2)} was used for feature
+           selection"
+        )
+      }
+      
+      grid_params$mtry    <- min(grid_params$mtry, n_feats)
+      caret_args$tuneGrid <- grid_params
+      caret_args$x        <- predictors[, key_feats$gene]
     }
     
-    err <- mod$prediction.error
+    # Re-train model
+    # calculate performance metrics using 10-fold cross validation
+    # use filtered features and do not calculate impurity corrected importance
+    # impurity corrected importance results in a worse model for prediction
+    caret_args$importance <- "none"
     
-    # Compare fraction predicted groups for each mouse with ground truth
+    set.seed(train_seed)
+    
+    mod <- lift_dl(train)(caret_args)
+    
+    # Compare fraction predicted groups for additional data
+    # this is useful if expecting the proportion of predicted groups to be
+    # consistent between different datasets
+    res <- mod$results
+    
     if (!is.null(df_list)) {
       frac_clmn <- str_c("frac_", frac_grp)
       
       frac_stats <- df_list %>%
         imap_dfr(~ {
-          mod %>%
+          mod$finalModel %>%
             rf_predict(
               .x,
               data_clmn    = data_clmn,
-              return_stats = FALSE,
-              prob         = args$probability
+              return_stats = FALSE
             ) %>%
             mutate(sample = .y)
         }) %>%
         group_by(sample) %>%
         summarize(
           !!sym(frac_clmn) := sum(pred == frac_grp) / n(),
-          .groups   = "drop"
+          .groups = "drop"
         ) %>%
-        summarize(across(all_of(frac_clmn), list(mean = mean, sd = sd)))
+        summarize(across(all_of(frac_clmn), list(mean = mean, sd = sd))) %>%
+        mutate(
+          frac_actual_high = sum(rf_dat[[data_clmn]] == frac_grp) / nrow(rf_dat)
+        )
+      
+      res <- bind_cols(res, frac_stats)
     }
     
-    # Test model
-    prds <- mod %>%
-      rf_predict(
-        dat          = rf_test,
-        data_clmn    = data_clmn,
-        return_stats = TRUE,
-        prob         = args$probability
-      )
-
     # Format output table
     res <- tibble(
+      n_cells   = nrow(rf_dat),
       n_train   = nrow(rf_train),
-      n_test    = nrow(rf_test),
-      ...,
-      n_feats = length(key_feats),
-      oob_raw = raw_err,
-      oob     = err
+      !!!args[!names(args) %in% grid_vars],
+      n_feats   = nrow(key_feats),
+      raw_Kappa = raw_kappa,
+      raw_F1    = raw_f1
     ) %>%
-      bind_cols(prds)
-    
-    if (!is.null(df_list)) {
-      res <- res %>%
-        bind_cols(frac_stats)
-    }
+      bind_cols(res)
     
     if (include_objects) {
       res <- res %>%
@@ -325,7 +348,7 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
         )
     }
     
-    cli::cli_alert_info("Training: {args$n} / {n_params}")
+    cli_alert_info("Training: {args$param_id} / {n_params}")
     
     res
   })
@@ -333,7 +356,7 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
   if (nrow(res) == 0) return(NULL)  # If mtry is too high
   
   res <- res %>%
-    arrange(desc(F1))
+    arrange(desc(Kappa))
   
   res
 }
@@ -345,18 +368,22 @@ create_gn_plots <- function(so_in, ag_high_gns = NULL, ag_low_gns = NULL,
                             sort = TRUE) {
   
   # Set gene lists
+  ag_high_gns <- head(ag_high_gns, n_gns)
+  ag_low_gns  <- head(ag_low_gns, n_gns)
+  
   gns <- c(ag_high_gns, ag_low_gns)
   
-  if (is.null(gns)) stop("Must provide Ag-high or -low genes")
+  if (any(duplicated(gns))) cli_abort("Provided genes cannot be duplicated")
+  if (is.null(gns))         cli_abort("Must provide Ag-high or -low genes")
   
-  alt_high <- alt_low <- p_alt
-  alt_high <- alt_high %||% "greater"
-  alt_low  <- alt_low  %||% "less"
-  
-  alt_key <- set_names(
-    c(rep(alt_high, length(ag_high_gns)), rep(alt_low, length(ag_low_gns))),
-    gns
-  )
+  # alt_high <- alt_low <- p_alt
+  # alt_high <- alt_high %||% "greater"
+  # alt_low  <- alt_low  %||% "less"
+  # 
+  # alt_key <- set_names(
+  #   c(rep(alt_high, length(ag_high_gns)), rep(alt_low, length(ag_low_gns))),
+  #   gns
+  # )
   
   # Format data
   n_mice <- n_distinct(so_in$mouse)
@@ -371,13 +398,13 @@ create_gn_plots <- function(so_in, ag_high_gns = NULL, ag_low_gns = NULL,
       tm        = str_c("day ", tm),
       x         = str_c(!!sym(x), "-", tm),
       !!sym(x) := fct_relevel(!!sym(x), x_lvls),
-      p_alt     = alt_key[name]                            # order boxes for
+      # p_alt     = alt_key[name]                            # order boxes for
     ) %>%                                                  # each timepoint
     arrange(!!sym(x)) %>%
     mutate(x = fct_inorder(x))
   
   plt_dat <- gn_dat %>%
-    group_by(name, mouse, tm, subtype, !!sym(x), x, p_alt) %>%
+    group_by(name, mouse, tm, subtype, !!sym(x), x) %>%
     summarize(
       n   = n_distinct(.cell_id),
       med = median(value),
@@ -387,68 +414,73 @@ create_gn_plots <- function(so_in, ag_high_gns = NULL, ag_low_gns = NULL,
     ) %>%
     group_by(name, mouse, tm, subtype) %>%
     
-    filter(sum(med) > 0) %>%  # remove genes where median is 0 for all
+    # filter(sum(med) > 0) %>%  # remove genes where median is 0 for all
     mutate(cor = cor(as.numeric(!!sym(x)), med)) %>%
     
     group_by(name) %>%
     filter(n_distinct(mouse) == n_mice) %>%
-    ungroup()
-  
-  # Calculate p-values
-  # adjust p-values based on number of plotted genes
-  clmn2 <- x_lvls[2]
-  clmn3 <- x_lvls[3]
-  
-  p_clmns <- c(clmn2, clmn3)
-  
-  p_dat <- gn_dat %>%
-    group_by(mouse, tm, subtype, !!sym(x), x, name, p_alt) %>%
-    mutate(y = quantile(value, 0.75)) %>%
-    group_by(mouse, tm, subtype, name, p_alt) %>%
-    summarize(
-      y = max(y),
-      n = n(),
-      
-      !!sym(clmn2) := p_test(
-        value[!!sym(x) == clmn2], value[!!sym(x) == "Ag-low"],
-        alternative = unique(p_alt)
-      )$p.value,
-      !!sym(clmn3) := p_test(
-        value[!!sym(x) == clmn3], value[!!sym(x) == "Ag-low"],
-        alternative = unique(p_alt)
-      )$p.value,
-      .groups = "drop"
-    ) %>%
-    group_by(name) %>%
-    mutate(y = max(y)) %>%
-    
-    group_by(mouse, tm, subtype) %>%
-    mutate(across(all_of(p_clmns), ~ p.adjust(.x, method = "bonferroni"))) %>%
     ungroup() %>%
     
-    pivot_longer(all_of(p_clmns), names_to = x, values_to = "p") %>%
-    mutate(
-      top = name %in% top_gns,
-      x   = str_c(!!sym(x), "-", tm)
-    )
+    mutate(gene_type = case_when(
+      name %in% ag_high_gns ~ "Ag-high",
+      name %in% ag_low_gns  ~ "Ag-low"
+    ))
   
-  # Rank genes by number of significant p-values
-  gns <- p_dat %>%
-    group_by(name, top, p_alt) %>%
-    summarize(n = sum(p < 0.05), .groups = "drop") %>%
-    filter(name %in% plt_dat$name) %>%
-    mutate(p_alt = fct_relevel(p_alt, unique(alt_key))) %>%
-    arrange(p_alt, desc(top), desc(n)) %>%
-    group_by(p_alt) %>%
-    dplyr::slice(1:n_gns) %>%
-    
-    arrange(p_alt, desc(n)) %>%
-    
-    pull(name) %>%
-    as.character()
+  # # Calculate p-values
+  # # adjust p-values based on number of plotted genes
+  # clmn2 <- x_lvls[2]
+  # clmn3 <- x_lvls[3]
+  # 
+  # p_clmns <- c(clmn2, clmn3)
+  # 
+  # p_dat <- gn_dat %>%
+  #   group_by(mouse, tm, subtype, !!sym(x), x, name, p_alt) %>%
+  #   mutate(y = quantile(value, 0.75)) %>%
+  #   group_by(mouse, tm, subtype, name, p_alt) %>%
+  #   summarize(
+  #     y = max(y),
+  #     n = n(),
+  #     
+  #     !!sym(clmn2) := p_test(
+  #       value[!!sym(x) == clmn2], value[!!sym(x) == "Ag-low"],
+  #       alternative = unique(p_alt)
+  #     )$p.value,
+  #     !!sym(clmn3) := p_test(
+  #       value[!!sym(x) == clmn3], value[!!sym(x) == "Ag-low"],
+  #       alternative = unique(p_alt)
+  #     )$p.value,
+  #     .groups = "drop"
+  #   ) %>%
+  #   group_by(name) %>%
+  #   mutate(y = max(y)) %>%
+  #   
+  #   group_by(mouse, tm, subtype) %>%
+  #   mutate(across(all_of(p_clmns), ~ p.adjust(.x, method = "bonferroni"))) %>%
+  #   ungroup() %>%
+  #   
+  #   pivot_longer(all_of(p_clmns), names_to = x, values_to = "p") %>%
+  #   mutate(
+  #     top = name %in% top_gns,
+  #     x   = str_c(!!sym(x), "-", tm)
+  #   )
+  
+  # # Rank genes by number of significant p-values
+  # gns <- p_dat %>%
+  #   group_by(name, top, p_alt) %>%
+  #   summarize(n = sum(p < 0.05), .groups = "drop") %>%
+  #   filter(name %in% plt_dat$name) %>%
+  #   mutate(p_alt = fct_relevel(p_alt, unique(alt_key))) %>%
+  #   arrange(p_alt, desc(top), desc(n)) %>%
+  #   group_by(p_alt) %>%
+  #   dplyr::slice(1:n_gns) %>%
+  #   
+  #   arrange(p_alt, desc(n)) %>%
+  #   
+  #   pull(name) %>%
+  #   as.character()
   
   # Create plots
-  names(plt_clrs) <- str_c("day ", names(plt_clrs))
+  # names(plt_clrs) <- str_c("day ", names(plt_clrs))
   
   x_lab <- plt_dat %>%
     mutate(xlab = str_c(!!sym(x), " (n = ", scales::label_comma()(n), ")")) %>%
@@ -456,46 +488,73 @@ create_gn_plots <- function(so_in, ag_high_gns = NULL, ag_low_gns = NULL,
   
   x_lab <- set_names(x_lab$xlab, x_lab$x)
   
-  res <- plt_dat %>%
+  plt_dat <- plt_dat %>%
     filter(name %in% gns) %>%
     mutate(name = fct_relevel(name, gns)) %>%
-    ggplot(aes(x, med, color = tm)) +
-    geom_segment(
-      aes(x = x, xend = x, y = q1, yend = q3),
-      linewidth = pt_size, color = ln_col
-    ) +
-    geom_point(aes(size = !!sym(x)))
+    split(.$gene_type)
+    
+  res <- plt_dat %>%
+    imap(~ {
+      .x <- .x %>%
+        ggplot(aes(x, med, color = pred_grp)) +
+        geom_segment(
+          aes(x = x, xend = x, y = q1, yend = q3),
+          linewidth = pt_size, color = ln_col
+        ) +
+        geom_point(aes(size = !!sym(x)))
+      
+      if (draw_line) {
+        .x <- .x +
+          geom_smooth(
+            aes(x = as.numeric(as.factor(!!sym(x)))),
+            method = "lm", linewidth = 0.25, linetype = 2,
+            se = FALSE, formula = y ~ x
+          )
+      }
+      
+      .x <- .x +
+        # geom_point(
+        #   aes(y = y),
+        #   data = filter(p_dat, name %in% gns, p < 0.05),
+        #   position = position_nudge(y = 0.2),
+        #   color = "black", shape = 6, stroke = 1, size = pt_size
+        # ) +
+        facet_grid(name ~ tm, scales = "free", switch = "y") +
+        scale_size_manual(values = c(pt_size, pt_size * 1.25, pt_size * 1.25)) +
+        scale_color_manual(values = plt_clrs) +
+        scale_y_continuous(breaks = ~ c(ceiling(min(.x)), floor(max(.x)))) +
+        scale_x_discrete(labels = x_lab) +
+        base_theme +
+        theme(
+          aspect.ratio    = 1,
+          legend.position = "none",
+          panel.border    = element_rect(color = "grey75"),
+          strip.placement = "outside",
+          axis.title      = element_blank(),
+          axis.text.x     = element_text(angle = 45, hjust = 1)
+        )
+      
+      if (.y == dplyr::first(names(plt_dat))) {
+        .x <- .x +
+          theme(
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()
+          )
+        
+      } else {
+        .x <- .x +
+          theme(strip.text.x = element_blank())
+      }
+      
+      .x
+    })
   
-  if (draw_line) {
-    res <- res +
-      geom_smooth(
-        aes(x = as.numeric(as.factor(!!sym(x)))),
-        method = "lm", linewidth = 0.25, linetype = 2,
-        se = FALSE, formula = y ~ x
-      )
-  }
-  
-  res <- res +
-    geom_point(
-      aes(y = y),
-      data = filter(p_dat, name %in% gns, p < 0.05),
-      position = position_nudge(y = 0.2),
-      color = "black", shape = 6, stroke = 1, size = pt_size
-    ) +
-    facet_grid(name ~ tm, scales = "free", switch = "y") +
-    scale_size_manual(values = c(pt_size, pt_size * 1.25, pt_size * 1.25)) +
-    scale_color_manual(values = plt_clrs) +
-    scale_y_continuous(breaks = ~ c(ceiling(min(.x)), floor(max(.x)))) +
-    scale_x_discrete(labels = x_lab) +
-    base_theme +
-    theme(
-      aspect.ratio    = 1,
-      legend.position = "none",
-      panel.border    = element_rect(color = "grey75"),
-      strip.placement = "outside",
-      axis.title      = element_blank(),
-      axis.text.x     = element_text(angle = 45, hjust = 1)
-    )
+  res <- plot_grid(
+    plotlist = res,
+    ncol  = 1,
+    align = "v",
+    axis  = "rl"
+  )
   
   res
 }
@@ -1547,9 +1606,11 @@ rf_stats <- rf_typs %>%
     param_lst <- list(
       mtry          = seq(1, max_mtry, floor(max_mtry / 15)),
       min.node.size = seq(1, 10, 2),
+      splitrule     = "gini",
       num.trees     = seq(50, 1200, 100),
-      low           = seq(1, 5, 1),
-      high          = seq(1, 5, 1)
+      low           = c(seq(1, 5, 1), NA),  # include NAs so original class
+      high          = c(seq(1, 5, 1), NA),  # distributions are also tested
+      num.threads = 14
     )
     
     # Train model
@@ -1558,26 +1619,24 @@ rf_stats <- rf_typs %>%
         data_clmn       = rf_dat_clmn,
         param_lst       = param_lst,
         df_list         = all_dat[names(all_dat) != rf_mouse],
-        scale_data      = FALSE,
         include_objects = FALSE
       )
     
     if (is.null(res)) return(res)  # If mtry is too high
     
-    # Identify best models
-    target_frac <- sum(rf_dat[[rf_dat_clmn]] == "high") / nrow(rf_dat)
-    
-    res <- res %>%
-      arrange(desc(F1)) %>%
-      mutate(
-        subtype     = .x,
-        target_frac = target_frac,
-        rank        = row_number()
-      )
+    # # Identify best models
+    # res <- res %>%
+    #   arrange(desc(F1)) %>%
+    #   mutate(
+    #     subtype     = .x,
+    #     target_frac = target_frac,
+    #     rank        = row_number()
+    #   )
       
     res
   })
 
+# DOES THIS CODE ACTUALLY GET USED?? #
 # Train models based on best parameters
 # sort based on balanced accuracy and F1 score
 rf_mods <- rf_stats %>%
@@ -1644,6 +1703,197 @@ chikv_dat <- chikv_dat %>%
   rename_with(~ str_replace_all(.x, "-", "_")) %>%
   rename_with(~ str_c("x", .x), matches("^[0-9]"))
 ```
+
+```{r "assess model performance using CHIKV data", eval = run_rf}
+# Identify top models for each cell type
+# !! stats in rf_stats do not match stats produced during model training !!
+# !! a key difference is the number of test and training cells           !!
+# rf_stats <- read_tsv(here(params$mod_dir, "ag-high_stats.tsv.gz"))
+rf_mods <- rf_stats %>%
+  distinct(high / low, abs(target_frac - frac_high_mean), F1, `Balanced Accuracy`, .keep_all = TRUE) %>%
+  group_by(subtype) %>%
+  slice_max(`Balanced Accuracy`, n = 50, with_ties = FALSE) %>%
+  ungroup()
+
+# rf_mods <- rf_stats %>%
+#   distinct(high / low, F1, `Balanced Accuracy`, .keep_all = TRUE) %>%
+#   group_by(subtype) %>%
+#   slice_max(`Balanced Accuracy`, prop = 0.2) %>%
+#   slice_max(F1, n = 100, with_ties = FALSE) %>%
+#   ungroup()
+
+# Format CHIKV RF data
+chikv_rf_so <- chikv_so %>%
+  subset(treatment == "mock" & tm == "24hpi" & rep == 1)
+
+chikv_rf_dat <- chikv_dat[Cells(chikv_rf_so), ]
+
+### CLEAN THIS UP ###
+# Check model performance using some CHIKV data
+# assess fold change in module score for one mock CHIKV replicate
+# rf_stats <- rf_stats %>%
+rf_mods <- rf_mods %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    
+    # Train model
+    feats <- degs %>%
+      filter(subtype == args$subtype) %>%
+      pull(feature) %>%
+      unique()
+    
+    rf_dat <- lec_so %>%
+      subset(subtype == args$subtype & mouse == rf_mouse) %>%
+      FetchData(unique(c(rf_dat_clmn, feats)))
+    
+    stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
+    
+    mod <- rf_dat %>%
+      train_rf(
+        data_clmn       = rf_dat_clmn,
+        param_lst       = args[stats],
+        include_objects = TRUE
+      ) %>%
+      mutate(subtype = args$subtype)
+    
+    # Pull top features
+    mod_feats <- mod$feats[[1]] %>%
+      unlist(use.names = FALSE) %>%
+      str_replace_all("_", "-") %>%
+      str_remove("^x")
+    
+    mod_feats <- degs %>%
+      filter(feature %in% mod_feats) %>%
+      mutate(label_rank = case_when(
+        subtype == args$subtype & mouse == rf_mouse ~ 1,
+        subtype == args$subtype                     ~ 2,
+        mouse   == rf_mouse                         ~ 3,
+        TRUE                                        ~ 4
+      )) %>%
+      group_by(feature) %>%
+      filter(label_rank == min(label_rank)) %>%
+      ungroup() %>%
+      split(.$group) %>%
+      map(~ unique(pull(.x, feature)))
+    
+    # Predict using models for each LEC subset
+    chikv_dat <- chikv_dat %>%
+      filter(lec_type == mod$subtype) %>%
+      dplyr::select(-lec_type)
+    
+    chikv_preds <- mod$mod[[1]] %>%
+      rf_predict(
+        dat = chikv_dat,
+        return_stats = FALSE
+      ) %>%
+      dplyr::select(.cell_id, pred) %>%
+      column_to_rownames(".cell_id")
+    
+    chikv_rf_so <- chikv_rf_so %>%
+      subset(lec_type == mod$subtype) %>%
+      AddMetaData(chikv_preds)
+    
+    # Add module scores
+    clmn_nms <- names(mod_feats)
+    
+    clmn_nms <- set_names(
+      str_c(clmn_nms, seq_along(clmn_nms)),
+      names(mod_feats)
+    )
+    
+    chikv_rf_so <- chikv_rf_so %>%
+      AddModuleScore(
+        features = mod_feats,
+        name     = names(clmn_nms)
+      ) %>%
+      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
+    
+    # Calculate fold change for low and high groups
+    chikv_stats <- chikv_rf_so@meta.data %>%
+      mutate(
+        min_val = min(c(high, low)),
+        across(c(high, low), ~ ifelse(min_val < 0, .x + abs(min_val), .x)),  # correct negative values
+        
+        high_mod_p = wilcox.test(                                            # calculate p-values
+          high[pred == "high"], high[pred == "low"],
+          alternative = "greater"
+        )$p.value,
+        low_mod_p = wilcox.test(
+          low[pred == "high"], low[pred == "low"], 
+          alternative = "less"
+        )$p.value
+      ) %>%
+      group_by(pred, high_mod_p, low_mod_p) %>%                              # calculate median
+      summarize(across(c(high, low), median), .groups = "drop") %>%
+      summarize(                                                             # calculate fold change
+        across(ends_with("_mod_p"), unique),
+        high_mod_fc = high[pred == "high"] / high[pred == "low"],
+        low_mod_fc  = low[pred == "high"]  / low[pred == "low"]
+      )
+    
+    # Return stats
+    res <- mod %>%
+      bind_cols(chikv_stats)
+    
+    res
+  })
+
+# Select best model
+# train models based on best parameters
+# sort based on fold change in module score
+# rf_mods_best <- rf_mods %>%
+#   filter(high_mod_fc >= 1.2, low_mod_fc < 0.9) %>%
+#   arrange(desc(F1), desc(high_mod_fc), low_mod_fc) %>%
+#   group_by(subtype) %>%
+#   dplyr::slice(1) %>%
+#   ungroup()
+
+rf_mods_best <- rf_mods %>%
+  # filter(
+  #   high_mod_fc >= 1.2, low_mod_fc < 0.9,
+  #   high_mod_p < 0.05,  low_mod_p < 0.05
+  # ) %>%
+  arrange(desc(`Balanced Accuracy`), desc(high_mod_fc), low_mod_fc) %>%
+  group_by(subtype) %>%
+  dplyr::slice(1) %>%
+  ungroup()
+
+rf_mods_best <- old_mods %>%
+  split(.$subtype) %>%
+  imap_dfr(~ {
+    feats <- degs %>%
+      filter(subtype == .y) %>%
+      pull(feature) %>%
+      unique()
+
+    rf_dat <- lec_so %>%
+      subset(subtype == .y & mouse == rf_mouse) %>%
+      FetchData(unique(c(rf_dat_clmn, feats)))
+
+    .x %>%
+      pmap_dfr(~ {
+        args <- list(...)
+        stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
+    
+        rf_dat %>%
+          train_rf(
+            data_clmn       = rf_dat_clmn,
+            param_lst       = args[stats],
+            include_objects = TRUE
+          ) %>%
+          mutate(subtype = args$subtype)
+      })
+  })
+
+# Save filtered models
+rf_mods_best %>%
+  qsave(here(params$mod_dir, "ag-high_models.qs"))
+
+# Remove CHIKV objects
+rm(chikv_so, chikv_rf_so, chikv_rf_dat)
+```
+
+
 
 ```{r "OLD MODELS 58d69d9", eval = FALSE}
 ## CODE USED FOR 2023-11-01 MODELS ##
@@ -1801,181 +2051,6 @@ rf_mods <- rf_stats %>%
   ungroup()
 ```
 
-```{r "assess model performance using CHIKV data", eval = run_rf}
-# Identify top models for each cell type
-# !! stats in rf_stats do not match stats produced during model training !!
-# !! a key difference is the number of test and training cells           !!
-# rf_stats <- read_tsv(here(params$mod_dir, "ag-high_stats.tsv.gz"))
-rf_mods <- rf_stats %>%
-  distinct(high / low, abs(target_frac - frac_high_mean), F1, `Balanced Accuracy`, .keep_all = TRUE) %>%
-  group_by(subtype) %>%
-  slice_max(`Balanced Accuracy`, n = 50, with_ties = FALSE) %>%
-  ungroup()
-
-# Format CHIKV RF data
-chikv_rf_so <- chikv_so %>%
-  subset(treatment == "mock" & tm == "24hpi" & rep == 1)
-
-chikv_rf_dat <- chikv_dat[Cells(chikv_rf_so), ]
-
-### CLEAN THIS UP ###
-# Check model performance using some CHIKV data
-# assess fold change in module score for one mock CHIKV replicate
-# rf_stats <- rf_stats %>%
-rf_mods <- rf_mods %>%
-  pmap_dfr(~ {
-    args <- list(...)
-    
-    # Train model
-    feats <- degs %>%
-      filter(subtype == args$subtype) %>%
-      pull(feature) %>%
-      unique()
-    
-    rf_dat <- lec_so %>%
-      subset(subtype == args$subtype & mouse == rf_mouse) %>%
-      FetchData(unique(c(rf_dat_clmn, feats)))
-    
-    stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
-    
-    mod <- rf_dat %>%
-      train_rf(
-        data_clmn       = rf_dat_clmn,
-        param_lst       = args[stats],
-        include_objects = TRUE
-      ) %>%
-      mutate(subtype = args$subtype)
-    
-    # Pull top features
-    mod_feats <- mod$feats[[1]] %>%
-      unlist(use.names = FALSE) %>%
-      str_replace_all("_", "-") %>%
-      str_remove("^x")
-    
-    mod_feats <- degs %>%
-      filter(feature %in% mod_feats) %>%
-      mutate(label_rank = case_when(
-        subtype == args$subtype & mouse == rf_mouse ~ 1,
-        subtype == args$subtype                     ~ 2,
-        mouse   == rf_mouse                         ~ 3,
-        TRUE                                        ~ 4
-      )) %>%
-      group_by(feature) %>%
-      filter(label_rank == min(label_rank)) %>%
-      ungroup() %>%
-      split(.$group) %>%
-      map(~ unique(pull(.x, feature)))
-    
-    # Predict using models for each LEC subset
-    chikv_dat <- chikv_dat %>%
-      filter(lec_type == mod$subtype) %>%
-      dplyr::select(-lec_type)
-    
-    chikv_preds <- mod$mod[[1]] %>%
-      rf_predict(
-        dat = chikv_dat,
-        return_stats = FALSE
-      ) %>%
-      dplyr::select(.cell_id, pred) %>%
-      column_to_rownames(".cell_id")
-    
-    chikv_rf_so <- chikv_rf_so %>%
-      subset(lec_type == mod$subtype) %>%
-      AddMetaData(chikv_preds)
-    
-    # Add module scores
-    clmn_nms <- names(mod_feats)
-    
-    clmn_nms <- set_names(
-      str_c(clmn_nms, seq_along(clmn_nms)),
-      names(mod_feats)
-    )
-    
-    chikv_rf_so <- chikv_rf_so %>%
-      AddModuleScore(
-        features = mod_feats,
-        name     = names(clmn_nms)
-      ) %>%
-      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
-    
-    # Calculate fold change for low and high groups
-    chikv_stats <- chikv_rf_so@meta.data %>%
-      mutate(
-        min_val = min(c(high, low)),
-        across(c(high, low), ~ ifelse(min_val < 0, .x + abs(min_val), .x)),  # correct negative values
-        
-        high_mod_p = wilcox.test(                                            # calculate p-values
-          high[pred == "high"], high[pred == "low"],
-          alternative = "greater"
-        )$p.value,
-        low_mod_p = wilcox.test(
-          low[pred == "high"], low[pred == "low"], 
-          alternative = "less"
-        )$p.value
-      ) %>%
-      group_by(pred, high_mod_p, low_mod_p) %>%                              # calculate median
-      summarize(across(c(high, low), median), .groups = "drop") %>%
-      summarize(                                                             # calculate fold change
-        across(ends_with("_mod_p"), unique),
-        high_mod_fc = high[pred == "high"] / high[pred == "low"],
-        low_mod_fc  = low[pred == "high"]  / low[pred == "low"]
-      )
-    
-    # Return stats
-    res <- mod %>%
-      bind_cols(chikv_stats)
-    
-    res
-  })
-
-# Select best model
-# train models based on best parameters
-# sort based on fold change in module score
-rf_mods_best <- rf_mods %>%
-  # filter(
-  #   high_mod_fc >= 1.2, low_mod_fc < 0.9,
-  #   high_mod_p < 0.05,  low_mod_p < 0.05
-  # ) %>%
-  arrange(desc(`Balanced Accuracy`), desc(high_mod_fc), low_mod_fc) %>%
-  group_by(subtype) %>%
-  dplyr::slice(1) %>%
-  ungroup()
-
-rf_mods_best <- rf_mods_best %>%
-  split(.$subtype) %>%
-  imap_dfr(~ {
-    feats <- degs %>%
-      filter(subtype == .y) %>%
-      pull(feature) %>%
-      unique()
-
-    rf_dat <- lec_so %>%
-      subset(subtype == .y & mouse == rf_mouse) %>%
-      FetchData(unique(c(rf_dat_clmn, feats)))
-
-    .x %>%
-      pmap_dfr(~ {
-        args <- list(...)
-        stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
-
-        rf_dat %>%
-          train_rf(
-            data_clmn       = rf_dat_clmn,
-            param_lst       = args[stats],
-            include_objects = TRUE
-          ) %>%
-          mutate(subtype = args$subtype)
-      })
-  })
-
-# Save filtered models
-rf_mods_best %>%
-  qsave(here(params$mod_dir, "ag-high_models.qs"))
-
-# Remove CHIKV objects
-rm(chikv_so, chikv_rf_so, chikv_rf_dat)
-```
-
 ```{r "RF MODEL STACKING", eval = FALSE}
 feats <- degs %>%
   pull(feature) %>%
@@ -1996,6 +2071,8 @@ en <- ensemble(
   BaseModels = rf_mods_best$mod
 )
 ```
+
+
 
 ```{r "RF features", eval = run_rf}
 # Pull best features
@@ -2153,6 +2230,47 @@ chikv_preds <- read_tsv(here(params$mod_dir, "ag-high_chikv_preds.tsv.gz")) %>%
 
 
 
+```{r "CROSS VALIDATION", eval = FALSE}
+library(caret)
+library(ranger)
+
+# Format data
+mod <- rf_mods %>%
+  filter(subtype == "cLEC")
+
+feats <- purrr::reduce(rf_feats$cLEC, c)
+
+dat <- lec_so %>%
+  subset(cells = mod$training_bcs[[1]])
+
+predictors <- dat %>%
+  FetchData(feats)
+
+outcome <- factor(dat$Ag_class, c("high", "low"))
+
+mod_params <- list(
+  mtry          = seq(1, length(feats), floor(length(feats) / 15)),
+  min.node.size = seq(1, 10, 2),
+  splitrule     = c("gini", "extratrees")
+) %>%
+  expand.grid()
+  
+# Train model
+control <- trainControl(method = "cv", number = 10)  # 10-fold cross-validation
+
+set.seed(42)
+
+model <- train(
+  predictors, outcome,
+  method        = "ranger",
+  trControl     = control,
+  tuneGrid      = mod_params,
+  num.trees     = mod$num.trees
+  # mtry          = mod$mtry,
+  # min.node.size = mod$min.node.size,
+  # num.trees     = mod$num.tress
+)
+```
 
 ```{r "AG CLASS 2", eval = FALSE}
 # Try splitting into Ag-low/high separately for each cell type
