@@ -78,7 +78,6 @@ rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
 #' rows
 #' @param data_clmn column in df_in containing response variable
 #' @param param_lst list of RF parameters to expand and test
-#' @param train_fn Function to use for training model
 #' @param feat_p p-value cutoff for selecting best features
 #' @param min_feats minimum number of features to allow after feature selection
 #' @param min_cells minimum number of cells required for each group in data_clmn
@@ -88,18 +87,15 @@ rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
 #' @param df_list list of data.frames containing data for each mouse to use for
 #' comparing the fraction of predicted Ag-high cells. Want a model where the
 #' fraction of predicted Ag-high cells is roughly the same for all samples.
-#' @param frac_grp group in data_clmn that should be used for calculating and
-#' comparing fractions using data in df_list
-#' @param degs data.frame of DEGs, used to determine which DEGs are markers
-#' for each group
+#' @param pos_grp group in data_clmn to consider as a 'positive' case
 #' @param include_objects in output tibble include ranger object, top features,
 #' and cell barcodes for training data
 #' @param ... additional parameters to pass to ranger::ranger()
-train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
+train_rf <- function(df_in, data_clmn, param_lst,
                      feat_p = 0.05, min_feats = 20, min_cells = 30,
                      select_feats = TRUE, training_split = 1,
-                     df_list = NULL, frac_grp = "high",
-                     degs = NULL, include_objects = FALSE, ...) {
+                     df_list = NULL, pos_grp = "high",
+                     include_objects = FALSE, ...) {
   
   # Format input data
   rf_dat <- df_in %>%
@@ -217,7 +213,7 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
     calc_training_stats <- function(data, lev = NULL, model = NULL) {
       res <- confusionMatrix(
         data$pred, data$obs,
-        positive = lev[1]
+        positive = pos_grp
       )
       
       c(res$overall, res$byClass)
@@ -235,21 +231,21 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
     
     outcome <- rf_train[[data_clmn]]
     
-    caret_args$x           <- predictors
-    caret_args$y           <- outcome
-    caret_args$method      <- "ranger"
-    caret_args$trControl   <- caret_control
-    caret_args$tuneGrid    <- grid_params
-    caret_args$importance  <- caret_args$importance %||% "impurity_corrected"
-    caret_args$seed        <- train_seed
-    caret_args$num.threads <- caret_args$num.threads %||% 12
-    caret_args$verbose     <- caret_args$verbose %||% FALSE
+    caret_args$x          <- predictors
+    caret_args$y          <- outcome
+    caret_args$method     <- "ranger"
+    caret_args$trControl  <- caret_control
+    caret_args$tuneGrid   <- grid_params
+    caret_args$importance <- caret_args$importance %||% "impurity_corrected"
+    caret_args$seed       <- train_seed
+    caret_args$verbose    <- caret_args$verbose %||% FALSE
 
     # Train initial model
     # pull out key features based on p-value
     set.seed(train_seed)
     
-    raw_mod   <- mod <- lift_dl(train)(caret_args)
+    raw_mod <- mod <- lift_dl(train)(caret_args)
+    
     raw_f1    <- raw_mod$results$F1
     raw_kappa <- raw_mod$results$Kappa
     
@@ -303,7 +299,7 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
     res <- mod$results
     
     if (!is.null(df_list)) {
-      frac_clmn <- str_c("frac_", frac_grp)
+      frac_clmn <- str_c("frac_", pos_grp)
       
       frac_stats <- df_list %>%
         imap_dfr(~ {
@@ -317,12 +313,12 @@ train_rf <- function(df_in, data_clmn, param_lst, train_fn = ranger,
         }) %>%
         group_by(sample) %>%
         summarize(
-          !!sym(frac_clmn) := sum(pred == frac_grp) / n(),
+          !!sym(frac_clmn) := sum(pred == pos_grp) / n(),
           .groups = "drop"
         ) %>%
         summarize(across(all_of(frac_clmn), list(mean = mean, sd = sd))) %>%
         mutate(
-          frac_actual_high = sum(rf_dat[[data_clmn]] == frac_grp) / nrow(rf_dat)
+          frac_actual_high = sum(rf_dat[[data_clmn]] == pos_grp) / nrow(rf_dat)
         )
       
       res <- bind_cols(res, frac_stats)
@@ -1602,15 +1598,16 @@ rf_stats <- rf_typs %>%
     
     # Set RF params to test every combination
     max_mtry <- min(length(feats), 1000)
+    mid_mtry <- min(300, max_mtry)
+    rep_mtry <- floor(sqrt(max_mtry))
     
     param_lst <- list(
-      mtry          = seq(1, max_mtry, floor(max_mtry / 15)),
-      min.node.size = seq(1, 10, 2),
-      splitrule     = "gini",
-      num.trees     = seq(50, 1200, 100),
-      low           = c(seq(1, 5, 1), NA),  # include NAs so original class
-      high          = c(seq(1, 5, 1), NA),  # distributions are also tested
-      num.threads = 14
+      mtry          = c(seq(1, mid_mtry, rep_mtry), seq(mid_mtry, max_mtry, 100)),
+      min.node.size = c(1:5, 6, 8, 10),
+      splitrule     = c("gini", "hellinger"),
+      num.trees     = seq(1, 1200, 200),
+      low           = 1:5,           # include NAs so original class
+      high          = c(5, NA)      # distributions are also tested
     )
     
     # Train model
@@ -1624,14 +1621,12 @@ rf_stats <- rf_typs %>%
     
     if (is.null(res)) return(res)  # If mtry is too high
     
-    # # Identify best models
-    # res <- res %>%
-    #   arrange(desc(F1)) %>%
-    #   mutate(
-    #     subtype     = .x,
-    #     target_frac = target_frac,
-    #     rank        = row_number()
-    #   )
+    res <- res %>%
+      arrange(desc(Kappa)) %>%
+      mutate(
+        subtype = .x,
+        rank    = row_number()
+      )
       
     res
   })

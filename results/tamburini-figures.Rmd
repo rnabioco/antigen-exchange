@@ -258,7 +258,11 @@ lec_so <- lec_so %>%
     ),
     rf_pred       = str_c("Ag-", rf_pred),
     mouse         = fct_relevel(mouse, mice),
-    training_data = subtype %in% rf_mods$subtype & is.na(rf_pred)
+    
+    # Label data used for training models
+    # d2 mouse was excluded
+    training_data = subtype %in% rf_mods$subtype & is.na(rf_pred),
+    training_data = ifelse(tm == 2, FALSE, training_data)
   )
 
 # Add module scores
@@ -1136,12 +1140,32 @@ mod_u <- u_args %>%
         ag_class_clmn = "Ag_class_ml",
         module_clmn   = str_c(.x, "_high"),
         module_title  = str_c(.x, " Ag-high module"),
+        equal_scales  = FALSE,
         pt_size       = .y
       )
   })
 ```
 
 ```{r "RF top features examples", fig.height = 8, fig.width = 8}
+# Calculate p-values WIP
+rf_feats %>%
+  imap_dfr(~ {
+    typ <- .y
+    
+    .x %>%
+      map_dfr(~ {
+        browser()
+        
+        dat <- lec_so %>%
+          subset(subtype == typ) %>%
+          subset(tm %in% rf_tms) %>%
+          subset(training_data == FALSE) %>%  # WHY CAN'T SUBSET HANDLE `!` ??
+          FetchData(c("pred_grp", "tm", .x)) %>%
+          as_tibble(rownames = "cell_id") %>%
+          pivot_longer(all_of(.x))
+      })
+  })
+
 # Identify genes shared between multiple cell types
 typ <- "cLEC"
 
@@ -1173,7 +1197,7 @@ gene_examples <- lec_so %>%
   create_gn_plots(
     ag_high_gns = shared_feats$high,
     ag_low_gns  = shared_feats$low,
-    plt_clrs    = tm_clrs,
+    plt_clrs    = pred_clrs,
     x_lvls      = names(pred_clrs),
     n_gns       = 4,
     
@@ -2746,13 +2770,11 @@ dat <- lec_so %>%
     pred_grp = fct_relevel(pred_grp, names(pred_clrs)),
     subtype  = fct_relevel(subtype, rf_typs)
   ) %>%
-  filter(
-    subtype %in% rf_typs,
-    !training_data
-  )
+  filter(!training_data)
   
 # Plot Pdpn for Ag-class
 dat %>%
+  filter(subtype %in% rf_typs, mouse != "d2") %>%
   ggplot(aes(subtype, Pdpn, fill = pred_grp)) +
   geom_boxplot(outlier.size = 0.5) +
   scale_fill_manual(values = pred_clrs) +
@@ -2770,10 +2792,16 @@ ggsave(
 
 # Plot Pdpn for LEC subsets
 dat %>%
-  ggplot(aes(subtype, Pdpn, fill = subtype)) +
-  geom_boxplot(outlier.size = 0.5) +
-  scale_fill_manual(values = lec_clrs) +
-  facet_wrap(~ mouse) +
+  plot_violin(
+    "Pdpn",
+    "subtype",
+    "mouse",
+    method = "boxplot",
+    plot_colors = lec_clrs,
+    color = "black",
+    alpha = 1,
+    outlier.size = 0.5
+  ) +  
   base_theme +
   theme(
     aspect.ratio = 0.6,
@@ -2787,10 +2815,16 @@ ggsave(
 
 # Plot Ag-score for LEC subsets
 dat %>%
-  ggplot(aes(subtype, Ag_score, fill = subtype)) +
-  geom_boxplot(outlier.size = 0.5) +
-  scale_fill_manual(values = lec_clrs) +
-  facet_wrap(~ mouse) +
+  plot_violin(
+    "Ag_score",
+    "subtype",
+    "mouse",
+    method = "boxplot",
+    plot_colors = lec_clrs,
+    color = "black",
+    alpha = 1,
+    outlier.size = 0.5
+  ) +  
   base_theme +
   theme(
     aspect.ratio = 0.6,
@@ -2802,16 +2836,22 @@ ggsave(
   dpi = 300
 )
 
+# Scatter plot comparing Pdpn expression and Ag-score
+dat %>%
+  filter(Pdpn > 0, Ag_score > 0) %>%
+  ggplot(aes(Ag_score, Pdpn, color = subtype)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "black", linetype = 2) +
+  scale_color_manual(values = lec_clrs) +
+  base_theme +
+  theme(
+    aspect.ratio = 1
+  )
 
-
-# dat %>%
-#   ggplot(aes(Ag_score, Pdpn, color = subtype)) + 
-#   geom_point() +
-#   scale_color_manual(values = lec_clrs) +
-#   base_theme +
-#   theme(
-#     aspect.ratio = 1
-#   )
+ggsave(
+  here("results/Pdpn_Ag-score_scatter.png"),
+  dpi = 300
+)
 ```
 
 ```{r "RF TEST 1", eval = FALSE}

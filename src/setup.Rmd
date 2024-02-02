@@ -55,6 +55,7 @@ library(org.Mm.eg.db)
 library(GOSemSim)
 library(biomaRt)
 library(ggtree)
+library(cli)
 
 source(here(params$template_dir, "funs.R"))
 
@@ -395,7 +396,10 @@ create_rf_module_umaps <- function(df_in, typ, module_clmn, module_title,
           scale_limits = scale_limits
         ) +
         facet_wrap(facet_frm, labeller = lab_fn) +
-        theme(legend.position = "bottom")
+        theme(
+          legend.position = "bottom",
+          legend.text     = element_text(size = 10)
+        )
       
       if (show_scale_title) {
         u <- u +
@@ -426,7 +430,7 @@ create_rf_module_umaps <- function(df_in, typ, module_clmn, module_title,
         title = module_title,
         theme = theme(
           plot.title = element_text(hjust = 0.5, size = 18)
-        ) 
+        )
       )
   }
   
@@ -1250,7 +1254,7 @@ sobjs %>%
   map_dfr(~ {
     .x@meta.data %>%
       as_tibble(rownames = "cell_id") %>%
-      group_by(directory, exp, sample, tm, mouse, vaccination, cell_sort) %>%
+      group_by(directory, exp, sample, tm, mouse, vaccination, cell_sort, qc_class) %>%
       mutate(across(all_of(stat_clmns), median, .names = "med_{.col}")) %>%
       group_by(qc_class, !!!syms(str_c("med_", stat_clmns)), .add = TRUE) %>%
       summarize(n = n(), .groups = "drop")
@@ -1258,7 +1262,7 @@ sobjs %>%
   left_join(sam_stats, by = "directory") %>%
   write_tsv(here(params$so_dir, "sample_stats.tsv"))
 
-# Save raw objects
+# Save filtered objects
 sobjs <- sobjs %>%
   map(subset, qc_class == "pass")
 
