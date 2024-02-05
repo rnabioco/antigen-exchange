@@ -21,6 +21,9 @@ rf_cell_type <- "cLEC"
 rf_mouse     <- "d14"
 rf_typs      <- c("cLEC", "fLEC", "Collecting")
 
+# Cell type column for CHIKV data
+chikv_type_clmn <- "lec_subtype"
+
 # Check for RF predictions
 run_rf <- !file.exists(here(params$mod_dir, "ag-high_preds.tsv.gz"))
 ```
@@ -704,18 +707,18 @@ create_heats <- function(so_in, gns, sort_gns = "up", lvls = names(pred_clrs),
   res
 }
 
-create_chikv_heats <- function(so_in, gns, sort_gns = "up",
+create_chikv_heats <- function(so_in, gns, sort_gns = "up", type_clmn = chikv_type_clmn,
                                lvls = names(pred_clrs), n_gns = 100,
                                plt_clrs = c("lightblue", "white", "#6A51A3")) {
   
   # Format data
   heat_dat <- so_in %>%
-    FetchData(c("treatment", "orig.ident", "rep", "lec_type", "pred", gns)) %>%
+    FetchData(c("treatment", "orig.ident", "rep", type_clmn, "pred", gns)) %>%
     as_tibble(rownames = ".cell_id") %>%
     pivot_longer(any_of(gns)) %>%
     mutate(name = fct_relevel(name, gns)) %>%
     
-    group_by(name, treatment, orig.ident, rep, lec_type) %>%
+    group_by(name, treatment, orig.ident, rep, !!sym(type_clmn)) %>%
     summarize(value = mean(value), .groups = "drop") %>%
     mutate(
       treat_rep = str_c(treatment, "-", rep),
@@ -726,8 +729,8 @@ create_chikv_heats <- function(so_in, gns, sort_gns = "up",
   
   # Sort genes
   gn_lvls <- heat_dat %>%
-    filter(lec_type == "cLEC") %>%
-    group_by(treatment, name, lec_type) %>%
+    filter(!!sym(type_clmn) == "cLEC") %>%
+    group_by(treatment, name, !!sym(type_clmn)) %>%
     summarize(value = mean(value), .groups = "drop") %>%
     pivot_wider(names_from = "treatment", values_from = value) %>%
     mutate(fc = CHIKV / mock) %>%
@@ -743,7 +746,7 @@ create_chikv_heats <- function(so_in, gns, sort_gns = "up",
   # Create heatmaps
   res <- heat_dat %>%
     filter(name %in% gn_lvls) %>%
-    group_by(name, lec_type) %>%
+    group_by(name, !!sym(type_clmn)) %>%
     mutate(
       value = as.numeric(scale(value)),
       name = fct_relevel(name, gn_lvls)
@@ -752,7 +755,7 @@ create_chikv_heats <- function(so_in, gns, sort_gns = "up",
     ggplot(aes(treat_rep, name, fill = value)) +
     geom_tile(color = "white") +
     scale_fill_gradientn(colours = plt_clrs) +
-    facet_grid(~ lec_type) +
+    facet_grid(as.formula(str_c("~", type_clmn))) +
     guides(fill = guide_colorbar(ticks = FALSE, barwidth = unit(10, "pt"))) +
     base_theme +
     theme(
@@ -767,11 +770,14 @@ create_chikv_heats <- function(so_in, gns, sort_gns = "up",
   res
 }
 
-create_chikv_boxes <- function(df_in, dat_col, ttl = NULL, clrs = pred_clrs, ...) {
+create_chikv_boxes <- function(df_in, dat_col, ttl = NULL,
+                               type_clmn = chikv_type_clmn, clrs = pred_clrs,
+                               ...) {
+  
   typ <- str_remove(dat_col, "_[a-zA-Z]+$")
   
   dat <- df_in %>%
-    filter(tm == "24hpi", lec_type == typ)
+    filter(tm == "24hpi", !!sym(type_clmn) == typ)
   
   if (nrow(dat) == 0) return(NULL)
   
@@ -781,7 +787,10 @@ create_chikv_boxes <- function(df_in, dat_col, ttl = NULL, clrs = pred_clrs, ...
       outlier.size = 0.1, fatten = 1,
       key_glyph = draw_key_point, alpha = 0.9, ...
     ) +
-    facet_wrap(~ lec_type, nrow = 1, scales = "free_y") +
+    facet_wrap(
+      as.formula(str_c("~", type_clmn)),
+      nrow = 1, scales = "free_y"
+    ) +
     guides(
       alpha = "none",
       fill = guide_legend(
@@ -1588,14 +1597,36 @@ rf_stats <- rf_typs %>%
     max_mtry <- min(length(feats), 1000)
     mid_mtry <- min(200, max_mtry)
     rep_mtry <- floor(sqrt(max_mtry))
-    
+
+    # # 2024-02-02    
+    # param_lst <- list(
+    #   mtry          = c(seq(1, mid_mtry, rep_mtry), seq(mid_mtry, max_mtry, 150)),
+    #   min.node.size = c(1:4, 10),
+    #   splitrule     = c("gini", "hellinger"),
+    #   num.trees     = c(100, 500, 900, 1200),
+    #   low           = 1:5,           # include NAs so original class
+    #   high          = c(5, NA),      # distributions are also tested
+    #   num.threads   = 8
+    # )
+    # # 2024-02-03
+    # # extratrees seems consistently better, original class weights seems consistently bad
+    # param_lst <- list(
+    #   mtry          = seq(1, 100, 15),
+    #   min.node.size = 1:5,
+    #   splitrule     = c("gini", "hellinger", "extratrees"),
+    #   num.trees     = c(800, 1000, 2000),
+    #   low           = 4:7,           # include NAs so original class
+    #   high          = c(5, NA),      # distributions are also tested
+    #   num.threads   = 8
+    # )
+    # 2024-02-04
     param_lst <- list(
-      mtry          = c(seq(1, mid_mtry, rep_mtry), seq(mid_mtry, max_mtry, 150)),
-      min.node.size = c(1:4, 10),
-      splitrule     = c("gini", "hellinger"),
-      num.trees     = c(100, 500, 900, 1200),
-      low           = 1:5,           # include NAs so original class
-      high          = c(5, NA),      # distributions are also tested
+      mtry          = seq(1, 150, 10),
+      min.node.size = 1:5,
+      splitrule     = "extratrees",
+      num.trees     = c(1000, 1200, 1500, 2000),
+      low           = 2:7,
+      high          = 5,
       num.threads   = 8
     )
     
@@ -1628,10 +1659,10 @@ rf_stats <- rf_typs %>%
 rf_mods <- rf_stats %>%
   group_by(subtype) %>%
   slice_max(Kappa, n = 50, with_ties = FALSE) %>%
-  ungroup() %>%
-  split(.$subtype)
+  ungroup()
 
 rf_mods <- rf_mods %>%
+  split(.$subtype) %>%
   imap_dfr(~ {
     feats <- degs %>%
       filter(subtype == .y) %>%
@@ -1676,7 +1707,7 @@ chikv_feats <- degs %>%
 
 chikv_clmns <- c(
   "orig.ident", "rep", "treatment", "tm",
-  "lec_subtype",
+  chikv_type_clmn,
   "UMAP_1", "UMAP_2"
 )
 
@@ -1751,8 +1782,8 @@ rf_mods <- rf_mods %>%
     
     # Predict using models for each LEC subset
     chikv_dat <- chikv_dat %>%
-      filter(lec_type == mod$subtype) %>%
-      dplyr::select(-lec_type)
+      filter(!!sym(chikv_type_clmn) == mod$subtype) %>%
+      dplyr::select(-all_of(chikv_type_clmn))
     
     chikv_preds <- mod$mod[[1]]$finalModel %>%
       rf_predict(
@@ -1763,7 +1794,7 @@ rf_mods <- rf_mods %>%
       column_to_rownames(".cell_id")
     
     chikv_rf_so <- chikv_rf_so %>%
-      subset(lec_type == mod$subtype) %>%
+      subset(!!sym(chikv_type_clmn) == mod$subtype) %>%
       AddMetaData(chikv_preds)
     
     # Add module scores
@@ -1937,7 +1968,7 @@ chikv_preds <- rf_mods_best %>%
     args <- list(...)
     
     dat <- chikv_dat %>%
-      filter(lec_subtype == args$subtype) %>%
+      filter(!!sym(chikv_type_clmn) == args$subtype) %>%
       dplyr::select(-all_of(chikv_clmns))
     
     args$mod$finalModel %>%
@@ -2206,4 +2237,24 @@ lec_so <- lec_so %>%
     clust_column = "Ag_class_2",
     method       = "km"
   )
+```
+
+```{r "RF PARAMS PLOTS", eval = FALSE}
+rf_stats <- read_tsv(here(params$mod_dir, "ag-high_models.tsv.gz"))
+
+rf_params <- c(
+  "mtry", "min.node.size", "splitrule",
+  "num.trees", "low"
+)
+
+rf_params %>%
+  map(~ {
+    rf_stats %>%
+      ggplot(aes(!!sym(.x), Kappa, color = subtype)) +
+      geom_point(size = 0.1, alpha = 0.1) +
+      facet_wrap(~ subtype) +
+      base_theme
+  }) %>%
+  plot_grid(plotlist = .)
+
 ```

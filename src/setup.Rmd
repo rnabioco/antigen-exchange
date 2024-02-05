@@ -299,7 +299,11 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
   # Create boxplots
   res <- dat %>%
     ggplot(aes(as.character(tm), value, fill = pred_grp)) +
-    geom_boxplot(outlier.size = 0.1, key_glyph = draw_key_point) +
+    geom_boxplot(
+      outlier.size = 0.1,
+      position     = position_dodge_2(preserve = "single"),
+      key_glyph    = draw_key_point
+    ) +
     
     geom_text(
       aes(y = Inf, fill = NULL, label = r_lab),
