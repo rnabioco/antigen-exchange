@@ -14,7 +14,7 @@ output:
 params:
   template_dir:  "src"                                                     # template Rmarkdowns
   so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
-  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-02-03" # ML models
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-02-04" # ML models
   chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
   ref_dir:       "ref"                                                     # clustifyr references
   sample_info:   "sample_info.xlsx"
@@ -255,8 +255,8 @@ lec_so <- lec_so %>%
       rf_pred == "high" & !rf_correct,
       "Ag-competent", str_c("Ag-", !!sym(rf_dat_clmn))
     ),
-    rf_pred       = str_c("Ag-", rf_pred),
-    mouse         = fct_relevel(mouse, mice),
+    rf_pred = str_c("Ag-", rf_pred),
+    mouse   = fct_relevel(mouse, mice),
     
     # Label data used for training models
     # d2 mouse was excluded

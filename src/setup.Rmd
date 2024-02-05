@@ -301,7 +301,7 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
     ggplot(aes(as.character(tm), value, fill = pred_grp)) +
     geom_boxplot(
       outlier.size = 0.1,
-      position     = position_dodge_2(preserve = "single"),
+      position     = position_dodge2(preserve = "single"),
       key_glyph    = draw_key_point
     ) +
     
