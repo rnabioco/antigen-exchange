@@ -134,6 +134,21 @@
       ],
       "Hash": "84347b6a8118ba2182b148298b118f0e"
     },
+    "BiocStyle": {
+      "Package": "BiocStyle",
+      "Version": "2.28.1",
+      "Source": "Repository",
+      "Requirements": [
+        "BiocManager",
+        "bookdown",
+        "knitr",
+        "rmarkdown",
+        "stats",
+        "utils",
+        "yaml"
+      ],
+      "Hash": "c1bc4c0cdef7dd5756ab9e8d5016b52e"
+    },
     "BiocVersion": {
       "Package": "BiocVersion",
       "Version": "3.17.1",
@@ -239,6 +254,42 @@
       ],
       "Hash": "ef6ff3e15ce624118e6cf8151e58e38c"
     },
+    "EBImage": {
+      "Package": "EBImage",
+      "Version": "4.42.0",
+      "Source": "Bioconductor",
+      "Requirements": [
+        "BiocGenerics",
+        "RCurl",
+        "abind",
+        "fftwtools",
+        "grDevices",
+        "graphics",
+        "htmltools",
+        "htmlwidgets",
+        "jpeg",
+        "locfit",
+        "methods",
+        "png",
+        "stats",
+        "tiff",
+        "utils"
+      ],
+      "Hash": "888695338cd98259630fdf03164b1531"
+    },
+    "EnvStats": {
+      "Package": "EnvStats",
+      "Version": "2.8.1",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "MASS",
+        "R",
+        "ggplot2",
+        "nortest"
+      ],
+      "Hash": "1b55a740dea99c9d226e75acc2c0a85e"
+    },
     "FNN": {
       "Package": "FNN",
       "Version": "1.1.3.2",
@@ -259,6 +310,31 @@
         "stats"
       ],
       "Hash": "7a29697b75e027767a53fde6c903eca7"
+    },
+    "GGally": {
+      "Package": "GGally",
+      "Version": "2.2.0",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "RColorBrewer",
+        "dplyr",
+        "ggplot2",
+        "ggstats",
+        "grDevices",
+        "grid",
+        "gtable",
+        "lifecycle",
+        "magrittr",
+        "plyr",
+        "progress",
+        "rlang",
+        "scales",
+        "tidyr",
+        "utils"
+      ],
+      "Hash": "5da89b9b10d98a7820adb426939900a7"
     },
     "GO.db": {
       "Package": "GO.db",
@@ -329,6 +405,69 @@
         "utils"
       ],
       "Hash": "c9471497a07953ded9b8889879c079e9"
+    },
+    "GeoMxWorkflows": {
+      "Package": "GeoMxWorkflows",
+      "Version": "1.6.0",
+      "Source": "Repository",
+      "Requirements": [
+        "Biobase",
+        "BiocGenerics",
+        "BiocStyle",
+        "EnvStats",
+        "GeomxTools",
+        "NanoStringNCTools",
+        "R",
+        "Rtsne",
+        "S4Vectors",
+        "cowplot",
+        "data.table",
+        "dplyr",
+        "ggforce",
+        "ggplot2",
+        "ggrepel",
+        "methods",
+        "outliers",
+        "pheatmap",
+        "readxl",
+        "reshape2",
+        "rjson",
+        "scales",
+        "stats",
+        "umap",
+        "utils"
+      ],
+      "Hash": "e22604aa4e5f45898f1dbeff444256a9"
+    },
+    "GeomxTools": {
+      "Package": "GeomxTools",
+      "Version": "3.4.0",
+      "Source": "Repository",
+      "Requirements": [
+        "Biobase",
+        "BiocGenerics",
+        "EnvStats",
+        "GGally",
+        "NanoStringNCTools",
+        "R",
+        "S4Vectors",
+        "SeuratObject",
+        "data.table",
+        "dplyr",
+        "ggplot2",
+        "grDevices",
+        "graphics",
+        "lmerTest",
+        "methods",
+        "readxl",
+        "reshape2",
+        "rjson",
+        "rlang",
+        "stats",
+        "stringr",
+        "utils"
+      ],
+      "Hash": "350c9382ff58d2a78b9f4b3d0cc7a7d0"
     },
     "GetoptLong": {
       "Package": "GetoptLong",
@@ -521,6 +660,30 @@
       ],
       "Hash": "40a55bd0b44719941d103291ac5e9d74"
     },
+    "NanoStringNCTools": {
+      "Package": "NanoStringNCTools",
+      "Version": "1.8.0",
+      "Source": "Repository",
+      "Requirements": [
+        "Biobase",
+        "BiocGenerics",
+        "Biostrings",
+        "IRanges",
+        "R",
+        "RColorBrewer",
+        "S4Vectors",
+        "ggbeeswarm",
+        "ggiraph",
+        "ggplot2",
+        "ggthemes",
+        "grDevices",
+        "methods",
+        "pheatmap",
+        "stats",
+        "utils"
+      ],
+      "Hash": "f35a1f74534bef773a7df99e13e1a046"
+    },
     "QuickJSR": {
       "Package": "QuickJSR",
       "Version": "1.0.7",
@@ -556,6 +719,19 @@
       "Source": "Repository",
       "Repository": "RSPM",
       "Hash": "d8a79c95f553670ceffbd190815bbfce"
+    },
+    "RBioFormats": {
+      "Package": "RBioFormats",
+      "Version": "1.0.0",
+      "Source": "Bioconductor",
+      "Requirements": [
+        "EBImage",
+        "S4Vectors",
+        "methods",
+        "rJava",
+        "stats"
+      ],
+      "Hash": "5d0c77b4912512e3c950877ade6fe32d"
     },
     "RColorBrewer": {
       "Package": "RColorBrewer",
@@ -611,6 +787,19 @@
         "plogr"
       ],
       "Hash": "207c90cd5438a1f596da2cd54c606fee"
+    },
+    "RSpectra": {
+      "Package": "RSpectra",
+      "Version": "0.16-1",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "Matrix",
+        "R",
+        "Rcpp",
+        "RcppEigen"
+      ],
+      "Hash": "6b5ab997fd5ff6d46a5f1d9f8b76961c"
     },
     "Rcpp": {
       "Package": "Rcpp",
@@ -850,6 +1039,38 @@
         "utils"
       ],
       "Hash": "47569baf7560bf8e3ba57386e9672f7f"
+    },
+    "SpatialOmicsOverlay": {
+      "Package": "SpatialOmicsOverlay",
+      "Version": "1.0.0",
+      "Source": "Bioconductor",
+      "Requirements": [
+        "Biobase",
+        "BiocFileCache",
+        "EBImage",
+        "GeomxTools",
+        "R",
+        "RBioFormats",
+        "S4Vectors",
+        "XML",
+        "base64enc",
+        "data.table",
+        "dplyr",
+        "ggplot2",
+        "ggtext",
+        "grDevices",
+        "magick",
+        "methods",
+        "pbapply",
+        "plotrix",
+        "readxl",
+        "scattermore",
+        "stats",
+        "stringr",
+        "tools",
+        "utils"
+      ],
+      "Hash": "84bb66c4bcc083508e658b498fd835e9"
     },
     "StanHeaders": {
       "Package": "StanHeaders",
@@ -1120,6 +1341,23 @@
       ],
       "Hash": "40415719b5a479b87949f3aa0aee737c"
     },
+    "bookdown": {
+      "Package": "bookdown",
+      "Version": "0.37",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "htmltools",
+        "jquerylib",
+        "knitr",
+        "rmarkdown",
+        "tinytex",
+        "xfun",
+        "yaml"
+      ],
+      "Hash": "b1b1c3be5c75309f6107726fa58ee20c"
+    },
     "boot": {
       "Package": "boot",
       "Version": "1.3-28.1",
@@ -1166,6 +1404,27 @@
         "tidyr"
       ],
       "Hash": "fd25391c3c4f6ecf0fa95f1e6d15378c"
+    },
+    "broom.helpers": {
+      "Package": "broom.helpers",
+      "Version": "1.14.0",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "broom",
+        "cli",
+        "dplyr",
+        "labelled",
+        "lifecycle",
+        "purrr",
+        "rlang",
+        "stats",
+        "stringr",
+        "tibble",
+        "tidyr"
+      ],
+      "Hash": "ea30eb5d9412a4a5c2740685f680cd49"
     },
     "bslib": {
       "Package": "bslib",
@@ -2001,6 +2260,16 @@
       ],
       "Hash": "8c406b7284bbaef08e01c6687367f195"
     },
+    "fftwtools": {
+      "Package": "fftwtools",
+      "Version": "0.9-11",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R"
+      ],
+      "Hash": "272f106d02a91c8319a39dfa0045916b"
+    },
     "fgsea": {
       "Package": "fgsea",
       "Version": "1.26.0",
@@ -2294,6 +2563,26 @@
       ],
       "Hash": "4657d320971a330ecffd0e1260f58214"
     },
+    "ggiraph": {
+      "Package": "ggiraph",
+      "Version": "0.8.7",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "Rcpp",
+        "ggplot2",
+        "grid",
+        "htmltools",
+        "htmlwidgets",
+        "purrr",
+        "rlang",
+        "stats",
+        "systemfonts",
+        "uuid",
+        "vctrs"
+      ],
+      "Hash": "cc4b14781abf296aab585c5c056d9685"
+    },
     "ggnewscale": {
       "Package": "ggnewscale",
       "Version": "0.4.9",
@@ -2406,6 +2695,29 @@
       ],
       "Hash": "c76ee8fe60939384b9726128e38caea0"
     },
+    "ggstats": {
+      "Package": "ggstats",
+      "Version": "0.5.1",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "broom.helpers",
+        "cli",
+        "dplyr",
+        "forcats",
+        "ggplot2",
+        "lifecycle",
+        "magrittr",
+        "patchwork",
+        "purrr",
+        "rlang",
+        "scales",
+        "stats",
+        "stringr",
+        "tidyr"
+      ],
+      "Hash": "006a64911e79a7dc7cbf839a57baaff4"
+    },
     "ggtext": {
       "Package": "ggtext",
       "Version": "0.1.2",
@@ -2420,6 +2732,25 @@
         "scales"
       ],
       "Hash": "c5ba8f5056487403a299b91984be86ca"
+    },
+    "ggthemes": {
+      "Package": "ggthemes",
+      "Version": "5.0.0",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "ggplot2",
+        "graphics",
+        "grid",
+        "lifecycle",
+        "methods",
+        "purrr",
+        "scales",
+        "stringr",
+        "tibble"
+      ],
+      "Hash": "1bc682f6919559275c36c241cb5274a1"
     },
     "ggtrace": {
       "Package": "ggtrace",
@@ -3094,6 +3425,23 @@
       ],
       "Hash": "b64ec208ac5bc1852b285f665d6368b3"
     },
+    "labelled": {
+      "Package": "labelled",
+      "Version": "2.12.0",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "dplyr",
+        "haven",
+        "lifecycle",
+        "rlang",
+        "stringr",
+        "tidyr",
+        "vctrs"
+      ],
+      "Hash": "1ec27c624ece6c20431e9249bd232797"
+    },
     "lambda.r": {
       "Package": "lambda.r",
       "Version": "1.2.4",
@@ -3197,6 +3545,48 @@
       ],
       "Hash": "4fbd3679ec8ee169ba28d4b1ea7d0e8f"
     },
+    "lme4": {
+      "Package": "lme4",
+      "Version": "1.1-35.1",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "MASS",
+        "Matrix",
+        "R",
+        "Rcpp",
+        "RcppEigen",
+        "boot",
+        "graphics",
+        "grid",
+        "lattice",
+        "methods",
+        "minqa",
+        "nlme",
+        "nloptr",
+        "parallel",
+        "splines",
+        "stats",
+        "utils"
+      ],
+      "Hash": "07fb0c5b727b15b0ce40feb641498e4e"
+    },
+    "lmerTest": {
+      "Package": "lmerTest",
+      "Version": "3.1-3",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "MASS",
+        "R",
+        "ggplot2",
+        "lme4",
+        "methods",
+        "numDeriv",
+        "stats"
+      ],
+      "Hash": "f04948de84602afc23bfa9f5427e954d"
+    },
     "lmtest": {
       "Package": "lmtest",
       "Version": "0.9-40",
@@ -3209,6 +3599,17 @@
         "zoo"
       ],
       "Hash": "c6fafa6cccb1e1dfe7f7d122efd6e6a7"
+    },
+    "locfit": {
+      "Package": "locfit",
+      "Version": "1.5-9.8",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "lattice"
+      ],
+      "Hash": "3434988413fbabfdb0fcd6067d7e1aa4"
     },
     "loo": {
       "Package": "loo",
@@ -3236,6 +3637,18 @@
         "timechange"
       ],
       "Hash": "680ad542fbcf801442c83a6ac5a2126c"
+    },
+    "magick": {
+      "Package": "magick",
+      "Version": "2.8.2",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "Rcpp",
+        "curl",
+        "magrittr"
+      ],
+      "Hash": "87da0066dd0d7b1a95c461abfbf10411"
     },
     "magrittr": {
       "Package": "magrittr",
@@ -3319,6 +3732,16 @@
         "utils"
       ],
       "Hash": "fec5f52652d60615fdb3957b3d74324a"
+    },
+    "minqa": {
+      "Package": "minqa",
+      "Version": "1.2.6",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "Rcpp"
+      ],
+      "Hash": "f48238f8d4740426ca12f53f27d004dd"
     },
     "mixtools": {
       "Package": "mixtools",
@@ -3407,6 +3830,16 @@
       ],
       "Hash": "0984ce8da8da9ead8643c5cbbb60f83e"
     },
+    "nloptr": {
+      "Package": "nloptr",
+      "Version": "2.0.3",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "testthat"
+      ],
+      "Hash": "277c67a08f358f42b6a77826e4492f79"
+    },
     "nnet": {
       "Package": "nnet",
       "Version": "7.3-19",
@@ -3418,6 +3851,16 @@
         "utils"
       ],
       "Hash": "2c797b46eea7fb58ede195bc0b1f1138"
+    },
+    "nortest": {
+      "Package": "nortest",
+      "Version": "1.0-4",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "stats"
+      ],
+      "Hash": "e587e7a30c737ad415590976481332e4"
     },
     "numDeriv": {
       "Package": "numDeriv",
@@ -3466,6 +3909,16 @@
         "methods"
       ],
       "Hash": "a78df53519d3e976b4269414bddc2513"
+    },
+    "outliers": {
+      "Package": "outliers",
+      "Version": "0.15",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R"
+      ],
+      "Hash": "2a7c7080df9a8a71d979a83dafdd28df"
     },
     "pROC": {
       "Package": "pROC",
@@ -3520,6 +3973,23 @@
         "parallel"
       ],
       "Hash": "68a2d681e10cf72f0afa1d84d45380e5"
+    },
+    "pheatmap": {
+      "Package": "pheatmap",
+      "Version": "1.0.12",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "RColorBrewer",
+        "grDevices",
+        "graphics",
+        "grid",
+        "gtable",
+        "scales",
+        "stats"
+      ],
+      "Hash": "db1fb0021811b6693741325bbe916e58"
     },
     "pillar": {
       "Package": "pillar",
@@ -3655,6 +4125,20 @@
         "viridisLite"
       ],
       "Hash": "6c00a09ba7d34917d9a3e28b15dd74e3"
+    },
+    "plotrix": {
+      "Package": "plotrix",
+      "Version": "3.8-4",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "grDevices",
+        "graphics",
+        "stats",
+        "utils"
+      ],
+      "Hash": "d47fdfc45aeba360ce9db50643de3fbd"
     },
     "plyr": {
       "Package": "plyr",
@@ -4957,6 +5441,16 @@
       ],
       "Hash": "c328568cd14ea89a83bd4ca7f54ae07e"
     },
+    "tiff": {
+      "Package": "tiff",
+      "Version": "0.1-12",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R"
+      ],
+      "Hash": "74b5f7f00e466398fdc0af8889add582"
+    },
     "timeDate": {
       "Package": "timeDate",
       "Version": "4022.108",
@@ -5036,6 +5530,23 @@
         "cpp11"
       ],
       "Hash": "f561504ec2897f4d46f0c7657e488ae1"
+    },
+    "umap": {
+      "Package": "umap",
+      "Version": "0.2.10.0",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "Matrix",
+        "R",
+        "RSpectra",
+        "Rcpp",
+        "methods",
+        "openssl",
+        "reticulate",
+        "stats"
+      ],
+      "Hash": "249dae2d91909b98bc93086d82cd7c7f"
     },
     "urlchecker": {
       "Package": "urlchecker",
