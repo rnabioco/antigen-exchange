@@ -3,6 +3,19 @@ title: "GeoMx"
 author: "Ryan Sheridan"
 date: "2024-03-13"
 output: html_document
+params:
+  template_dir:  "src"                                                     # template Rmarkdowns
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-11-01" # ML models
+  geomx_dir:     "results/geomx"
+  chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
+  ref_dir:       "ref"                                                     # clustifyr references
+  sample_info:   "sample_info.xlsx"
+  res_dir:                                                
+    value:
+      exp-0: "~/Projects/antigen-tracking/results"
+      exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
+      exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
   chunk_output_type: console
 ---
@@ -17,8 +30,9 @@ knitr::opts_chunk$set(
 )
 
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
-knitr::knit(here::here(params$template_dir, "setup-ml.Rmd"), "")
 knitr::knit(here::here(params$template_dir, "setup-geomx.Rmd"), "")
+
+rm(lec_so, dc_so)
 
 # Mouse key
 m_key <- c(
@@ -105,18 +119,18 @@ ggsave(here(fig_dir, "ova_sct.png"), dpi = 400)
 ```{r "GEOMX SLIDES", eval = FALSE}
 # To load slide image and metadata:
 # * increase memory limit for java before starting session and loading packages:
-#   `options(java.parameters = "-Xmx12000m")`
+#   `options(java.parameters = "-Xmx24000m")`
 # * modify column names in labworksheet, refer to: 
 #   https://github.com/Nanostring-Biostats/SpatialOmicsOverlay/issues/46#issue-1660988311
 tiff  <- "~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/data/230623_A00405_0707_AHCK7MDSX7/images/Slide 1.ome.tiff"
-wksht <- "~/Projects/tamburini-antigen-tracking/results/2023-06-23/geomx_worksheets/Tamburini_061423_20230619T1930_LabWorksheet.txt"
+wksht <- here("results/geomx/geomx_worksheets/Tamburini_061423_20230619T1930_LabWorksheet.txt")
 
 img <- readSpatialOverlay(
   ometiff   = tiff,
   annots    = wksht,
   image     = TRUE,
   slideName = "Slide 1",
-  res       = 5  # resolution
+  res       = 3  # resolution
 )
 
 # Load annotation worksheet
