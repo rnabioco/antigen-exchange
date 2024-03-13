@@ -1,0 +1,660 @@
+---
+title: "Predicting Ag-archiving Capacity"
+author: "Ryan Sheridan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc:            true
+    toc_float:      true
+    toc_depth:      4
+    df_print:       "paged"
+    code_folding:   "hide"
+    self_contained: true
+    highlight:      "kate"
+params:
+  template_dir:  "src"                                                                      # Directory containing template Rmarkdowns
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"                   # Directory for loading/saving Seurat objects
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models"                  # Directory for loading/saving ML models
+  ref_dir:       "ref"                                                                      # Directory to use for loading/saving clustifyr references
+  tab_dir:       "results/tables"
+  sample_info:   "sample_info.xlsx"
+  chikv_dir:     "~/Projects/morrison-lnsc/results/tables"
+  chikv_so:      "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs/so_merge.qs"
+  res_dir:                                                
+    value:
+      exp-0: "~/Projects/antigen-tracking/results"
+      exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
+      exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
+editor_options: 
+  chunk_output_type: console
+---
+
+---
+
+<br>
+
+This includes code/plots to select genes for the Xenium gene panel
+
+```{r "setup", include = FALSE}
+# Default chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo    = FALSE,
+  dpi     = 300
+)
+
+# RF parameters
+rf_dat_clmn  <- "Ag_class_3"
+rf_cell_type <- "cLEC"
+rf_mouse     <- "d14"
+
+# Run setup chunks
+knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
+
+# # Set Ag-low/high groups
+# # * exclude d2 since it has very few cells
+# # * split for each cell type from each mouse
+# # * set subtype cutoff for all mice using d14 cutoff
+# lec_so <- lec_so %>%
+#   subset(mouse != "d2") %>%
+#   mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
+#   cluster_signal(
+#     data_column  = "Ag_score",
+#     grp_column   = "mouse_type",
+#     clust_column = "Ag_class_2",
+#     method       = "km"
+#   )
+# 
+# threshold <- lec_so@meta.data %>%
+#   filter(mouse == rf_mouse, Ag_class_2 == "high") %>%
+#   group_by(subtype) %>%
+#   summarize(threshold = min(Ag_score), .groups = "drop")
+# 
+# threshold <- set_names(threshold$threshold, threshold$subtype)
+# 
+# lec_so <- lec_so %>%
+#   mutate_meta(
+#     mutate,
+#     Ag_class_3 = ifelse(Ag_score >= threshold[subtype], "high", "low")
+#   )
+
+rm(dc_so, all_meta)
+```
+
+```{r "cell type markers", eval = FALSE}
+rm(lec_so)
+
+markers <- c(cd45neg_so = "LEC", cd45neg_so = "Fibroblasts", cd45pos_so = "DC") %>%
+  imap_dfr(~ {
+    so <- qread(here(params$so_dir, str_c(.y, ".qs")))
+    
+    marks <- so %>%
+      wilcoxauc(group_by = "cell_type") %>%
+      mutate(clmn = "cell_type")
+    
+    sub_marks <- so %>%
+      subset(cell_type == .x) %>%
+      wilcoxauc(group_by = "subtype") %>%
+      mutate(clmn = "subtype")
+    
+    res <- bind_rows(marks, sub_marks) %>%
+      filter(padj < 0.05, logFC > 0.25) %>%
+      arrange(clmn, group, desc(logFC), padj) %>%
+      mutate(object = .y) %>%
+      arrange(clmn, group, desc(logFC), padj) %>%
+      group_by(clmn, group) %>%
+      mutate(rank = row_number()) %>%
+      ungroup()
+    
+    res
+  }) %>%
+  distinct()
+
+markers %>%
+  write_tsv(here(params$tab_dir, "celltype_markers.tsv.gz"))
+```
+
+```{r "load models"}
+# Load save models
+# rf_mods <- qread(here(params$mod_dir, "ag-high_models.qs"))
+rf_feats <- qread(here(params$mod_dir, "ag-high_features.qs"))
+degs     <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
+```
+
+```{r "load gene lists"}
+# Xenium mouse atlas
+mouse_atlas_gns <- here(params$ref_dir, "Xenium_mMulti_v1_metadata.xlsx") %>%
+  read.xlsx2(sheetIndex = 1) %>%
+  as_tibble() %>%
+  dplyr::rename(gene = "Gene", annotation = "Annotation") %>%
+  distinct(gene, .keep_all = TRUE)
+
+# Load selected marker genes to plot
+typ_gns <- here(params$tab_dir, "xenium-genes.xlsx") %>%
+  read.xlsx2(sheetName = "cell_type") %>%
+  as_tibble() %>%
+  mutate(
+    include = as.logical(include),
+    include = replace_na(include, TRUE),
+    mouse_atlas = gene %in% mouse_atlas_gns$gene,
+    source = str_c("annotation: ", annotation)
+  ) %>%
+  distinct(gene, .keep_all = TRUE) %>%
+  arrange(mouse_atlas, desc(include))
+
+# Load CHIKV DEGs
+chikv_gns <- c(
+  `8hpi`  = here(params$chikv_dir, "8_lectype_chikv-up_markers.tsv"),
+  `24hpi` = here(params$chikv_dir, "merge_lectype_chikv-up_markers.tsv")
+)
+
+chikv_gns <- chikv_gns %>%
+  map_dfr(read_tsv, .id = "tm")
+```
+
+```{r "plot Xenium mouse atlas"}
+# Load Ag data
+ag_dat <- c("cd45neg_so", "cd45pos_so") %>%
+  map_dfr(~ {
+    qread(here(params$so_dir, str_c(.x, ".qs"))) %>%
+      FetchData(c("sample", "mouse", "subtype", "cell_type", mouse_atlas_gns$gene)) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(any_of(mouse_atlas_gns$gene), names_to = "gene") %>%
+      left_join(mouse_atlas_gns, by = "gene") %>%
+      mutate(
+        sample = mouse,
+        dataset = "Ag"
+      ) %>%
+      dplyr::select(-mouse)
+  })
+
+# Load CHIKV data
+chikv_dat <- qread(here(params$chikv_so)) %>%
+  FetchData(c("treatment", "tm", "cell_type", "subtype", "lec_subtype", "frc_subtype", mouse_atlas_gns$gene)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(any_of(mouse_atlas_gns$gene), names_to = "gene") %>%
+  left_join(mouse_atlas_gns, by = "gene") %>%
+  mutate(
+    sample = str_c(treatment, "-", tm),
+    cell_type = recode(
+      cell_type,
+      FRC = "Fibroblasts",
+      PvC = "Fibroblasts"
+    ),
+    subtype = case_when(
+      lec_subtype != "other" ~ lec_subtype,
+      frc_subtype != "other" ~ frc_subtype,
+      TRUE                   ~ cell_type
+    ),
+    cell_type = ifelse(subtype == "BEC", subtype, cell_type),
+    cell_type = dplyr::recode(cell_type, `Endothelial cells` = "LEC"),
+    dataset = "CHIKV"
+  ) %>%
+  dplyr::select(-c(treatment, tm, lec_subtype, frc_subtype))
+
+# Format plotting data
+clmn <- "cell_type"
+
+plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
+  group_by(sample, !!sym(clmn), gene) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  filter(!(!!sym(clmn)) %in% "unassigned")
+  
+plt_dat %>%
+  split(.$sample) %>%
+  imap(~ {
+    mat <- .x %>%
+      dplyr::select(-sample) %>%
+      pivot_wider(names_from = !!sym(clmn), values_from = value) %>%
+      column_to_rownames("gene") %>%
+      as.matrix() %>%
+      t() %>%
+      scale() %>%
+      t() %>%
+      na.omit()
+    
+    mat %>%
+      Heatmap(
+        show_row_names = FALSE,
+        name = .y
+      )
+  })
+```
+
+```{r "plot subtype markers"}
+# Load Ag data
+ag_dat <- c("lec_so", "frc_so", "dc_so") %>%
+  map_dfr(~ {
+    qread(here(params$so_dir, str_c(.x, ".qs"))) %>%
+      FetchData(c("sample", "mouse", "subtype", "cell_type", typ_gns$gene)) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(any_of(typ_gns$gene), names_to = "gene") %>%
+      left_join(typ_gns, by = "gene") %>%
+      mutate(
+        sample = mouse,
+        cell_type = recode(
+          cell_type,
+          BEC = "Endothelial cells",
+          LEC = "Endothelial cells"
+        ),
+        dataset = "Ag"
+      ) %>%
+      dplyr::select(-mouse)
+  })
+
+# Load CHIKV data
+chikv_dat <- qread(here(params$chikv_so)) %>%
+  FetchData(c("treatment", "tm", "cell_type", "subtype", "lec_subtype", "frc_subtype", typ_gns$gene)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(any_of(typ_gns$gene), names_to = "gene") %>%
+  left_join(typ_gns, by = "gene") %>%
+  mutate(
+    sample = str_c(treatment, "-", tm),
+    cell_type = recode(
+      cell_type,
+      FRC = "Fibroblasts",
+      PvC = "Fibroblasts"
+    ),
+    subtype = case_when(
+      lec_subtype != "other" ~ lec_subtype,
+      frc_subtype != "other" ~ frc_subtype,
+      TRUE                   ~ cell_type
+    ),
+    dataset = "CHIKV"
+  ) %>%
+  dplyr::select(-c(treatment, tm, lec_subtype, frc_subtype))
+
+# Format plotting data
+samples <- c(
+  "d14", "3wk", "6wk", "6wk-3wk",
+  "mock-8hpi", "mock-24hpi"
+)
+
+plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
+  filter(sample %in% samples) %>%
+  mutate(sample = dataset) %>%
+  group_by(sample, cell_type, subtype, annotation, broad_annotation, gene) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  filter(
+    !subtype %in% c("unassigned", "BEC"),
+    cell_type %in% broad_annotation
+  ) %>%
+  
+  group_by(sample, cell_type, annotation, broad_annotation, gene) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup()
+
+# Create heatmaps
+gn_ann <- set_names(typ_gns$annotation, typ_gns$gene)
+
+lvls <- unique(typ_gns$annotation)
+
+sample_lvls <- c(mice, "mock-8hpi", "mock-24hpi", "CHIKV-8hpi", "CHIKV-24hpi")
+
+plt_dat %>%
+  split(.$cell_type) %>%
+  map(~ {
+    dat <- .x %>%
+      filter(broad_annotation == cell_type) %>%
+      na.omit() %>%
+      mutate(
+        sample     = fct_relevel(sample, sample_lvls),
+        gene       = fct_relevel(gene, rev(typ_gns$gene)),
+        subtype    = fct_relevel(subtype, lvls),
+        annotation = fct_relevel(annotation, lvls)
+      )
+    
+    dat %>%
+      ggplot(aes(subtype, gene, fill = value)) +
+      geom_tile(linewidth = 0.5, color = "white") +
+      facet_grid(annotation ~ sample, scales = "free", space = "free") +
+      scale_fill_gradientn(colours = c("lightblue", "white", "red"), na.value = "grey80") +
+      base_theme +
+      theme(
+        strip.clip        = "off",
+        strip.placement   = "inside",
+        strip.text.y.right = element_text(angle = 0, hjust = 0, size = txt_pt1),
+        # strip.text.y.right = element_text(angle = 0, hjust = 1, size = txt_pt1),
+        # strip.background.y = element_rect(colour = ln_col),
+        axis.title        = element_blank(),
+        axis.text.x       = element_text(angle = 90, hjust = 1, vjust = 0.5, size = txt_pt1),
+        axis.text.y       = element_text(size = txt_pt1)
+      )
+  })
+```
+
+```{r "plot subtype markers extended"}
+# Format plotting data
+plt_dat <- bind_rows(ag_dat, chikv_dat) %>%
+  group_by(sample, cell_type, subtype, annotation, broad_annotation, gene) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  filter(
+    !subtype %in% c("unassigned", "BEC"),
+    cell_type %in% broad_annotation
+  ) %>%
+  
+  group_by(sample, cell_type, annotation, broad_annotation, gene) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup()
+
+# Create heatmaps
+plt_dat %>%
+  split(.$cell_type) %>%
+  map(~ {
+    dat <- .x %>%
+      filter(broad_annotation == cell_type) %>%
+      na.omit() %>%
+      mutate(
+        sample     = fct_relevel(sample, sample_lvls),
+        gene       = fct_relevel(gene, rev(typ_gns$gene)),
+        subtype    = fct_relevel(subtype, lvls),
+        annotation = fct_relevel(annotation, lvls)
+      )
+    
+    dat %>%
+      ggplot(aes(subtype, gene, fill = value)) +
+      geom_tile(linewidth = 0.5, color = "white") +
+      facet_grid(annotation ~ sample, scales = "free", space = "free") +
+      scale_fill_gradientn(colours = c("lightblue", "white", "red"), na.value = "grey80") +
+      base_theme +
+      theme(
+        strip.clip        = "off",
+        strip.placement   = "inside",
+        strip.text.y.right = element_text(angle = 0, hjust = 0, size = txt_pt1),
+        # strip.text.y.right = element_text(angle = 0, hjust = 1, size = txt_pt1),
+        # strip.background.y = element_rect(colour = ln_col),
+        axis.title        = element_blank(),
+        axis.text.x       = element_text(angle = 90, hjust = 1, vjust = 0.5, size = txt_pt1),
+        axis.text.y       = element_text(size = txt_pt1)
+      )
+  })
+```
+
+```{r "top Ag-high genes", eval = FALSE}
+# Identify genes shared between the most cell types
+# goi <- c("Dab2", "Cltc", "Psap", "Degs", "Clu", "Prcp")
+top_ag <- rf_feats %>%
+  imap_dfr(~ {
+    tibble(
+      subtype = .y,
+      gene = .x$high
+    )
+  }) %>%
+  filter(subtype != "BEC") %>%
+  group_by(gene) %>%
+  summarize(
+    n_types = n_distinct(subtype),
+    source  = str_c("Ag-high: ", str_c(sort(unique(subtype)), collapse = ", ")),
+    in_cLEC = "cLEC" %in% subtype,
+    .groups = "drop"
+  ) %>%
+  arrange(
+    desc(n_types),
+    desc(in_cLEC)
+  )
+
+# Identify genes that are upregulated in Ag-high cells
+deg_dat <- degs %>%
+  filter(
+    feature %in% top_ag$gene,
+    !subtype %in% c("all", "BEC", "unassigned"),
+    mouse != "all",
+    group == "high"
+  ) %>%
+  group_by(feature, mouse) %>%
+  mutate(
+    n_types = n_distinct(subtype)
+  ) %>%
+  group_by(feature, subtype) %>%
+  mutate(
+    n_mice = n_distinct(mouse)
+  ) %>%
+  ungroup()
+
+# Identify genes differentially expressed in CHIKV
+chikv_degs <- "merge_celltype2_chikv-down_markers.tsv" %>%
+  here(params$chikv_dir, .) %>%
+  read_tsv()
+
+chikv_degs <- chikv_degs %>%
+  filter(cell_type_2 != "BEC")
+
+# Filter final list of top genes
+# genes upregulated in Ag-high cells in at least one cell type from at
+# least one mouse
+top_ag <- top_ag %>%
+  mutate(
+    mouse_atlas = gene %in% mouse_atlas_gns$gene,
+    up_cLEC      = gene %in% deg_dat$feature[deg_dat$subtype == "cLEC"],
+    up           = gene %in% deg_dat$feature,
+    chikv_down   = gene %in% chikv_degs$gene
+  ) %>%
+  arrange(
+    mouse_atlas,
+    desc(n_types), desc(in_cLEC),
+    desc(up_cLEC), desc(up)
+  ) %>%
+  filter(
+    n_types > 1 | (in_cLEC | up_cLEC)
+  )
+```
+
+```{r "format final Ag panel"}
+# Genes from Walsh et al.
+walsh_gns <- here(params$tab_dir, "xenium-genes.xlsx") %>%
+  read.xlsx2(sheetName = "Ag-high") %>%
+  as_tibble() %>%
+  mutate(
+    include = as.logical(include),
+    include = replace_na(include, TRUE),
+    mouse_atlas = gene %in% mouse_atlas_gns$gene,
+    source      = str_c("Walsh: ", annotation)
+  ) %>%
+  distinct(gene, .keep_all = TRUE) %>%
+  arrange(mouse_atlas, desc(include))
+
+# Final Ag panel
+ag_panel <- bind_rows(typ_gns, walsh_gns, top_ag) %>%
+  mutate(include = replace_na(include, TRUE)) %>%
+  arrange(
+    mouse_atlas,
+    desc(include)
+  ) %>%
+  mutate(duplicated = duplicated(gene)) %>%
+  arrange(duplicated) %>%
+  mutate(
+    rank = row_number(),
+    rank = ifelse(mouse_atlas | duplicated, as.numeric(NA), rank)
+  ) %>%
+  as.data.frame() %>%
+  dplyr::select(gene, source, mouse_atlas, rank)
+```
+
+```{r "format final CHIKV panel"}
+# Identify top CHIKV upregulated genes
+top_chikv <- chikv_gns %>%
+  group_by(tm, gene) %>%
+  mutate(
+    source = str_c(tm, ": ", str_c(sort(unique(lec_type)), collapse = ", "))
+  ) %>%
+  group_by(tm, gene, source) %>%
+  summarize(
+    n_types = n_distinct(lec_type),
+    min_p   = min(max_pval),
+    .groups = "drop"
+  ) %>%
+  group_by(gene) %>%
+  summarize(
+    early   = "8hpi" %in% tm,
+    n_types = max(n_types),
+    source  = str_c(sort(unique(source), decreasing = TRUE), collapse = "; "),
+    min_p   = min(min_p),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(early), desc(n_types), min_p) %>%
+  head(60) %>%
+  mutate(mouse_atlas = gene %in% mouse_atlas_gns$gene) %>%
+  arrange(mouse_atlas)
+
+# Final CHIKV panel
+chikv_panel <- bind_rows(typ_gns, top_chikv) %>%
+  mutate(include = replace_na(include, TRUE)) %>%
+  arrange(
+    mouse_atlas,
+    desc(include)
+  ) %>%
+  mutate(duplicated = duplicated(gene)) %>%
+  arrange(duplicated) %>%
+  mutate(
+    rank = row_number(),
+    rank = ifelse(mouse_atlas | duplicated, as.numeric(NA), rank)
+  ) %>%
+  dplyr::select(gene, source, mouse_atlas, rank)
+```
+
+```{r "save panels"}
+panel_file <- here(params$tab_dir, "xenium-panel.xlsx")
+
+xen_panel_gns %>%
+  xlsx::write.xlsx(
+    file      = panel_file,
+    sheetName = "Xenium mouse atlas"
+  )
+
+ag_panel %>%
+  xlsx::write.xlsx(
+    file      = panel_file,
+    sheetName = "Ag-tracking",
+    append    = TRUE,
+    showNA    = FALSE
+  )
+  
+chikv_panel %>%
+  xlsx::write.xlsx(
+    file      = panel_file,
+    sheetName = "CHIKV",
+    append    = TRUE,
+    showNA    = FALSE
+  )
+```
+
+```{r "format 10X reference data"}
+# Requirements for the cell type annotation file (.csv or .tsv)
+# Use two columns: “Barcode” and “Annotation”, where the barcodes correspond to
+# those which are in your provided data matrix.
+
+# Load objects
+cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+chikv_so   <- qread(params$chikv_so)
+
+# Ag paths
+xen_dir <- params$so_dir %>%
+  str_remove("/[a-zA-Z]+$") %>%
+  here("xenium")
+
+res_dirs <- set_names(as.character(params$res_dir), names(params$res_dir))
+
+mat_info <- sam_info %>%
+  filter(
+    sample %in% c("d14", "LEC-P4-P2", "LEC-P4") |
+      directory == "GEX_CD45neg_d2-ADT_CD45neg_d2"
+  ) %>%
+  mutate(
+    mat_path  = here(res_dirs[experiment]),
+    sample    = directory,
+    filt_clmn = "directory",
+    ann_clmn  = "subtype"
+  )
+
+# Combine with CHIKV paths
+chikv_dir <- c(
+  `8hpi`  = "~/Projects/morrison-lnsc/results/2021-04-16",
+  `24hpi` = "~/Projects/morrison-lnsc/results/orig_24hpi"
+)
+
+chikv_sams <- c(AF1 = "8hpi", A1 = "24hpi")
+
+chikv_info <- tibble(
+  directory = names(chikv_sams),
+  sample    = unname(chikv_sams)
+) %>%
+  mutate(
+    mat_path  = chikv_dir[sample],
+    cell_sort = "CHIKV",
+    filt_clmn = "tm",
+    ann_clmn  = "lec_type"
+  )
+
+mat_info <- bind_rows(mat_info, chikv_info) %>%
+  mutate(
+    mat_path = here(mat_path, directory, "outs/filtered_feature_bc_matrix"),
+    ann_file = here(xen_dir, str_c(directory, "_annotations.tsv"))
+  )
+
+# Format cell annotation files
+mat_info %>%
+  pwalk(~ {
+    args <- list(...)
+    
+    dat <- switch(
+      args$cell_sort,
+      CD45neg = cd45neg_so@meta.data,
+      CD45pos = cd45pos_so@meta.data,
+      CHIKV   = filter(chikv_so@meta.data, treatment == "CHIKV", rep == 1)
+    )
+    
+    dat <- dat %>%
+      as_tibble(rownames = "Barcode") %>%
+      filter(!!sym(args$filt_clmn) == args$sample) %>%
+      mutate(
+        Barcode = str_remove(Barcode, "^[0-9]+[a-z]+_"),
+        Barcode = str_remove(Barcode, "_.+$")
+      ) %>%
+      dplyr::select(Barcode, Annotation = !!sym(args$ann_clmn))
+    
+    mat_bcs <- read_tsv(
+      file.path(args$mat_path, "barcodes.tsv.gz"),
+      col_names = FALSE
+    )
+    
+    stopifnot(all(dat$Barcode %in% mat_bcs$X1))
+    
+    dat %>%
+      write_tsv(args$ann_file)
+  })
+
+# Create zip archives
+mat_info %>%
+  pwalk(~ {
+    args <- list(...)
+    
+    setwd(args$mat_path)
+    
+    zip_arc <- here(xen_dir, str_c(args$directory, ".zip"))
+    
+    files <- dir(args$mat_path)
+    
+    zip(zipfile = zip_arc, files)
+    
+    # Add annotations
+    setwd(xen_dir)
+    
+    zip(zipfile = zip_arc, basename(args$ann_file))
+    
+    setwd(here())
+  })
+```
+
+---
+
+<br>
+
+<br>
+
+## Session info
+
+```{r "session info"}
+sessionInfo()
+```

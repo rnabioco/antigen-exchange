@@ -8,7 +8,7 @@ knitr::opts_chunk$set(
   dpi     = 300
 )
 
-# Theme elements
+# Colors
 pred_clrs <- c(
   `Ag-low`       = "#6A51A3",
   `Ag-competent` = "#E69F00",
@@ -1898,6 +1898,7 @@ rf_feats %>%
 
 ```{r "predict Ag class", eval = run_rf}
 # Predict Ag class
+# predictions are made separately for each mouse IS THIS NECESSARY??
 info_clmns <- c("subtype", "mouse")
 
 pred_dat <- lec_so %>%
@@ -1917,10 +1918,14 @@ rf_preds <- rf_mods_best %>%
       split(.$mouse) %>%
       map(dplyr::select, -all_of(info_clmns))
     
+    mod <- args$mod
+    
+    if (identical("train", class(mod))) mod <- mod$finalModel
+    
     dat %>%
       imap_dfr(~ {
         rf_predict(
-          mod          = args$mod$finalModel,
+          mod          = mod,
           dat          = .x,
           data_clmn    = rf_dat_clmn,
           return_stats = FALSE

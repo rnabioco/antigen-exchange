@@ -18,9 +18,11 @@ save_objs <- function(ob_in, prfx = NULL, ob_dir = "") {
   ob_in %>%
     qs::qsave(file.path(ob_dir, str_c(prfx, ".qs")))
   
-  ob_in@meta.data %>%
-    tibble::as_tibble(rownames = "cell_id") %>%
-    vroom::vroom_write(file.path(ob_dir, str_c(prfx, ".tsv.gz")))
+  if ("Seurat" %in% class(ob_in)) {
+    ob_in@meta.data %>%
+      tibble::as_tibble(rownames = "cell_id") %>%
+      vroom::vroom_write(file.path(ob_dir, str_c(prfx, ".tsv.gz")))
+  }
 }
 
 #' Plot color palette

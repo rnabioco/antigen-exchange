@@ -1,0 +1,546 @@
+
+```{r "geomx setup", include = FALSE, warning = FALSE, message = FALSE}
+# Default chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo    = FALSE,
+  dpi     = 300
+)
+
+# Colors
+sam_clrs <- c("naive", "3wk", "6wk", "6wk-3wk")
+
+sam_clrs <- set_names(
+  ito_cols[seq_along(sam_clrs)],
+  sam_clrs
+)
+
+seg_clrs <- c(
+  medula = "#D7301F",
+  sinus  = "#56B4E9",
+  cortex = "#F0E442"
+)
+
+# Sample information
+proj      <- "tamburini-antigen-tracking"
+geomx_dat <- file.path("~/Dropbox/Ryan/Projects", proj)
+
+geomx_dir  <- file.path("~/Projects", proj)
+geomx_res  <- "results/2023-06-23"
+counts_dir <- "results/2023-06-23/counts"
+worksheet  <- "geomx_worksheets/Tamburini_061423_20230619T1930_annotations.xlsx"
+obj_dir    <- "sobjs"                            # Directory to load/save Seurat objects
+table_dir  <- "tables"
+pkcs       <- c("Mm_R_NGS_WTA_v1.0.pkc", "Hesselberth_02-SO-90138_v1.0.pkc")
+
+# Check for saved objects
+create_objs <- !file.exists(here(params$geomx_dir, "geomx.qs"))
+```
+
+```{r "load geomx data", eval = create_objs}
+# Load data
+dcc <- dir(file.path(geomx_dat, counts_dir), ".dcc$", full.names = TRUE)
+pkc <- file.path(geomx_dir, "ref", pkcs)
+ann <- file.path(geomx_dir, geomx_res, worksheet)
+
+geomx_raw <- readNanoStringGeoMxSet(
+  dccFiles               = dcc,
+  pkcFiles               = pkc,
+  phenoDataFile          = ann,
+  phenoDataSheet         = "LabWorksheet",
+  phenoDataDccColName    = "Sample_ID",
+  protocolDataColNames   = c("Aoi", "Roi"),
+  experimentDataColNames = "Panel"
+)
+
+pkcs    <- annotation(geomx_raw)
+modules <- gsub(".pkc", "", pkcs)
+```
+
+```{r "segment qc", eval = create_objs}
+# Add pseudocount of 1 to enable downstream transformations
+# useDALogic = TRUE will only add pseudocount to zeros
+geomx_raw <- geomx_raw %>%
+  shiftCountsOne(useDALogic = TRUE)
+
+# Default QC cutoffs are shown in parenthesis
+# * Raw sequencing reads: segments with >1000 raw reads are removed.
+# * % Aligned, % Trimmed, or % Stitched sequencing reads: segments below ~80%
+#   for one or more of these QC parameters are removed.
+# * % Sequencing saturation ([1-deduplicated reads/aligned reads]%): segments
+#   below ~50% require additional sequencing to capture full sample diversity
+#   and are not typically analyzed until improved.
+# * Negative Count: this is the geometric mean of the several unique negative
+#   probes in the GeoMx panel that do not target mRNA and establish the
+#   background count level per segment; segments with low negative
+#   counts (1-10) are not necessarily removed but may be studied closer for low
+#   endogenous gene signal and/or insufficient tissue sampling.
+# * No Template Control (NTC) count: values >1,000 could indicate contamination
+#   for the segments associated with this NTC; however, in cases where the NTC
+#   count is between 1,000- 10,000, the segments may be used if the NTC data is
+#   uniformly low (e.g. 0-2 counts for all probes).
+# * Nuclei: >100 nuclei per segment is generally recommended; however, this
+#   cutoff is highly study/tissue dependent and may need to be reduced; what is
+#   most important is consistency in the nuclei distribution for segments within 
+#   the study.
+# * Area: generally correlates with nuclei; a strict cutoff is not generally
+#   applied based on area.
+QC_params <- list(
+  minSegmentReads   = 1000,  # Minimum number of reads (1000)
+  percentTrimmed    = 80,    # Minimum % of reads trimmed (80%)
+  percentStitched   = 80,    # Minimum % of reads stitched (80%)
+  percentAligned    = 75,    # Minimum % of reads aligned (80%)
+  percentSaturation = 50,    # Minimum sequencing saturation (50%)
+  minNegativeCount  = 1,     # Minimum negative control counts (10)
+  maxNTCCount       = 1000,  # Maximum counts observed in NTC well (1000)
+  minNuclei         = 100,   # Minimum # of nuclei estimated (100)
+  minArea           = 5000   # Minimum segment area in um2 (5000)
+)
+
+geomx_raw <- geomx_raw %>%
+  setSegmentQCFlags(qcCutoffs = QC_params)
+
+# Collate QC Results
+QCResults    <- protocolData(geomx_raw)[["QCFlags"]]
+flag_columns <- colnames(QCResults)
+
+QC_Summary <- data.frame(
+  Pass    = colSums(!QCResults[, flag_columns]),
+  Warning = colSums(QCResults[, flag_columns])
+)
+
+QCResults$QCStatus <- apply(QCResults, 1L, function(x) {
+    ifelse(sum(x) == 0L, "PASS", "WARNING")
+})
+
+QC_Summary["TOTAL FLAGS", ] <- c(
+  sum(QCResults[, "QCStatus"] == "PASS"),
+  sum(QCResults[, "QCStatus"] == "WARNING")
+)
+```
+
+```{r "probe qc", eval = create_objs}
+# Calculate geometric mean for negative control probes for each pkc module
+# MARGIN = 2 is for per module, MARGIN = 1 is for per sample
+neg_geo_mns <- esBy(
+  negativeControlSubset(geomx_raw), 
+  GROUP = "Module", 
+  FUN = function(x) assayDataApply(x, MARGIN = 2, FUN = ngeoMean, elt = "exprs")
+)
+
+protocolData(geomx_raw)[["NegGeoMean"]] <- neg_geo_mns
+
+# explicitly copy the Negative geoMeans from sData to pData
+negCols <- paste0("NegGeoMean_", modules)
+
+pData(geomx_raw)[, negCols] <- sData(geomx_raw)[["NegGeoMean"]][, modules]
+
+# Filter data
+geomx <- geomx_raw[, QCResults$QCStatus == "PASS"]
+
+## Probe QC
+# A probe is removed globally from the dataset if either of the following is
+# true, Nanostring does not recommend adjusting these parameters.
+# A probe is removed locally (from a given segment) if the probe is an outlier
+# according to the Grubb’s test in that segment.
+# 
+# * The geometric mean of that probe’s counts from all segments divided by the
+#   geometric mean of all probe counts representing the target from all segments
+#   is less than 0.1
+# * The probe is an outlier according to the Grubb’s test in at least 20% of the
+#   segments
+# 
+# Generally keep the qcCutoffs parameters unchanged. Set removeLocalOutliers to 
+# FALSE if you do not want to remove local outliers
+geomx <- geomx %>%
+  setBioProbeQCFlags(
+    qcCutoffs = list(minProbeRatio = 0.1, percentFailGrubbs = 20),
+    removeLocalOutliers = TRUE
+  )
+
+ProbeQCResults <- fData(geomx)[["QCFlags"]]
+
+# Probe QC summary
+qc_df <- data.frame(
+  Passed = sum(rowSums(ProbeQCResults[, -1]) == 0),
+  Global = sum(ProbeQCResults$GlobalGrubbsOutlier),
+  Local  = sum(rowSums(ProbeQCResults[, -2:-1]) > 0 & !ProbeQCResults$GlobalGrubbsOutlier)
+)
+
+# Filter probes
+geomx <- geomx %>%
+  subset( 
+    !fData(geomx)[["QCFlags"]][, "LowProbeRatio"] &
+    !fData(geomx)[["QCFlags"]][, "GlobalGrubbsOutlier"]
+  )
+```
+
+```{r "limit of quantification", eval = create_objs}
+# Collapse probe counts for each gene
+# This is important since multiple probes are included for some genes
+# Remove neg_geomean columns from pData since aggregateCounts()
+# will aggregate these values, so they will no longer be correct
+pData(geomx) <- pData(geomx)[, !colnames(pData(geomx)) %in% negCols]
+geomx <- aggregateCounts(geomx)
+
+# In addition to Segment and Probe QC, also need to determine the limit of
+# quantification (LOQ) per segment. The LOQ is calculated based on the
+# distribution of negative control probes and is intended to approximate the
+# quantifiable limit of gene expression per segment. It should be noted that
+# this process is more stable for larger segments. Likewise, the LOQ may not be
+# as accurately reflective of true signal detection rates in segments with low
+# negative probe counts (e.g. <2).
+# 
+# Use 2 geometric standard deviations (n = 2) above the geometric mean as the
+# LOQ, which is reasonable for most studies.
+# Nanostring also recommends that a minimum LOQ of 2 be used if the LOQ
+# calculated in a segment is below this threshold.
+
+# Define LOQ SD threshold and minimum value
+cutoff <- 2
+minLOQ <- 2
+
+# Calculate LOQ per module tested
+LOQ <- data.frame(row.names = colnames(geomx))
+
+for (module in modules) {
+  vars <- paste0(c("NegGeoMean_", "NegGeoSD_"), module)
+  
+  if (all(vars %in% colnames(pData(geomx)))) {
+    LOQ[, module] <- pmax(
+      minLOQ,
+      pData(geomx)[, vars[1]] * pData(geomx)[, vars[2]] ^ cutoff
+    )
+  }
+}
+
+# Add LOQ to gene-level data
+pData(geomx)$LOQ <- LOQ
+
+# Calculate detected genes in each segment
+LOQ_Mat <- c()
+
+for(module in modules) {
+  ind     <- fData(geomx)$Module == module
+  Mat_i   <- t(esApply(geomx[ind, ], MARGIN = 1, FUN = function(x) x > LOQ[, module]))
+  LOQ_Mat <- rbind(LOQ_Mat, Mat_i)
+}
+
+# Ensure ordering since this is stored outside of the geomxSet
+LOQ_Mat <- LOQ_Mat[fData(geomx)$TargetName, ]
+
+# Save detection rate information to pheno data
+pData(geomx)$GenesDetected     <- colSums(LOQ_Mat, na.rm = TRUE)
+pData(geomx)$GeneDetectionRate <- pData(geomx)$GenesDetected / nrow(geomx)
+```
+
+```{r "gene detection rate", eval = create_objs}
+# Determine detection thresholds
+# Bin segments based on detection rate
+pData(geomx)$DetectionThreshold <- cut(
+  pData(geomx)$GeneDetectionRate,
+  breaks = c(0, 0.01, 0.05, 0.1, 0.15, 1),
+  labels = c("<1%", "1-5%", "5-10%", "10-15%", ">15%")
+)
+
+# Filter segments
+rate_cutoff <- 0.01
+
+geomx <- geomx[, pData(geomx)$GeneDetectionRate >= rate_cutoff]
+
+# Calculate detection rate
+LOQ_Mat <- LOQ_Mat[, colnames(geomx)]
+
+fData(geomx)$DetectedSegments <- rowSums(LOQ_Mat, na.rm = TRUE)
+fData(geomx)$DetectionRate    <- fData(geomx)$DetectedSegments / nrow(pData(geomx))
+
+# Plot detection rate
+plot_detect <- data.frame(Freq = c(1, 5, 10, 20, 30, 50))
+
+plot_detect$Number <- unlist(lapply(
+  c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5),
+  function(x) sum(fData(geomx)$DetectionRate >= x)
+))
+
+plot_detect$Rate <- plot_detect$Number / nrow(fData(geomx))
+
+rownames(plot_detect) <- plot_detect$Freq
+
+
+
+# # Create bar graphs
+# ggplot(plot_detect, aes(x = as.factor(Freq), y = Rate, fill = Rate)) +
+#   geom_bar(stat = "identity") +
+#   geom_text(aes(label = formatC(Number, format = "d", big.mark = ",")),
+#             vjust = 1.6, color = "black", size = 4) +
+#   scale_fill_gradient2(low = "orange2", mid = "lightblue",
+#                        high = "dodgerblue3", midpoint = 0.65,
+#                        limits = c(0,1),
+#                        labels = scales::percent) +
+#   theme_bw() +
+#   scale_y_continuous(labels = scales::percent, limits = c(0,1),
+#                      expand = expansion(mult = c(0, 0))) +
+#   labs(x = "% of Segments",
+#        y = "Genes Detected, % of Panel > LOQ")
+```
+
+```{r "normalize data", eval = create_objs}
+# USING CUTOFF OF 1%
+# Subset to target genes detected in at least 1% of the samples.
+# Also manually include the negative control probes, for downstream use
+rate_cutoff <- 0.01
+
+negativeProbefData <- subset(fData(geomx), CodeClass == "Negative")
+neg_probes         <- unique(negativeProbefData$TargetName)
+
+geomx <- geomx[fData(geomx)$DetectionRate >= rate_cutoff | fData(geomx)$TargetName %in% neg_probes, ]
+
+# Background normalization for WTA/CTA without custom spike-in
+geomx <- geomx %>%
+  normalize(norm_method = "neg", fromElt = "exprs", toElt = "neg_norm")
+
+# Q3 norm (75th percentile) for WTA/CTA  with or without custom spike-ins
+geomx <- geomx %>%
+  normalize(norm_method = "quant", desiredQuantile = 0.75, toElt = "q_norm")
+```
+
+```{r "run UMAP", eval = create_objs}
+# update defaults for umap to contain a stable random_state (seed)
+custom_umap <- umap::umap.defaults
+
+custom_umap$random_state <- 42
+
+# run UMAP
+# exclude data for Ag tags and control tags
+exclude <- rownames(geomx)
+exclude <- grepl("^(Custom|Barcode)|_CTL$", exclude)
+u_dat   <- geomx[!exclude, ]
+
+umap_out <- umap(
+  t(log2(assayDataElement(u_dat, elt = "q_norm"))),  
+  config = custom_umap
+)
+
+pData(geomx)[, c("UMAP_1", "UMAP_2")] <- umap_out$layout[, c(1,2)]
+```
+
+```{r "format pData", eval = create_objs}
+# Fix sample names
+pData(geomx) <- pData(geomx) %>%
+  mutate(
+    LN     = str_remove(LN, "(?<=LN) "),
+    sample = str_remove(LN, " LN[0-9]+$"),
+    sample = str_remove(sample, "^ova-GeoMX\\+VV "),
+    sample = str_replace_all(sample, "week", "wk"),
+    sample = str_replace_all(sample, " and ", "-"),
+    rep    = str_extract(LN, "LN[ 0-9]+"),
+    rep    = str_remove_all(rep, " "),
+    slide  = as.numeric(str_extract(`Slide Name`, "[0-9]+$"))
+  )
+
+# Add Ag signals to pData
+ag_bcs   <- c("Barcode01", "Barcode02")
+ag_tms   <- c("3wk", "6wk")
+ag_clmns <- set_names(str_c("Ag_", ag_tms, "_score"), ag_tms)
+
+ag_dat <- geomx[ag_bcs, ] %>%
+  assayDataElement(elt = "q_norm") %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("dcc")
+
+pData(geomx) <- pData(geomx) %>%
+  rownames_to_column("dcc") %>%
+  left_join(ag_dat, by = "dcc") %>%
+  column_to_rownames("dcc")
+
+# Assign barcode signals
+# the Ag barcode is opposite for slide 1 and 2
+bc_key <- pData(geomx) %>%
+  filter(sample %in% ag_tms) %>%
+  group_by(slide, sample) %>%
+  summarize(across(all_of(bcs), mean), .groups = "drop") %>%
+  pivot_longer(all_of(bcs)) %>%
+  group_by(slide, sample) %>%
+  filter(value == max(value)) %>%
+  split(.$slide) %>%
+  map(~ set_names(.x$name, .x$sample))
+
+pData(geomx) <- pData(geomx) %>%
+  rownames_to_column("dcc") %>%
+  rowwise() %>%
+  mutate(
+    !!sym(ag_clmns[[1]]) := bc_key[[as.character(slide)]][[names(ag_clmns[1])]],
+    !!sym(ag_clmns[[2]]) := bc_key[[as.character(slide)]][[names(ag_clmns[2])]]
+  ) %>%
+
+  mutate(
+    across(all_of(unname(ag_clmns)), ~ {
+      case_when(
+        .x == "Barcode01" ~ Barcode01,
+        .x == "Barcode02" ~ Barcode02
+      )
+    }),
+    Ag_score = case_when(
+      !sample %in% names(ag_clmns) ~ Ag_3wk_score,
+      sample == "3wk"              ~ !!sym(ag_clmns[["3wk"]]),
+      sample == "6wk"              ~ !!sym(ag_clmns[["6wk"]])
+    )
+  ) %>%
+  ungroup() %>%
+  column_to_rownames("dcc")
+```
+
+```{r "save geomx objects", eval = create_objs}
+save_objs(geomx_raw, ob_dir = here(params$geomx_dir))
+save_objs(geomx,     ob_dir = here(params$geomx_dir))
+```
+
+```{r "load geomx objects"}
+geomx <- qread(here(params$geomx_dir, "geomx.qs"))
+```
+
+
+
+```{r "EXTRA GEOMX PLOTS", eval = FALSE}
+# Boxplots
+# Ova signal in each region for each mouse
+bx_gns <- rf_gns
+
+plt_dat %>%
+  pivot_longer(c(`ova-3wk`, `ova-6wk`)) %>%
+  ggplot(aes(region_2, value, fill = region_2, color = region_2)) +
+  geom_boxplot(alpha = 0.5, key_glyph = draw_key_point) +
+  facet_grid(name ~ sample, scales = "free_y") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.2,
+    legend.position = "none",
+    axis.text.x     = element_text(angle = 45, hjust = 1)
+  )
+
+# Ova signal in each region for each segment type 
+plt_dat %>%
+  filter(sample != "naive") %>%
+  
+  ggplot(aes(region_2, top_ova, fill = region_2, color = region_2)) +
+  geom_boxplot(alpha = 0.5, key_glyph = draw_key_point) +
+  facet_grid(~ Segment) +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.2,
+    legend.position = "none",
+    axis.text.x     = element_text(angle = 45, hjust = 1)
+  )
+
+# Ova signal in each region for each mouse
+plt_dat %>%
+  filter(sample != "naive", Segment == "Lyve1") %>%
+  pivot_longer(c(`ova-3wk`, `ova-6wk`)) %>%
+  
+  ggplot(aes(region_2, value, fill = region_2, color = region_2)) +
+  geom_boxplot(alpha = 0.5, key_glyph = draw_key_point) +
+  facet_grid(name ~ sample) +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.2,
+    legend.position = "none",
+    axis.text.x     = element_text(angle = 45, hjust = 1)
+  )
+
+# Ova-3wk signal in each region for Lyve1 vs CD11C segments
+clmn <- "ova-3wk"
+
+plt_dat %>%
+  filter(sample %in% c("3wk", "6wk-3wk"), Segment %in% c("Lyve1", "CD11C")) %>%
+  
+  ggplot(aes(region_2, !!sym(clmn), fill = region_2, color = region_2)) +
+  geom_boxplot(alpha = 0.5, key_glyph = draw_key_point) +
+  facet_grid(~ Segment, scales = "free_y") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.2,
+    legend.position = "none",
+    axis.text.x     = element_text(angle = 45, hjust = 1)
+  )
+
+# Scatter plot comparing Lyve1 and CD11C segments
+clmn <- "ova-6wk"
+clmn <- "ova-3wk"
+clmn <- "top_ova"
+
+dat <- plt_dat %>%
+  filter(Segment %in% c("Lyve1", "CD11C")) %>%
+  dplyr::select(
+    `ROI Coordinate X`, `ROI Coordinate Y`,
+    region_2, Segment, sample,
+    !!sym(clmn)
+  ) %>%
+  group_by(`ROI Coordinate X`, `ROI Coordinate Y`) %>%
+  filter(all(c("Lyve1", "CD11C") %in% Segment)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = Segment, values_from = !!sym(clmn))
+
+dat %>%  
+  ggplot(aes(Lyve1, CD11C)) +
+  geom_smooth(method = "lm", color = "black", alpha = 0.2, linewidth = 0.5, linetype = 2) +
+  geom_point(color = "blue") +
+  base_theme
+  
+
+
+# # Heatmap
+# # ht_dat %>%
+# #   ggplot(aes(region_2, name, fill = value)) +
+# #   geom_tile() +
+# #   scale_fill_gradientn(colours = c("lightblue", "white", "red")) +
+# #   base_theme
+# ht_dat <- plt_dat %>%
+#   pivot_longer(all_of(rf_gns)) %>%
+#   filter(Segment == "Lyve1", region_2 != "lymphatics") %>%
+#   group_by(name, region_2) %>%
+#   summarize(value = mean(value), .groups = "drop") %>%
+#   group_by(name) %>%
+#   mutate(value = as.numeric(scale(value))) %>%
+#   ungroup()
+# 
+# # Complex Heatmap
+# ht <- ht_dat %>%
+#   pivot_wider(names_from = name, values_from = value) %>%
+#   column_to_rownames("region_2") %>%
+#   as.matrix() %>%
+#   t() %>%
+#   Heatmap()
+# 
+# # Scatter plots
+# sc_gns <- rf_gns[!grepl("^ova-|Barcode", rf_gns)]
+# 
+# sc <- plt_dat %>%
+#   pivot_longer(all_of(sc_gns)) %>%
+#   filter(Segment == "Lyve1") %>%
+#   
+#   ggplot(aes(`ova-6wk`, value, color = name)) +
+#   geom_point() +
+#   facet_wrap(~ name, scales = "free") +
+#   scale_x_log10() +
+#   base_theme +
+#   theme(
+#     aspect.ratio = 1,
+#     axis.text.x  = element_text(angle = 45, hjust = 1)
+#   )
+# 
+# # UMAP projections
+# plt_dat %>%
+#   plot_scatter(
+#     "Segment",
+#     "UMAP1", "UMAP2",
+#     size = 3
+#   ) +
+#   theme(aspect.ratio = 1)
+```
+
+```{r "GEOMX HEATMAP", fig.width = 5, fig.height = 5, eval = FALSE}
+ ht
+```
+

@@ -1,0 +1,193 @@
+---
+title: "Antigen Tracking Figures"
+author: "Ryan Sheridan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc:            false
+    toc_float:      true
+    toc_depth:      4
+    df_print:       "paged"
+    code_folding:   "hide"
+    self_contained: true
+    highlight:      "kate"
+params:
+  template_dir:  "src"                                                     # template Rmarkdowns
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-11-01" # ML models
+  chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
+  ref_dir:       "ref"                                                     # clustifyr references
+  sample_info:   "sample_info.xlsx"
+  res_dir:                                                
+    value:
+      exp-0: "~/Projects/antigen-tracking/results"
+      exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
+      exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
+editor_options: 
+  chunk_output_type: inline
+---
+
+---
+
+<br>
+
+```{r "setup", include = FALSE}
+# Default chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo    = FALSE,
+  dpi     = 300
+)
+
+knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
+knitr::knit(here::here(params$template_dir, "setup-ml.Rmd"), "")
+
+# Plot parameters
+min_cells <- 5
+rf_typs   <- c("cLEC", "fLEC", "Collecting")
+rf_tms    <- c(14, 21, 42)
+
+ag_modules <- rf_typs %>%
+  map(str_c, c("_high", "_low")) %>%
+  unlist()
+
+# Keys for naming labels
+ag_clmns <- c("Ag_3wk_score", "Ag_6wk_score")
+
+ag_labs <- set_names(
+  c("Ag-score (21 day)", "Ag-score (42 day)"),
+  ag_clmns
+)
+
+ag_labs_2 <- set_names(
+  c("Ag-score\n21 day", "Ag-score\n42 day"),
+  ag_clmns
+)
+
+# Mouse key
+m_key <- c(
+  d2        = "2 day",
+  d14       = "14 day",
+  `3wk`     = "21 day",
+  `6wk`     = "42 day",
+  `6wk-3wk` = "dual"
+)
+
+# Experiment to show in main figures
+ag_exps <- list(LEC = "exp-1", DC = "exp-2")
+
+# Objects to use for each cell type
+ag_objs <- list(LEC = lec_so, DC = dc_so)
+
+# LEC/DC subset colors
+subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
+```
+
+```{r "FUNCTIONS"}
+create_gn_plots <- function(obj, gns, pt_sz = 0.25, typ_clrs) {
+  gns %>%
+    walk(~ {
+      cat("\n\n##", .x, "\n\n")
+      
+      u_typ <- obj %>%
+        plot_scatter(
+          "subtype",
+          x = "hUMAP_1", y = "hUMAP_2",
+          plot_colors = typ_clrs,
+          size        = pt_sz
+        ) +
+        guides(color = guide_legend(
+          ncol = 2,
+          override.aes = list(size = 4), reverse = TRUE
+        )) +
+        umap_theme_2 +
+        theme(legend.title = element_blank())
+      
+      u <- obj %>%
+        plot_scatter(
+          .x,
+          x = "hUMAP_1", y = "hUMAP_2",
+          group_col   = "mouse",
+          plot_colors = c("lightblue", "red"),
+          panel_nrow  = 1,
+          size        = pt_sz
+        ) +
+        guides(color = guide_colorbar(ticks = FALSE)) +
+        umap_theme_2 +
+        theme(
+          legend.position = "top",
+          legend.key.width = unit(40, "pt"),
+          legend.key.height = unit(7, "pt")
+        )
+      
+      u <- plot_grid(
+        u_typ, u,
+        nrow  = 1,
+        align = "tb",
+        axis  = "h",
+        rel_widths = c(2.5, length(mice))
+      )
+      
+      b <- obj %>%
+        plot_violin(
+          .x,
+          cluster_col   = "mouse",
+          group_col     = "subtype",
+          method        = "boxplot",
+          plot_colors   = m_clrs,
+          plot_lvls     = mice,
+          panel_nrow    = 1,
+          outlier.size  = 0.25,
+          outlier.alpha = 1
+        ) + 
+        theme(
+          aspect.ratio = 0.8,
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 10)
+        )
+      
+      plt <- plot_grid(
+        u, b,
+        ncol = 1
+      )
+      
+      print(plt)
+      cat("\n\n---\n\n<br>\n\n")
+    })
+}
+```
+
+# LECs {.tabset}
+
+Expression of CIITA genes is shown for LEC subsets.
+
+```{r "CIITA LECs", fig.width = 18, fig.height = 6.5, results = "asis"}
+gns   <- c("Ciita", "Cd80", "Cd86", "Cd40", "Cd70")
+pt_sz <- 0.25
+
+lec_so %>%
+  create_gn_plots(
+    gns      = gns,
+    pt_sz    = pt_sz,
+    typ_clrs = lec_clrs
+  )
+```
+
+# DCs {.tabset}
+
+Expression of CIITA genes is shown for DC subsets
+
+```{r "CIITA DCs", fig.width = 18, fig.height = 6.5, results = "asis"}
+dc_so %>%
+  create_gn_plots(
+    gns      = gns,
+    pt_sz    = pt_sz,
+    typ_clrs = dc_clrs
+  )
+```
+
+# Session info
+
+```{r "session info"}
+sessionInfo()
+```

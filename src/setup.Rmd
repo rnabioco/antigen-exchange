@@ -8,54 +8,66 @@ knitr::opts_chunk$set(
   dpi     = 300
 )
 
-# Load packages
+# Tidyverse
 library(tidyverse)
-library(ggbeeswarm)
-library(ggforce)
-library(Seurat)
-library(gprofiler2)
 library(knitr)
+library(broom)
+library(here)
+library(devtools)
+library(cli)
+
+# Plotting
+library(scales)
+library(ggforce)
+library(ggbeeswarm)
 library(cowplot)
 library(ggrepel)
 library(RColorBrewer)
-library(xlsx)
 library(colorblindr)
-library(broom)
-library(mixtools)
-library(clustifyr)
-library(boot)
-library(scales)
 library(patchwork)
+library(ggtext)
+library(ggtrace)
+library(MetBrewer)
+library(ggtree)
+library(qs)
+library(openxlsx)
+library(xlsx)
 library(ComplexHeatmap)
-library(devtools)
-library(presto)
-library(here)
-library(tools)
+
+# scRNA-seq
+library(Seurat)
+library(clustifyr)
 library(clustifyrdata)
-library(gtools)
+library(presto)
+library(harmony)
 library(djvdj)
 library(M3Drop)
-library(vroom)
-library(qs)
-library(ggtrace)
-library(ggtext)
-library(lubridate)
-library(MetBrewer)
-library(openxlsx)
+
+# Gene ontology
+library(gprofiler2)
 library(biomaRt)
-library(harmony)
-library(rsample)
-library(ranger)
-library(furrr)
-library(caret)
 library(clusterProfiler)
 library(enrichplot)
 library(msigdbr)
 library(org.Mm.eg.db)
 library(GOSemSim)
-library(biomaRt)
-library(ggtree)
-library(cli)
+
+# Models
+library(mixtools)
+library(boot)
+library(tools)
+library(gtools)
+library(rsample)
+library(ranger)
+library(furrr)
+library(caret)
+
+# GeoMx
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(umap)
+library(SpatialOmicsOverlay)
 
 source(here(params$template_dir, "funs.R"))
 
@@ -118,16 +130,24 @@ integrate_sobjs <- function(so_in, group_vars = "mouse", dims = 1:40,
 #' @param control_types Cell types to use for calculating control signal
 #' @param type_clmn Column containing cell types, this should contain the types
 #' provided to control_types
-#' @param sample_clmn Column containing sample names that match those provided
-#' by `norm_factors`
 #' @param norm_factors Named vector where names are sample names found in
 #' `sample_clmn` and values are normalization factors for each sample,
-#' e.g. total counts expressed in millions
+#' e.g. total counts expressed in millions. If NULL signal is not normalized
+#' prior to correcting for background.
+#' @param sample_clmn Column containing sample names that match those provided
+#' by `norm_factors`
 #' @param q Quantile to use as cutoff for control signal
+#' @param operation Function to use for normalizing by control signal, this 
+#' should take two arguments, the first is the signal to normalize,
+#' the second is the control signal.
+#' @param slot Slot in object to fetch data, default is counts.
+#' @param final_trans Final transformation to perform after normalizing and
+#' correcting background
 #' @noRd
 calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
                           type_clmn = "cell_type", sample_clmn = "directory",
-                          norm_factors, q = 0.75) {
+                          norm_factors = NULL, q = 0.75,
+                          operation = `-`, slot = "counts", final_trans = log1p) {
 
   # Column containing cell types
   type_clmn <- names(control_types) %||% "cell_type"
@@ -142,38 +162,52 @@ calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
   )
   
   # Fetch clmns
-  if (any(!clmns %in% colnames(obj@meta.data))) {
-    DefaultAssay(obj) <- "ADT"
-    
-    obj <- obj %>%
-      AddMetaData(FetchData(., clmns))
-    
-    DefaultAssay(obj) <- "RNA"
-  }
+  DefaultAssay(obj) <- "ADT"
   
-  # Calculate Ag scores
+  obj <- obj %>%
+    AddMetaData(FetchData(., clmns, slot = slot))
+  
+  DefaultAssay(obj) <- "RNA"
+  
+  # Normalize using norm_factors
   res <- obj %>%  
     mutate_meta(~ {
       .x %>%
         group_by(!!sym(sample_clmn)) %>%
         
-        mutate(across(
-          all_of(unname(clmns)),
-          ~ .x / norm_factors[!!sym(sample_clmn)],
-          .names = "{.col}_cpm")
-        ) %>%
-        
+        mutate(
+          across(all_of(unname(clmns)), ~ {
+            fctr <- ifelse(
+              !is.null(norm_factors),
+              norm_factors[!!sym(sample_clmn)],
+              1
+            )
+            .x / fctr
+          },
+          .names = "{.col}_cpm"
+          )
+        )
+    })
+  
+  # Subtract background signal and transform
+  res <- res %>%
+    mutate_meta(~ {
+      .x %>%
         mutate(across(
           all_of(cpm_clmns),
           ~ {
-            idx   <- !!sym(type_clmn) %in% typs   # rows to use
-            t_cut <- quantile(.x[idx], q)         # set cutoff
-            res   <- .x - t_cut                   # subtract background
+            res <- .x
             
-            # replace negative values and log-transform
-            res[res < 0] <- 0
+            if (!is.null(control_types)) {
+              idx   <- !!sym(type_clmn) %in% typs   # rows to use
+              t_cut <- quantile(.x[idx], q)         # set cutoff
+              res   <- operation(.x, t_cut)         # correct for background
+              
+              # replace negative values and log-transform
+              res[res < 0] <- 0
+            }
             
-            res <- log1p(res)
+            res <- final_trans(res)
             
             res
           },
@@ -185,6 +219,7 @@ calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
   
   res
 }
+
 #' Format and normalize Ag meta.data columns
 #' 
 #' @param so_in Input object
@@ -194,7 +229,7 @@ calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
 #' each experiment. List names should be experiment name, vector names should
 #' be new label for the Ag tag.
 #' @noRd
-format_ag_data <- function(so_in, norm_factors, ag_key) {
+format_ag_data <- function(so_in, norm_factors, ag_key, ...) {
   
   # Assign labels for Ag tags (ABPS2, ABPS4)
   res <- so_in %>%
@@ -230,7 +265,8 @@ format_ag_data <- function(so_in, norm_factors, ag_key) {
       clmns        = ag_clmns,
       type_clmn    = "cell_type",
       sample_clmn  = "directory",
-      norm_factors = norm_factors
+      norm_factors = norm_factors,
+      ...
     )
   
   # Format Ag score columns
@@ -1159,18 +1195,32 @@ ref_immgen_dc <- cbind(ref_immgen[shared_gns, ], ref_mousespleenDC[shared_gns, ]
 # normalizing data
 norm_file <- here(params$ref_dir, "norm_factors.tsv")
 
+.calc_lib_size <- function(mat_path, mat_file, factor = 1e6) {
+  mat <- here(mat_path, "outs", mat_file)
+  res <- Read10X(mat)
+  res <- sum(res$`Antibody Capture`) / factor
+  
+  res
+}
+
 if (!file.exists(norm_file)) {
   plan(strategy = multisession, workers = 6)
   
   norm_factors <- sam_info %>%
     mutate(
-      lib_size = future_pmap_dbl(., ~ {
+      raw_lib_size = future_pmap_dbl(., ~ {
         args <- list(...)
-        
-        mat <- here(params$res_dir[[args$experiment]], args$directory)
-        mat <- here(mat, "outs/raw_feature_bc_matrix")
-        res <- Read10X(mat)
-        sum(res$`Antibody Capture`) / 1e6
+        .calc_lib_size(
+          here(params$res_dir[[args$experiment]], args$directory),
+          "raw_feature_bc_matrix"
+        )
+      }),
+      filt_lib_size = future_pmap_dbl(., ~ {
+        args <- list(...)
+        .calc_lib_size(
+          here(params$res_dir[[args$experiment]], args$directory),
+          "filtered_feature_bc_matrix"
+        )
       })
     )
   
@@ -1183,7 +1233,7 @@ if (!file.exists(norm_file)) {
 norm_factors <- read_tsv(norm_file)
 
 norm_factors <- set_names(
-  norm_factors$lib_size,
+  norm_factors$raw_lib_size,
   norm_factors$directory
 )
 ```
@@ -1707,7 +1757,7 @@ dc_so <- dc_so %>%
   integrate_sobjs(group_vars = "mouse")
 ```
 
-```{r "save objects", eval = create_sobjs}
+```{r "save suerat objects", eval = create_sobjs}
 # Save meta.data for all cells combined
 all_meta <- list(cd45neg_so, cd45pos_so) %>%
   map_dfr(~ .x@meta.data) %>%
