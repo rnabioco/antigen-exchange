@@ -8,32 +8,6 @@ knitr::opts_chunk$set(
   dpi     = 300
 )
 
-# Tidyverse
-library(tidyverse)
-library(knitr)
-library(broom)
-library(here)
-library(devtools)
-library(cli)
-
-# Plotting
-library(scales)
-library(ggforce)
-library(ggbeeswarm)
-library(cowplot)
-library(ggrepel)
-library(RColorBrewer)
-library(colorblindr)
-library(patchwork)
-library(ggtext)
-library(ggtrace)
-library(MetBrewer)
-library(ggtree)
-library(qs)
-library(openxlsx)
-library(xlsx)
-library(ComplexHeatmap)
-
 # scRNA-seq
 library(Seurat)
 library(clustifyr)
@@ -68,6 +42,32 @@ library(GeomxTools)
 library(GeoMxWorkflows)
 library(umap)
 library(SpatialOmicsOverlay)
+
+# Plotting
+library(scales)
+library(ggforce)
+library(ggbeeswarm)
+library(cowplot)
+library(ggrepel)
+library(RColorBrewer)
+library(colorblindr)
+library(patchwork)
+library(ggtext)
+library(ggtrace)
+library(MetBrewer)
+library(ggtree)
+library(qs)
+library(openxlsx)
+library(xlsx)
+library(ComplexHeatmap)
+
+# Tidyverse
+library(tidyverse)
+library(knitr)
+library(broom)
+library(here)
+library(devtools)
+library(cli)
 
 source(here(params$template_dir, "funs.R"))
 

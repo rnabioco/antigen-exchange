@@ -17,7 +17,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -29,36 +29,166 @@ knitr::opts_chunk$set(
   dpi     = 300
 )
 
+# Increase memory for loading image
+options(java.parameters = "-Xmx12000m")
+
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 knitr::knit(here::here(params$template_dir, "setup-geomx.Rmd"), "")
 
 rm(lec_so, dc_so)
 
-# Mouse key
-m_key <- c(
-  d2        = "2 day",
-  d14       = "14 day",
-  `3wk`     = "21 day",
-  `6wk`     = "42 day",
-  `6wk-3wk` = "dual"
-)
+geomx_dat <- geomx %>%
+  pData() %>%
+  as_tibble(rownames = "dcc")
 
-# Data for plotting
-geomx_dat <- pData(geomx) %>%
-  rownames_to_column("dcc")
+# Mouse key
+geo_m_key <- c(
+  `3wk`     = "day 21",
+  `6wk`     = "day 42",
+  `6wk-3wk` = "dual",
+  naive     = "naive"
+)
 ```
 
-```{r "ova boxplots"}
+## Extended figures
+
+The sample identity is shown below for each slide.
+
+```{r "all geomx samples", fig.width = 10, fig.height = 8}
+plot_geomx_image <- function(obj_in, color, clrs = NULL, labs = waiver(),
+                             legend_values = names(labs) %||% names(clrs),
+                             ttl = NULL) {
+  
+  res <- obj_in %>%
+    plotSpatialOverlay(
+      colorBy          = color,
+      scaleBar         = TRUE,
+      corner           = "bottomleft",
+      textDistance     = 1.5,
+      scaleBarLineSize = 0.5,
+      scaleBarFontSize = 8 / .pt
+    ) +
+    ggtitle(ttl) +
+    theme(
+      plot.margin  = margin(r = 20),
+      plot.title   = element_text(hjust = 0.5, size = ttl_pt2 * 1.5),
+      legend.title = element_blank(),
+      legend.text  = element_text(size = ttl_pt1)
+    )
+  
+  if (!is.null(legend_values)) {
+    all_sams_df <- tibble(x = 1, y = 1, colorBy = legend_values)
+    
+    res <- res +
+      geom_blank(aes(x, y, fill = colorBy), data = all_sams_df)
+  }
+  
+  if (!is.null(clrs)) {
+    if (is.numeric(obj_in@plottingFactors[[color]])) {
+      res <- res +
+        scale_fill_gradientn(colours = clrs)
+    } else {
+      res <- res +
+        scale_fill_manual(values = clrs, labels = labs)
+    }
+  }
+  
+  res
+}
+
+geomx_imgs %>%
+  imap(~ {
+    .x %>%
+      plot_geomx_image(
+        color = "Sample",
+        clrs  = geo_m_clrs,
+        labs  = geo_m_key,
+        ttl   = .y
+      )
+  }) %>%
+  wrap_plots(
+    guides = "collect",
+    nrow = 1
+  ) &
+  theme(legend.position = "bottom")
+```
+
+Region labels are shown below for each slide.
+
+```{r "all geomx regions", fig.width = 10, fig.height = 8}
+geomx_imgs %>%
+  imap(~ {
+    .x %>%
+      plot_geomx_image(
+        color = "Region",
+        clrs  = reg_clrs,
+        ttl   = .y
+      )
+  }) %>%
+  wrap_plots(
+    guides = "collect",
+    nrow = 1
+  ) &
+  theme(legend.position = "bottom")
+```
+
+Segment labels are shown below for each slide.
+
+```{r "all geomx segments", fig.width = 10, fig.height = 8}
+geomx_imgs %>%
+  imap(~ {
+    .x %>%
+      plot_geomx_image(
+        color = "Segment",
+        clrs  = seg_clrs,
+        ttl   = .y
+      )
+  }) %>%
+  wrap_plots(
+    guides = "collect",
+    nrow = 1
+  ) &
+  theme(legend.position = "bottom")
+```
+
+The Ag signal is shown below for each region.
+
+```{r "all geomx Ag-score", fig.width = 10, fig.height = 8}
+geomx_imgs %>%
+  imap(~ {
+    .x %>%
+      plot_geomx_image(
+        color = "Ag-score",
+        clrs  = c("white", "#D7301F", "#D7301F"),
+        ttl   = .y
+      ) +
+      guides(fill = guide_colorbar(ticks = FALSE))
+  }) %>%
+  wrap_plots(nrow = 1) &
+  theme(
+    legend.position   = "bottom",
+    legend.key.width  = unit(40, "pt"),
+    legend.key.height = unit(7, "pt"),
+    legend.text       = element_text(size = 8),
+    legend.title      = element_text(size = txt_pt1)
+  )
+```
+
+
+
+```{r "ova boxplots", eval = FALSE}
 # Plot colors
-seg_clrs <- c(medula = "#D7301F", sinus = "#56B4E9", cortex = "#F0E442")
+seg_clrs <- c(medulla = "#D7301F", sinus = "#56B4E9", cortex = "#F0E442")
 
 # Ova-3wk signal in each region for Lyve1 vs CD11C segments
+clmn <- "Ag_score"
+clmn <- "Ag_6wk_score"
 clmn <- "Ag_3wk_score"
 
-plt_dat %>%
+geomx_dat %>%
   filter(sample %in% c("3wk", "6wk-3wk"), Segment %in% c("Lyve1", "CD11C")) %>%
   
-  ggplot(aes(region_2, !!sym(clmn), fill = region_2, color = region_2)) +
+  ggplot(aes(region_3, !!sym(clmn), fill = region_3, color = region_2)) +
   geom_boxplot(key_glyph = draw_key_point, color = "black", alpha = 1) +
   facet_grid(~ Segment, scales = "free_y") +
   scale_fill_manual(values = seg_clrs) +
@@ -71,21 +201,19 @@ plt_dat %>%
     axis.title.x    = element_blank()
   )
 
-ggsave(here(fig_dir, "ova_bxs.png"), dpi = 400)
-
 # Scatter plot comparing Lyve1 and CD11C segments
 # clmn <- "ova-6wk"
 # clmn <- "ova-3wk"
-clmn <- "top_ova"
+clmn <- "Ag_score"
 
-dat <- plt_dat %>%
+dat <- geomx_dat %>%
   filter(
     Segment %in% c("Lyve1", "CD11C"),
     sample != "naive"
   ) %>%
   dplyr::select(
     `ROI Coordinate X`, `ROI Coordinate Y`,
-    region_2, Segment, sample,
+    region_3, Segment, sample,
     !!sym(clmn)
   ) %>%
   group_by(`ROI Coordinate X`, `ROI Coordinate Y`) %>%
@@ -103,7 +231,7 @@ sct_clrs <- seg_clrs
 sct_clrs["cortex"] <- "black"
 
 dat %>%
-  ggplot(aes(`Lyve1+ Ova signal`, `CD11C+ Ova signal`, color = region_2)) +
+  ggplot(aes(`Lyve1+ Ova signal`, `CD11C+ Ova signal`, color = region_3)) +
   geom_smooth(method = "lm", color = "black", alpha = 0.2, linewidth = 0.5, linetype = 2) +
   geom_point() +
   scale_color_manual(values = sct_clrs) +
@@ -112,57 +240,49 @@ dat %>%
     aspect.ratio = 1,
     legend.title = element_blank()
   )
-
-ggsave(here(fig_dir, "ova_sct.png"), dpi = 400)
 ```
 
-```{r "GEOMX SLIDES", eval = FALSE}
-# To load slide image and metadata:
-# * increase memory limit for java before starting session and loading packages:
-#   `options(java.parameters = "-Xmx24000m")`
-# * modify column names in labworksheet, refer to: 
-#   https://github.com/Nanostring-Biostats/SpatialOmicsOverlay/issues/46#issue-1660988311
-tiff  <- "~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/data/230623_A00405_0707_AHCK7MDSX7/images/Slide 1.ome.tiff"
-wksht <- here("results/geomx/geomx_worksheets/Tamburini_061423_20230619T1930_LabWorksheet.txt")
+```{r "EACH SEPARATE", eval = FALSE}
+var <- "Region"
 
-img <- readSpatialOverlay(
-  ometiff   = tiff,
-  annots    = wksht,
-  image     = TRUE,
-  slideName = "Slide 1",
-  res       = 3  # resolution
-)
+geomx_imgs[1] %>%
+  map(~ {
+    obj  <- .x
+    sams <- obj@plottingFactors$Sample %>%
+      as.character() %>%
+      unique() %>%
+      na.omit()
 
-# Load annotation worksheet
-annots <- wksht %>%
-  readLabWorksheet(slideName = "Slide 1")
+    sams %>%
+      map(~ {
+        ids <- obj@plottingFactors %>%
+          dplyr::filter(Sample == .x) %>%
+          rownames() %>%
+          unique()
+        
+        img <- obj %>%
+          cropSamples(
+            sampleIDs = ids, sampsOnly = FALSE, buffer = 0.2
+          )
 
-# Add image annotations to image object
-img_annots <- plt_dat %>%
-  mutate(
-    Sample_ID = str_remove(dcc, "\\.dcc$"),
-    # Segment   = ifelse(Segment %in% c("Lyve1", "CD11C"), Segment, "other"),
-    region_2  = str_remove(region_2, ".+-")
-  )
+        img %>%
+          plotSpatialOverlay(
+            colorBy      = var,
+            scaleBar     = TRUE,
+            corner       = "bottomleft",
+            textDistance = 5
+          ) +
+          ggtitle(.x) +
+          geomx_theme
+      }) %>%
+      plot_grid(
+        plotlist = .,
+        ncol = 1
+      )
+  })
+```
 
-img <- img %>%
-  addPlottingFactor(
-    annots = set_names(img_annots$Ag_score, img_annots$Sample_ID),
-    plottingFactor = "Ova"
-  )
-
-img <- img %>%
-  addPlottingFactor(
-    annots = set_names(img_annots$Segment, img_annots$Sample_ID),
-    plottingFactor = "Segment"
-  )
-
-img <- img %>%
-  addPlottingFactor(
-    annots = set_names(img_annots$region_2, img_annots$Sample_ID),
-    plottingFactor = "Region"
-  )
-
+```{r "CROPPED IMAGES", eval = FALSE}
 # Crop image to show selected ROIs
 rois <- c("=\"006\"", "=\"007\"", "=\"008\"", "=\"022\"")
 
@@ -173,13 +293,13 @@ sams <- annots %>%
   ) %>%
   pull(Sample_ID)
 
-img_cropped <- img %>%
-  cropSamples(sampleIDs = sams, sampsOnly = TRUE)
+# img_cropped <- img %>%
+#   cropSamples(sampleIDs = sams, sampsOnly = TRUE)
 ```
 
-```{r}
+```{r, eval = FALSE}
 # Plot cropped image
-fig_dir <- "~/Dropbox/Ryan/Documents/Hesselberth_lab/Meetings/2024-03-12_data_club"
+# fig_dir <- "~/Dropbox/Ryan/Documents/Hesselberth_lab/Meetings/2024-03-12_data_club"
 
 geomx_theme <- theme(
   legend.position = "bottom",
@@ -187,21 +307,21 @@ geomx_theme <- theme(
   legend.title    = element_blank()
 )
 
-img_cropped %>%
-  plotSpatialOverlay(
-    colorBy      = "Segment",
-    scaleBar     = TRUE,
-    corner       = "bottomleft",
-    textDistance = 5
-  ) +
-  scale_fill_manual(values = unname(seg_clrs)) +
-  geomx_theme
-
-ggsave(here(fig_dir, "geomx_img_fig_1.png"), dpi = 400)
+# img_cropped %>%
+#   plotSpatialOverlay(
+#     colorBy      = "Segment",
+#     scaleBar     = TRUE,
+#     corner       = "bottomleft",
+#     textDistance = 5
+#   ) +
+#   scale_fill_manual(values = unname(seg_clrs)) +
+#   geomx_theme
+# 
+# ggsave(here(fig_dir, "geomx_img_fig_1.png"), dpi = 400)
 
 img %>%
   plotSpatialOverlay(
-    colorBy      = "Region",
+    colorBy      = "Sample",
     scaleBar     = TRUE,
     corner       = "bottomleft",
     textDistance = 5
@@ -225,4 +345,6 @@ img_cropped %>%
 
 ggsave(here(fig_dir, "geomx_img_fig_3.png"), dpi = 400)
 ```
+
+
 
