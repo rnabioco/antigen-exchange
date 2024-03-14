@@ -10,16 +10,16 @@ knitr::opts_chunk$set(
 
 # Colors
 reg_clrs <- c(
+  cortex     = "#F0E442",
   medulla    = "#D7301F",
   sinus      = "#56B4E9",
-  cortex     = "#F0E442",
   `whole LN` = "grey85"
 )
 
 seg_clrs <- c(
   Lyve1 = "#D7301F",
-  CD4   = "#F0E442",
   CD11C = "#56B4E9",
+  CD4   = "#F0E442",
   Other = "grey85"
 )
 
@@ -403,13 +403,11 @@ pData(geomx) <- pData(geomx) %>%
 ```{r "save geomx objects", eval = create_objs}
 save_objs(geomx_raw,  ob_dir = here(params$geomx_dir))
 save_objs(geomx,      ob_dir = here(params$geomx_dir))
-# save_objs(geomx_imgs, ob_dir = here(params$geomx_dir))
 ```
 
 ```{r "load geomx objects"}
 geomx     <- qread(here(params$geomx_dir, "geomx.qs"))
 geomx_raw <- qread(here(params$geomx_dir, "geomx_raw.qs"))
-# geomx_imgs <- qread(here(params$geomx_dir, "geomx_imgs.qs"))
 ```
 
 ```{r "geomx images"}
@@ -447,6 +445,7 @@ img_vars <- c(
   Sample     = "sample",
   Roi        = "Roi",
   Segment    = "Segment",
+  Region_BT  = "region",
   Region     = "region_3",
   `Ag-score` = "Ag_score"
 )

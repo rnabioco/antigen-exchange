@@ -36,13 +36,6 @@ library(ranger)
 library(furrr)
 library(caret)
 
-# GeoMx
-library(NanoStringNCTools)
-library(GeomxTools)
-library(GeoMxWorkflows)
-library(umap)
-library(SpatialOmicsOverlay)
-
 # Plotting
 library(scales)
 library(ggforce)
@@ -68,6 +61,13 @@ library(broom)
 library(here)
 library(devtools)
 library(cli)
+
+# GeoMx
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(umap)
+library(SpatialOmicsOverlay)
 
 source(here(params$template_dir, "funs.R"))
 

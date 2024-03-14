@@ -39,7 +39,6 @@ knitr::opts_chunk$set(
 
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 knitr::knit(here::here(params$template_dir, "setup-ml.Rmd"), "")
-knitr::knit(here::here(params$template_dir, "setup-geomx.Rmd"), "")
 
 # Plot parameters
 min_cells <- 5
