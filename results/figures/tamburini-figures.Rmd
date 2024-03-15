@@ -13,7 +13,7 @@ output:
     highlight:      "kate"
 params:
   template_dir:  "src"                                                     # template Rmarkdowns
-  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-03-15"  # Seurat objects
   mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-11-01" # ML models
   geomx_dir:     "results/geomx"
   chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects

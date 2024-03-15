@@ -132,7 +132,7 @@ integrate_sobjs <- function(so_in, group_vars = "mouse", dims = 1:40,
 #' provided to control_types
 #' @param norm_factors Named vector where names are sample names found in
 #' `sample_clmn` and values are normalization factors for each sample,
-#' e.g. total counts expressed in millions. If NULL signal is not normalized
+#' e.g. total counts expressed in millions. If NULL, signal is not transformed
 #' prior to correcting for background.
 #' @param sample_clmn Column containing sample names that match those provided
 #' by `norm_factors`
@@ -143,82 +143,149 @@ integrate_sobjs <- function(so_in, group_vars = "mouse", dims = 1:40,
 #' @param slot Slot in object to fetch data, default is counts.
 #' @param final_trans Final transformation to perform after normalizing and
 #' correcting background
+#' @param suffix Suffix to add to new columns
 #' @noRd
 calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
                           type_clmn = "cell_type", sample_clmn = "directory",
                           norm_factors = NULL, q = 0.75,
-                          operation = `-`, slot = "counts", final_trans = log1p) {
-
-  # Column containing cell types
-  type_clmn <- names(control_types) %||% "cell_type"
-  typs      <- unlist(control_types, use.names = FALSE)
-  
-  # Names for new columns
-  cpm_clmns <- str_c(clmns, "_cpm")
-  
-  final_clmns <- set_names(
-    str_c(cpm_clmns, "_score"),
-    names(clmns) %||% str_c(clmns, "_score")
-  )
+                          operation = `-`, slot = "counts",
+                          final_trans = log1p, suffix = "_score"
+                          ) {
   
   # Fetch clmns
+  assay             <- DefaultAssay(obj)
   DefaultAssay(obj) <- "ADT"
   
   obj <- obj %>%
     AddMetaData(FetchData(., clmns, slot = slot))
   
-  DefaultAssay(obj) <- "RNA"
+  DefaultAssay(obj) <- assay
   
   # Normalize using norm_factors
-  res <- obj %>%  
-    mutate_meta(~ {
-      .x %>%
-        group_by(!!sym(sample_clmn)) %>%
-        
-        mutate(
-          across(all_of(unname(clmns)), ~ {
-            fctr <- ifelse(
-              !is.null(norm_factors),
-              norm_factors[!!sym(sample_clmn)],
-              1
+  # if norm_factors not provided, values are not transformed
+  norm_clmns <- clmns
+    
+  if (!is.null(norm_factors)) {
+    norm_clmns <- str_c(clmns, "_norm")
+    
+    obj <- obj %>%  
+      mutate_meta(~ {
+        .x %>%
+          group_by(!!sym(sample_clmn)) %>%
+          mutate(
+            across(all_of(unname(clmns)), ~ {
+              fctr <- norm_factors[!!sym(sample_clmn)]
+              .x / fctr
+            },
+            .names = "{.col}_norm"
             )
-            .x / fctr
-          },
-          .names = "{.col}_cpm"
-          )
-        )
-    })
+          ) %>%
+          ungroup()
+      })
+  }
   
-  # Subtract background signal and transform
-  res <- res %>%
-    mutate_meta(~ {
-      .x %>%
-        mutate(across(
-          all_of(cpm_clmns),
-          ~ {
-            res <- .x
-            
-            if (!is.null(control_types)) {
-              idx   <- !!sym(type_clmn) %in% typs   # rows to use
-              t_cut <- quantile(.x[idx], q)         # set cutoff
-              res   <- operation(.x, t_cut)         # correct for background
+  # Calculate background signal
+  if (!is.null(control_types)) {
+    obj <- obj %>%
+      mutate_meta(~ {
+        .x %>%
+          group_by(!!sym(sample_clmn)) %>%
+          mutate(across(
+            all_of(norm_clmns),
+            ~ {
+              missing <- control_types[!control_types %in% !!sym(type_clmn)]
               
-              # replace negative values and log-transform
+              if (!is_empty(missing)) {
+                cli_warn("{missing} w{?as/ere} not found in {type_clmn}.")
+              }
+              
+              idx <- !!sym(type_clmn) %in% control_types  # rows to use
+              res <- quantile(.x[idx], q)                 # set cutoff
+              
+              res
+            },
+            .names = str_c("{.col}_threshold")
+          )) %>%
+          ungroup()
+      })
+    
+    # Subtract background signal
+    obj <- obj %>%
+      mutate_meta(~ {
+        .x %>%
+          group_by(!!sym(sample_clmn)) %>%
+          mutate(across(
+            all_of(norm_clmns),
+            ~ {
+              clmn   <- str_c(cur_column(), "_threshold")
+              thresh <- obj@meta.data[cur_group_rows(), clmn]
+              thresh <- unique(thresh)
+              
+              if (length(thresh) > 1) {
+                cli_abort("Threshold must be a single value for each group")
+              }
+              
+              res <- .x - thresh
+
               res[res < 0] <- 0
-            }
-            
-            res <- final_trans(res)
-            
-            res
-          },
-          .names = "{.col}_score")
-        ) %>%
-        ungroup() %>%
-        dplyr::rename(!!!final_clmns)
-    })
+
+              final_trans(res)
+            },
+            .names = str_c("{.col}", suffix)
+          )) %>%
+          ungroup()
+      })
+    
+    norm_clmns <- str_c(norm_clmns, suffix)
+  }
+  
+  # Rename final columns
+  final_clmns <- set_names(
+    norm_clmns,
+    names(clmns) %||% str_c(clmns, suffix)
+  )
+  
+  res <- obj %>%
+    mutate_meta(~ dplyr::rename(.x, !!!final_clmns))
   
   res
 }
+# # Subtract background signal and transform
+# res <- res %>%
+#   mutate_meta(~ {
+#     .x %>%
+#       group_by(!!sym(sample_clmn)) %>%
+#       mutate(across(
+#         all_of(cpm_clmns),
+#         ~ {
+#           res <- .x
+#           
+#           if (!is.null(control_types)) {
+#             missing <- control_types[!control_types %in% !!sym(type_clmn)]
+#             
+#             if (!is_empty(missing)) {
+#               cli_warn("{missing} w{?as/ere} not found in {type_clmn}.")
+#             }
+#             
+#             idx   <- !!sym(type_clmn) %in% control_types  # rows to use
+#             t_cut <- quantile(.x[idx], q)                 # set cutoff
+#             res   <- operation(.x, t_cut)                 # correct for background
+#             
+#             # replace negative values and log-transform
+#             res[res < 0] <- 0
+#           }
+#           
+#           res <- final_trans(res)
+#           
+#           res
+#         },
+#         .names = str_c("{.col}", suffix)
+#       )) %>%
+#       ungroup() %>%
+#       dplyr::rename(!!!final_clmns)
+#   })
+
+
 
 #' Format and normalize Ag meta.data columns
 #' 
