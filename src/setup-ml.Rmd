@@ -356,141 +356,86 @@ train_rf <- function(df_in, data_clmn, param_lst,
   res
 }
 
-create_gn_plots <- function(so_in, ag_high_gns = NULL, ag_low_gns = NULL,
-                            x = "pred_grp", plt_clrs, x_lvls, p_alt = NULL,
+create_gn_plots <- function(so_in, p_data,
+                            x = "pred_grp", plt_clrs, x_lvls,
                             n_gns = 10, top_gns = NULL,
                             p_test = wilcox.test, draw_line = TRUE, pt_size = 1,
                             sort = TRUE) {
   
-  # Set gene lists
-  ag_high_gns <- head(ag_high_gns, n_gns)
-  ag_low_gns  <- head(ag_low_gns, n_gns)
+  # Set genes to plot
+  gns <- p_data %>%
+    distinct(gene, class) %>%
+    mutate(top = gene %in% top_gns) %>%
+    group_by(class) %>%
+    mutate(rank = row_number()) %>%
+    arrange(desc(top), rank) %>%
+    slice(1:n_gns) %>%
+    ungroup() %>%
+    arrange(rank)
   
-  gns <- c(ag_high_gns, ag_low_gns)
+  gns <- set_names(gns$class, gns$gene)
   
-  if (any(duplicated(gns))) cli_abort("Provided genes cannot be duplicated")
-  if (is.null(gns))         cli_abort("Must provide Ag-high or -low genes")
-  
-  # alt_high <- alt_low <- p_alt
-  # alt_high <- alt_high %||% "greater"
-  # alt_low  <- alt_low  %||% "less"
-  # 
-  # alt_key <- set_names(
-  #   c(rep(alt_high, length(ag_high_gns)), rep(alt_low, length(ag_low_gns))),
-  #   gns
-  # )
+  p_data <- p_data %>%
+    filter(gene %in% names(gns))
   
   # Format data
   n_mice <- n_distinct(so_in$mouse)
   
-  gn_dat <- so_in %>%
-    FetchData(c("mouse", "tm", "subtype", x, "training_data", gns)) %>%
+  cell_type <- unique(so_in$subtype)
+  
+  if (length(cell_type) > 1) cli_abort("Object contains more than one cell type")
+  
+  plt_dat <- so_in %>%
+    FetchData(c("mouse", "tm", "subtype", x, "training_data", names(gns))) %>%
     as_tibble(rownames = ".cell_id") %>%
-    filter(!training_data) %>%
-    pivot_longer(all_of(gns)) %>%
+    pivot_longer(all_of(names(gns)), names_to = "gene") %>%
+    left_join(p_data, by = c("tm", x, "subtype", "gene")) %>%
+  
     mutate(
-      name      = fct_relevel(name, gns),
+      gene      = fct_relevel(gene, names(gns)),
       tm        = str_c("day ", tm),
       x         = str_c(!!sym(x), "-", tm),
       !!sym(x) := fct_relevel(!!sym(x), x_lvls),
-      # p_alt     = alt_key[name]                            # order boxes for
-    ) %>%                                                  # each timepoint
+    ) %>%
     arrange(!!sym(x)) %>%
     mutate(x = fct_inorder(x))
   
-  plt_dat <- gn_dat %>%
-    group_by(name, mouse, tm, subtype, !!sym(x), x) %>%
+  plt_dat <- plt_dat %>%
+    group_by(gene, mouse, tm, subtype, !!sym(x), x) %>%
     summarize(
-      n   = n_distinct(.cell_id),
-      med = median(value),
-      q1  = quantile(value, 0.25),
-      q3  = quantile(value, 0.75),
+      n       = n_distinct(.cell_id),
+      med     = median(value),
+      q1      = quantile(value, 0.25),
+      q3      = quantile(value, 0.75),
+      p_adj   = unique(p_adj),
       .groups = "drop"
     ) %>%
-    group_by(name, mouse, tm, subtype) %>%
-    
-    # filter(sum(med) > 0) %>%  # remove genes where median is 0 for all
-    mutate(cor = cor(as.numeric(!!sym(x)), med)) %>%
-    
-    group_by(name) %>%
-    filter(n_distinct(mouse) == n_mice) %>%
+    group_by(gene) %>%
+    mutate(range = max(q3) - min(q1)) %>%
     ungroup() %>%
-    
-    mutate(gene_type = case_when(
-      name %in% ag_high_gns ~ "Ag-high",
-      name %in% ag_low_gns  ~ "Ag-low"
-    ))
+    mutate(
+      class = gns[gene],
+      p_y = q3 + (range * 0.2)
+    )
   
-  # # Calculate p-values
-  # # adjust p-values based on number of plotted genes
-  # clmn2 <- x_lvls[2]
-  # clmn3 <- x_lvls[3]
-  # 
-  # p_clmns <- c(clmn2, clmn3)
-  # 
-  # p_dat <- gn_dat %>%
-  #   group_by(mouse, tm, subtype, !!sym(x), x, name, p_alt) %>%
-  #   mutate(y = quantile(value, 0.75)) %>%
-  #   group_by(mouse, tm, subtype, name, p_alt) %>%
-  #   summarize(
-  #     y = max(y),
-  #     n = n(),
-  #     
-  #     !!sym(clmn2) := p_test(
-  #       value[!!sym(x) == clmn2], value[!!sym(x) == "Ag-low"],
-  #       alternative = unique(p_alt)
-  #     )$p.value,
-  #     !!sym(clmn3) := p_test(
-  #       value[!!sym(x) == clmn3], value[!!sym(x) == "Ag-low"],
-  #       alternative = unique(p_alt)
-  #     )$p.value,
-  #     .groups = "drop"
-  #   ) %>%
-  #   group_by(name) %>%
-  #   mutate(y = max(y)) %>%
-  #   
-  #   group_by(mouse, tm, subtype) %>%
-  #   mutate(across(all_of(p_clmns), ~ p.adjust(.x, method = "bonferroni"))) %>%
-  #   ungroup() %>%
-  #   
-  #   pivot_longer(all_of(p_clmns), names_to = x, values_to = "p") %>%
-  #   mutate(
-  #     top = name %in% top_gns,
-  #     x   = str_c(!!sym(x), "-", tm)
-  #   )
-  
-  # # Rank genes by number of significant p-values
-  # gns <- p_dat %>%
-  #   group_by(name, top, p_alt) %>%
-  #   summarize(n = sum(p < 0.05), .groups = "drop") %>%
-  #   filter(name %in% plt_dat$name) %>%
-  #   mutate(p_alt = fct_relevel(p_alt, unique(alt_key))) %>%
-  #   arrange(p_alt, desc(top), desc(n)) %>%
-  #   group_by(p_alt) %>%
-  #   dplyr::slice(1:n_gns) %>%
-  #   
-  #   arrange(p_alt, desc(n)) %>%
-  #   
-  #   pull(name) %>%
-  #   as.character()
-  
-  # Create plots
-  # names(plt_clrs) <- str_c("day ", names(plt_clrs))
-  
+  # Format x-axis labels
   x_lab <- plt_dat %>%
-    mutate(xlab = str_c(!!sym(x), " (n = ", scales::label_comma()(n), ")")) %>%
+    mutate(
+      xlab = scales::label_comma()(n),
+      xlab = str_c(!!sym(x), " (n = ", xlab, ")")
+    ) %>%
     distinct(xlab, x)
   
   x_lab <- set_names(x_lab$xlab, x_lab$x)
   
-  plt_dat <- plt_dat %>%
-    filter(name %in% gns) %>%
-    mutate(name = fct_relevel(name, gns)) %>%
-    split(.$gene_type)
-    
+  # Create boxplots
+  plt_dat <- split(plt_dat, plt_dat$class)
+  
   res <- plt_dat %>%
     imap(~ {
-      .x <- .x %>%
+      cls <- .y
+      
+      plt <- .x %>%
         ggplot(aes(x, med, color = pred_grp)) +
         geom_segment(
           aes(x = x, xend = x, y = q1, yend = q3),
@@ -499,7 +444,7 @@ create_gn_plots <- function(so_in, ag_high_gns = NULL, ag_low_gns = NULL,
         geom_point(aes(size = !!sym(x)))
       
       if (draw_line) {
-        .x <- .x +
+        plt <- plt +
           geom_smooth(
             aes(x = as.numeric(as.factor(!!sym(x)))),
             method = "lm", linewidth = 0.25, linetype = 2,
@@ -507,49 +452,52 @@ create_gn_plots <- function(so_in, ag_high_gns = NULL, ag_low_gns = NULL,
           )
       }
       
-      .x <- .x +
-        # geom_point(
-        #   aes(y = y),
-        #   data = filter(p_dat, name %in% gns, p < 0.05),
-        #   position = position_nudge(y = 0.2),
-        #   color = "black", shape = 6, stroke = 1, size = pt_size
-        # ) +
-        facet_grid(name ~ tm, scales = "free", switch = "y") +
+      plt <- plt +
+        geom_point(
+          aes(y = p_y),
+          data = ~ filter(.x, class == cls, p_adj < 0.05),
+          color = "black", shape = 6, stroke = 1, size = pt_size
+        ) +
+        facet_grid(gene ~ tm, scales = "free", switch = "y") +
         scale_size_manual(values = c(pt_size, pt_size * 1.25, pt_size * 1.25)) +
         scale_color_manual(values = plt_clrs) +
-        scale_y_continuous(breaks = ~ c(ceiling(min(.x)), floor(max(.x)))) +
+        scale_y_continuous(
+          breaks = ~ c(ceiling(min(.x)), floor(max(.x))),
+          sec.axis = dup_axis(name = str_c(cell_type, " Ag-", .y))
+        ) +
         scale_x_discrete(labels = x_lab) +
         base_theme +
         theme(
-          aspect.ratio    = 1,
-          legend.position = "none",
-          panel.border    = element_rect(color = "grey75"),
-          strip.placement = "outside",
-          axis.title      = element_blank(),
-          axis.text.x     = element_text(angle = 45, hjust = 1)
+          aspect.ratio       = 1,
+          plot.margin        = margin(15, 15, 15, 15),
+          legend.position    = "none",
+          panel.border       = element_rect(color = "grey75"),
+          strip.placement    = "outside",
+          axis.ticks.y.right = element_blank(),
+          axis.title         = element_blank(),
+          axis.title.y.right = element_text(angle = 270, size = ttl_pt2 * 1.2),
+          axis.text.y.right  = element_blank(),
+          axis.text.x        = element_text(angle = 45, hjust = 1)
         )
       
+      # Adjust theme
       if (.y == dplyr::first(names(plt_dat))) {
-        .x <- .x +
+        plt <- plt +
           theme(
             axis.text.x = element_blank(),
             axis.ticks.x = element_blank()
           )
         
       } else {
-        .x <- .x +
-          theme(strip.text.x = element_blank())
+        plt <- plt +
+          theme(
+            strip.text.x = element_blank(),
+            plot.margin  = margin(20, 15, 15, 15)
+          )
       }
       
-      .x
+      plt
     })
-  
-  res <- plot_grid(
-    plotlist = res,
-    ncol  = 1,
-    align = "v",
-    axis  = "rl"
-  )
   
   res
 }

@@ -13,8 +13,8 @@ output:
     highlight:      "kate"
 params:
   template_dir:  "src"                                                     # template Rmarkdowns
-  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-03-15"  # Seurat objects
-  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-03-15" # ML models
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-11-01" # ML models
   geomx_dir:     "results/geomx"
   chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
   ref_dir:       "ref"                                                     # clustifyr references
@@ -25,7 +25,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -83,8 +83,10 @@ subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
 
 ```{r "load data"}
 # Format prediction labels
-# make sure the correct predictions and module scores are being used
-# once the models are finalized, this information can be saved in the meta.data
+# * make sure the correct predictions and module scores are being used
+# * once the models are finalized, this information can be saved in the
+#   meta.data
+# * rf_pred will be NA if cell type was not used for training
 lec_so <- lec_so %>%
   AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds)))
 
@@ -96,12 +98,7 @@ lec_so <- lec_so %>%
       "Ag-competent", str_c("Ag-", !!sym(rf_dat_clmn))
     ),
     rf_pred = str_c("Ag-", rf_pred),
-    mouse   = fct_relevel(mouse, mice),
-    
-    # Label data used for training models
-    # d2 mouse was excluded
-    training_data = subtype %in% rf_mods_best$subtype & is.na(rf_pred),
-    training_data = ifelse(tm == 2, FALSE, training_data)
+    mouse   = fct_relevel(mouse, mice)
   )
 
 # Add module scores
@@ -1263,66 +1260,112 @@ mod_u <- u_args %>%
 ```
 
 ```{r "RF top features examples", fig.height = 8, fig.width = 8}
-# # Calculate p-values WIP
-# rf_feats %>%
-#   imap_dfr(~ {
-#     typ <- .y
-#     
-#     .x %>%
-#       map_dfr(~ {
-#         dat <- lec_so %>%
-#           subset(subtype == typ) %>%
-#           subset(tm %in% rf_tms) %>%
-#           # subset(training_data == FALSE) %>%  # WHY CAN'T SUBSET HANDLE `!` ??
-#           FetchData(c("pred_grp", "tm", .x)) %>%
-#           as_tibble(rownames = "cell_id") %>%
-#           pivot_longer(all_of(.x))
-#       })
-#   })
+# Calculate p-values
+p_vals <- rf_feats[rf_typs] %>%
+  imap_dfr(~ {
+    p_alt <- c(high = "greater", low = "less")
+    
+    typ <- .y
+    
+    gns <- .x %>%
+      imap(~ set_names(rep(.y, length(.x)), .x)) %>%
+      reduce(c)
+    
+    dat <- lec_so %>%
+      subset(subtype == typ & tm %in% rf_tms) %>%
+      FetchData(c("pred_grp", "tm", names(gns))) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(all_of(names(gns)), names_to = "gene") %>%
+      mutate(
+        class = gns[gene],
+        p_alt = p_alt[class]
+      ) %>%
+      split(.$gene)
+      
+    dat %>%
+      map_dfr(~ {
+        p_grps <- names(pred_clrs)[-1]
+        p_con  <- names(pred_clrs)[1]
+        
+        dat <- .x
+        
+        p_grps %>%
+          map_dfr(~ {
+            dat %>%
+              filter(pred_grp %in% c(p_con, .x)) %>%
+              group_by(tm) %>%
+              summarize(
+                p = wilcox.test(
+                  value[pred_grp == .x], value[pred_grp == p_con],
+                  alternative = unique(p_alt)
+                )$p.value,
+                med_diff = abs(median(value[pred_grp == .x]) - median(value[pred_grp == p_con])),
+                n        = length(value[pred_grp == .x]),
+                gene     = unique(gene),
+                class    = unique(class),
+                p_alt    = unique(p_alt),
+                pred_grp = .x,
+                .groups  = "drop"
+              )
+          })
+      }) %>%
+      mutate(subtype = typ)
+  })
+
+# Adjust p-values for multiple testing
+# adjust each tm and pred_grp separately
+p_vals <- p_vals %>%
+  group_by(tm, pred_grp, subtype) %>%
+  mutate(
+    p_adj   = p.adjust(p, method = "fdr"),
+    n_genes = n()
+  ) %>%
+  ungroup()
 
 # Identify genes shared between multiple cell types
-typ <- "cLEC"
-
-shared_feats <- c("high", "low") %>%
-  set_names() %>%
-  map(~ {
-    ag <- .x
+shared_feats <- rf_feats %>%
+  imap_dfr(~ {
+    typ <- .y
     
-    fts <- rf_feats[rf_typs] %>%
-      map(pluck, ag)
-    
-    fts <- fts %>%
-      map(~ {
-        .x[.x %in% rf_feats$cLEC[[ag]]]
+    .x %>%
+      imap_dfr(~ {
+        tibble(
+          subtype = typ,
+          class   = .y,
+          gene    = .x,
+        )
       })
-    
-    fts <- fts[!names(fts) %in% c(typ, "BEC")]
-    
-    fts %>%
-      purrr::reduce(c) %>%
-      unique() %>%
-      sort()
-  })
+  }) %>%
+  # filter(subtype %in% rf_typs) %>%
+  group_by(class, gene) %>%
+  filter(rf_cell_type %in% subtype & n_distinct(subtype) > 1) %>%
+  ungroup()
+
+p_dat <- p_vals %>%
+  filter(
+    subtype == rf_cell_type,
+    p_adj < 0.05,
+    gene %in% shared_feats$gene
+  ) %>%
+  group_by(gene) %>%
+  filter(any(med_diff > 0)) %>%
+  mutate(n_sig = n()) %>%
+  ungroup() %>%
+  arrange(desc(n_sig))
 
 # Plot example genes
 gene_examples <- lec_so %>%
   subset(subtype == rf_cell_type) %>%
   subset(tm %in% rf_tms) %>%
   create_gn_plots(
-    ag_high_gns = shared_feats$high,
-    ag_low_gns  = shared_feats$low,
+    p_data = p_dat,
+    top_gns     = c("Gdf10", "Tgfa", "Ctsd", "Grn", "Col4a1", "Col4a2", "Fau", "Lama4"),
+    n_gns       = 4,
     plt_clrs    = pred_clrs,
     x_lvls      = names(pred_clrs),
-    n_gns       = 4,
-    
-    # top_gns   = c("Gdf10", "Tgfa", "Ctsd", "Grn", "Col4a1", "Col4a2", "Fau", "Lama4"),
-    
-    p_test    = wilcox.test,
-    draw_line = FALSE,
-    pt_size   = 2.5
-  ) +
-  ggtitle(str_c(rf_cell_type, " expression")) +
-  theme(plot.title = element_text(size = 18, hjust = 0.5))
+    draw_line   = FALSE,
+    pt_size     = 2.5
+  )
 ```
 
 ```{r "Fig 2", fig.width = 15, fig.height = 16.1}
@@ -1339,7 +1382,15 @@ left <- plot_grid(
 )
 
 right <- plot_grid(
-  rf_bar_1, gene_examples,
+  plotlist = gene_examples,
+  ncol     = 1,
+  align    = "v",
+  axis     = "rl",
+  rel_heights = c(1, 1.225)
+)
+
+right <- plot_grid(
+  rf_bar_1, right,
   ncol = 1,
   rel_heights = c(1, 3),
   labels = c("B", "E"),
