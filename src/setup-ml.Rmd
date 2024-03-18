@@ -1939,6 +1939,9 @@ rf_preds_2 <- rf_mods_best %>%
   filter(subtype == rf_cell_type) %>%
   pmap_dfr(~ {
     args <- list(...)
+    mod  <- args$mod
+    
+    if (identical("train", class(mod))) mod <- mod$finalModel
     
     dat <- pred_dat %>%
       split(.$mouse) %>%
@@ -1947,7 +1950,7 @@ rf_preds_2 <- rf_mods_best %>%
     dat %>%
       imap_dfr(~ {
         rf_predict(
-          mod          = args$mod$finalModel,
+          mod          = mod,
           dat          = .x,
           data_clmn    = rf_dat_clmn,
           return_stats = FALSE
@@ -1963,7 +1966,7 @@ rf_preds %>%
 
 rf_preds_2 %>%
   rownames_to_column(".cell_id") %>%
-  write_tsv(here(params$mod_dir, "ag-high_cLEC_preds.tsv.gz"))
+  write_tsv(here(params$mod_dir, str_c("ag-high_", rf_cell_type, "_preds.tsv.gz")))
 ```
 
 ```{r "predict CHIKV", eval = run_rf}
@@ -1971,12 +1974,15 @@ rf_preds_2 %>%
 chikv_preds <- rf_mods_best %>%
   pmap_dfr(~ {
     args <- list(...)
+    mod  <- args$mod
+    
+    if (identical("train", class(mod))) mod <- mod$finalModel
     
     dat <- chikv_dat %>%
       filter(!!sym(chikv_type_clmn) == args$subtype) %>%
       dplyr::select(-all_of(chikv_clmns))
     
-    args$mod$finalModel %>%
+    mod %>%
       rf_predict(
         dat = dat,
         return_stats = FALSE
