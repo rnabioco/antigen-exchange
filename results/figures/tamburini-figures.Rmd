@@ -125,135 +125,6 @@ rf_feats %>%
 
 <br>
 
-```{r "CD45- heatmaps", fig.width = 30, fig.height = 20, eval = FALSE}
-# Function to create marker heatmaps
-create_marker_heatmap <- function(so_in, markers) {
-  
-  gns <- markers %>%
-    pull(gene) %>%
-    as.character()
-  
-  clmns <- c("sample", "mouse", "subtype", "cell_type", gns)
-  
-  dat <- so_in %>%
-    FetchData(clmns) %>%
-    as_tibble(rownames = ".cell_id") %>%
-    pivot_longer(any_of(gns), names_to = "gene") %>%
-    left_join(markers, by = "gene") %>%
-    
-    group_by(subtype, mouse, gene, label) %>%
-    summarize(
-      pct_expr = sum(value > 0) / n(),
-      pct_expr = as.character(round(pct_expr, 2)),
-      value    = mean(value),
-      .groups  = "drop"
-    ) %>%
-    group_by(gene, mouse) %>%
-    mutate(value = as.numeric(scale(value))) %>%
-    ungroup() %>%
-    mutate(
-      subtype = fct_relevel(subtype, levels(markers$annotation)),
-      gene    = fct_relevel(gene, rev(levels(markers$gene)))
-    )
-  
-  res <- dat %>%
-    ggplot(aes(subtype, gene, fill = value)) +
-    geom_tile() +
-    geom_text(aes(label = pct_expr), size = 6 / .pt) +
-    facet_grid(label ~ mouse, scales = "free_y", space = "free_y") +
-    scale_fill_gradientn(colours = c("lightblue", "white", "red")) +
-    base_theme +
-    theme(
-      strip.clip   = "off",
-      strip.text.y = element_text(angle = 0, hjust = 0),
-      axis.title   = element_blank(),
-      axis.text.x  = element_text(angle = 45, hjust = 1)
-    )
-  
-  res
-}
-
-# Load data
-rm(lec_so, dc_so)
-
-cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
-cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
-
-# Load cell type markers
-xlsx_path <- here(params$ref_dir, "cell-type-markers.xlsx")
-markers   <- xlsx::read.xlsx(xlsx_path, sheetName = "markers")
-
-markers <- markers %>%
-  mutate(
-    cell_type = fct_inorder(cell_type),
-    subtype   = fct_inorder(subtype)
-  ) %>%
-  group_by(gene) %>%
-  summarize(
-    label      = str_c(cell_type, collapse = "/"),
-    cell_type  = dplyr::first(cell_type),
-    annotation = dplyr::first(subtype),
-    .groups    = "drop"
-  ) %>%
-  arrange(cell_type, annotation) %>%
-  mutate(
-    gene  = fct_inorder(gene),
-    label = fct_inorder(label)
-  )
-
-# CD45- heatmaps
-create_marker_heatmap(cd45neg_so, markers)
-```
-
-```{r "CD45+ heatmaps", fig.width = 25, fig.height = 20, eval = FALSE}
-create_marker_heatmap(cd45pos_so, markers)
-
-# Load data for other figures
-lec_so <- qread(here(params$so_dir, "lec_so.qs"))
-dc_so  <- qread(here(params$so_dir, "dc_so.qs"))
-
-rm(cd45neg_so, cd45pos_so)
-```
-
-```{r "MARKER PLOTS", eval = FALSE}
-cd45neg_so %>%
-  plot_scatter(
-    data_col = "cell_type",
-    x = "hUMAP_1",
-    y = "hUMAP_2",
-    group_col = "mouse",
-    size = 0.1
-  )
-
-cd45pos_so %>%
-  plot_violin(
-    "Fcer1g",
-    "cell_type",
-    "mouse",
-    method = "boxplot"
-  )
-
-cd45pos_so %>%
-  plot_scatter(
-    data_col = "Ceacam8",
-    x = "hUMAP_1",
-    y = "hUMAP_2",
-    group_col = "mouse",
-    size = 0.1,
-    plot_colors = c("lightblue", "white", "red")
-  )
-
-cd45pos_so %>%
-  plot_scatter(
-    data_col = "Zbtb46",
-    x = "hUMAP_1",
-    y = "hUMAP_2",
-    group_col = "mouse",
-    size = 0.1,
-    plot_colors = c("lightblue", "white", "red")
-  )
-```
-
 ## Figure 1
 
 Antigen persists in discrete cell populations within the lymph node
@@ -2292,28 +2163,52 @@ chikv_bar_dat <- chikv_dat %>%
   filter(subtype %in% rf_typs) %>%
   group_by(treatment, rep, subtype) %>%
   summarize(
-    frac_high = sum(pred_grp == "Ag-competent") / n(),
+    frac_comp = sum(pred_grp == "Ag-competent") / n(),
     .groups = "drop"
   ) %>%
   mutate(subtype = fct_relevel(subtype, rf_typs))
 
+# Perform fisher exact test
+chikv_p_dat <- chikv_dat %>%
+  filter(subtype %in% rf_typs) %>%
+  group_by(subtype, treatment) %>%
+  mutate(n = n()) %>%
+  group_by(subtype, treatment, n) %>%
+  summarize(
+    n_comp = sum(pred_grp == "Ag-competent"),
+    .groups = "drop"
+  ) %>%
+  group_by(subtype) %>%
+  mutate(
+    frac_comp = n_comp / n,
+    tot_comp = sum(n_comp),
+    tot      = sum(n)
+  ) %>%
+  ungroup() %>%
+  filter(treatment == "CHIKV")
+  
+chikv_p_dat <- chikv_p_dat %>%
+  rowwise() %>%
+  mutate(p = .calc_fisher(
+    x = n_comp,
+    k = n,
+    m = tot_comp,
+    n = tot - tot_comp
+  )) %>%
+  ungroup() %>%
+  mutate(p_adj = p.adjust(p, method = "fdr")) %>%
+  rowwise() %>%
+  mutate(p_adj = str_c("italic(p) == ", .format_pvalue(p_adj))) %>%
+  ungroup()
+
 # Create Ag class bargraphs
 chikv_ag_bars <- chikv_bar_dat %>%
   filter(subtype == rf_cell_type) %>%
-  create_chikv_class_bars(ttl = str_c("fraction Ag-competent ", rf_cell_type, "s")) +
+  create_chikv_class_bars(
+    p_data = chikv_p_dat,
+    ttl    = str_c("fraction Ag-competent ", rf_cell_type, "s")
+  ) +
   theme(strip.text = element_blank())
-
-# # Create final panels
-# mid <- plot_grid(
-#   chikv_u$cLEC[[2]], chikv_ag_bars,
-#   align      = "h",
-#   axis       = "tb",
-#   rel_widths = c(1, 0.3), 
-#   labels     = c("B", "C"),
-#   label_size = ttl_pt2 * 1.5,
-#   hjust      = 0.5,
-#   vjust      = 1
-# )
 ```
 
 ```{r "CHIKV Ag module score boxplots"}
@@ -2331,17 +2226,6 @@ chikv_ag_bxs <- chikv_bx_dat %>%
     n_p          = length(ag_modules)
   ) +
   theme(strip.text = element_blank())
-  
-# # Create final figure
-# bot <- plot_grid(
-#   chikv_u$cLEC[[1]], chikv_ag_bxs,
-#   align = "h",
-#   axis  = "tb",
-#   rel_widths = c(1, 0.3),
-#   labels     = c("D", "E"),
-#   label_size = ttl_pt2 * 1.5,
-#   hjust      = 0.5
-# )
 ```
 
 ```{r "CHIKV Ag-high heatmap"}
@@ -2427,6 +2311,7 @@ fig5 <- plot_grid(
 fig5
 
 
+
 # # Save figure for Tem's grant
 # c("C", "A") %>%
 #   iwalk(~ {
@@ -2507,7 +2392,10 @@ B.  Ag-high and Ag-low module scores are shown for mock and CHIKV-infected mice
 ```{r "Fig S6", fig.width = 6, fig.height = 9, out.width = "50%"}
 # Bargraphs for all LEC subtypes
 all_chikv_bars <- chikv_bar_dat %>%
-  create_chikv_class_bars(ttl = "fraction Ag-competent")
+  create_chikv_class_bars(
+    p_data = chikv_p_dat,
+    ttl = "fraction Ag-competent"
+  )
 
 # Boxplots for all Ag modules
 all_chikv_bxs <- chikv_bx_dat %>%

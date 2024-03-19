@@ -629,7 +629,7 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
   }
   
   p_dat <- p_dat %>%
-    mutate(padj = p.adjust(pval, method = "bonferroni")) %>%
+    mutate(padj = p.adjust(pval, method = "fdr")) %>%
     rowwise() %>%
     mutate(
       plab = .format_pvalue(padj),
@@ -1135,11 +1135,23 @@ create_ag_boxes <- function(df_in, clrs, facet_vars = "subtype") {
 #' Create bargraphs summarizing the fraction of Ag-competent cells
 #' 
 #' Used for figure 5
-create_chikv_class_bars <- function(df_in, ttl) {
-
+create_chikv_class_bars <- function(df_in, p_data, ttl) {
+  
+  p_data <- p_data %>%
+    filter(subtype %in% df_in$subtype)
+  
   res <- df_in %>%
-    ggplot(aes(treatment, frac_high, fill = treatment, alpha = rep)) +
+    ggplot(aes(treatment, frac_comp, fill = treatment, alpha = rep)) +
     geom_col(position = position_dodge2(padding = 0.15)) +
+    
+    geom_text(
+      aes(1.5, Inf, fill = NULL, alpha = NULL, label = p_adj),
+      data  = p_data,
+      parse = TRUE,
+      vjust = 1.3,
+      size  = 12 / .pt
+    ) +
+    
     facet_wrap(~ subtype) +
     scale_fill_manual(values = treat_clrs) +
     scale_alpha_manual(values = rep(1, n_distinct(df_in$rep))) +
@@ -1181,12 +1193,14 @@ create_chikv_module_boxes <- function(df_in, module_clmns, clrs = treat_clrs,
   p_dat <- dat %>%
     group_by(subtype, module_type) %>%
     summarize(
-      p = list(wilcox.test(value[treatment == treats[1]], value[treatment == treats[2]])),
-      p = map_dbl(p, ~ .x$p.value),
+      p = wilcox.test(
+        value[treatment == treats[1]],
+        value[treatment == treats[2]]
+      )$p.value,
       .groups = "drop"
     ) %>%
     mutate(
-      p_adj = p.adjust(p, method = "bonferroni", n = n_p %||% length(p))
+      p_adj = p.adjust(p, method = "fdr", n = n_p %||% length(p))
     ) %>%
     rowwise() %>%
     mutate(p_adj = str_c("italic(p) == ", .format_pvalue(p_adj))) %>%
