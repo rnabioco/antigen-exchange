@@ -1,0 +1,302 @@
+---
+title: "Antigen Normalization"
+author: "Ryan Sheridan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc:            true
+    toc_float:      true
+    toc_depth:      4
+    df_print:       "paged"
+    code_folding:   "hide"
+    self_contained: true
+    highlight:      "kate"
+params:
+  template_dir:  "src"                                                     # template Rmarkdowns
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
+  new_so_dir:    "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-03-15"
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-11-01" # ML models
+  geomx_dir:     "results/geomx"
+  chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
+  ref_dir:       "ref"                                                     # clustifyr references
+  sample_info:   "sample_info.xlsx"
+  res_dir:                                                
+    value:
+      exp-0: "~/Projects/antigen-tracking/results"
+      exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
+      exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r "setup", include = FALSE}
+# Default chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo    = FALSE,
+  dpi     = 300
+)
+
+knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
+knitr::knit(here::here(params$template_dir, "setup-ml.Rmd"), "")
+```
+
+```{r "clr functions"}
+calc_clr <- function(so_in, ag_key) {
+
+  # Columns to use for transformation
+  clr_clmns <- ag_key %>%
+    unlist(use.names = FALSE) %>%
+    unique()
+  
+  # CLR tranformation
+  clr_norm <- so_in@meta.data %>%
+    as_tibble(rownames = ".cell_id") %>%
+    split(.$directory) %>%
+    map_dfr(~ {
+      exp     <- unique(.x$exp)
+      ag_clmn <- unname(ag_key[[exp]])
+      counts  <- .x[ag_clmn]
+      counts  <- unlist(counts, use.names = FALSE)
+      
+      clr <- log1p(counts[counts > 0])
+      clr <- exp(sum(clr) / length(counts))
+      
+      res <- .x %>%
+        dplyr::select(.cell_id, all_of(ag_clmn)) %>%
+        mutate(across(
+          all_of(ag_clmn),
+          ~ log1p(.x / clr),
+          .names = "{.col}"
+        )) %>%
+        column_to_rownames(".cell_id")
+      
+      res
+    }) %>%
+    mutate(across(all_of(clr_clmns), ~ replace_na(.x, 0)))
+  
+  res <- so_in %>%
+    AddMetaData(clr_norm)
+  
+  # T/B cell background correction
+  res <- res %>%
+    mutate_meta(dplyr::select, -any_of(str_c(clr_clmns, "_score"))) %>%
+    calc_ag_score(
+      clmns         = clr_clmns,
+      type_clmn     = "cell_type",
+      sample_clmn   = "directory",
+      control_types = c("B cells", "T cells"),
+      norm_factors  = NULL,
+      final_trans   = (function(x) x)
+    )
+  
+  # Format Ag score columns
+  res <- res %>%
+    mutate_meta(
+      mutate,
+      Ag_score = case_when(
+        exp   == "exp-0" ~ ovalbumin_score,
+        mouse == "3wk"   ~ Ag_3wk_score,
+        mouse == "6wk"   ~ Ag_6wk_score,
+        
+        # for 6wk-3wk use highest score
+        mouse == "6wk-3wk" & Ag_3wk_score >= Ag_6wk_score ~ Ag_3wk_score,
+        mouse == "6wk-3wk" & Ag_6wk_score >= Ag_3wk_score ~ Ag_6wk_score
+      ),
+      
+      # these columns are used for antigen-exchange plots
+      Ag_score_3 = ifelse(vaccination == "dual", Ag_3wk_score, Ag_score),
+      Ag_score_6 = ifelse(vaccination == "dual", Ag_6wk_score, Ag_score)
+    )
+  
+  res
+}
+```
+
+```{r "clr normalization"}
+# Set Ag key indicating columns to use for each experiment
+rm(lec_so, dc_so)
+gc()
+
+clr_key <- c("3wk", "6wk")
+clr_key <- set_names(str_c("Ag_", clr_key), clr_key)
+
+clr_key <- ag_key %>%
+  map(~ {
+    res <- names(.x)
+    idx <- res %in% names(clr_key)
+    
+    res[idx] <- clr_key[res[idx]]
+    
+    res
+  })
+
+meta_clmns <- c(
+  "Ag_score", "Ag_3wk_score", "Ag_6wk_score",
+  "Ag_score_3", "Ag_score_6"
+)
+
+# Calculate CLR transformation for CD45- object
+cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+lec_so     <- qread(here(params$so_dir, "lec_so.qs"))
+
+cd45neg_so <- cd45neg_so %>%
+  calc_clr(clr_key)
+
+clr_meta <- cd45neg_so@meta.data %>%
+  dplyr::select(all_of(meta_clmns))
+
+lec_so <- lec_so %>%
+  AddMetaData(clr_meta)
+
+save_objs(cd45neg_so, ob_dir = params$new_so_dir)
+save_objs(lec_so,     ob_dir = params$new_so_dir)
+
+all_meta <- cd45neg_so@meta.data %>%
+  as_tibble(rownames = ".cell_id")
+
+rm(cd45neg_so, lec_so)
+gc()
+
+# Calculate CLR transformation for CD45+ object
+cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+dc_so      <- qread(here(params$so_dir, "dc_so.qs"))
+
+cd45pos_so <- cd45pos_so %>%
+  calc_clr(clr_key)
+
+clr_meta <- cd45pos_so@meta.data %>%
+  dplyr::select(all_of(meta_clmns))
+
+dc_so <- dc_so %>%
+  AddMetaData(clr_meta)
+
+save_objs(cd45pos_so, ob_dir = params$new_so_dir)
+save_objs(dc_so,      ob_dir = params$new_so_dir)
+
+# Save meta.data for all cells combined
+all_meta <- cd45pos_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  bind_rows(all_meta)
+
+all_meta %>%
+  write_tsv(here(params$new_so_dir, "all_meta.tsv.gz"))
+```
+
+
+
+```{r "TEST NORMALIZATION OLD", eval = FALSE}
+# Normalizing by filtered counts and subtracting T/B signal
+# shows no difference between single and dual for 6wk
+# all other variations of normalization show significant differences
+# between single and dual
+
+cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+
+clmns <- c(
+  "ovalbumin", "ABPS2", "ABPS4",
+  "ovalbumin_score", "Ag_3wk_score", "Ag_6wk_score"
+)
+
+ag_dat <- cd45neg_so %>%
+  mutate_meta(dplyr::select, -any_of(clmns)) %>%
+  calc_ag_score(
+    clmns        = c("ovalbumin", "ABPS2", "ABPS4"),
+    # control_types = NULL,
+    norm_factors = norm_factors,
+    slot         = "data",
+    operation    = `-`,
+    final_trans  = (function(x) x)
+    # final_trans  = (function(x) log10(x + 1))
+  )
+
+clr_dat <- cd45neg_so@meta.data %>%
+  dplyr::select(-any_of(c("ovalbumin_score", "Ag_3wk_score", "Ag_6wk_score"))) %>%
+  rownames_to_column("cell_id") %>%
+  # filter(exp != "exp-0") %>%
+  pivot_longer(all_of(c("ovalbumin", "ABPS2", "ABPS4"))) %>%
+  group_by(directory) %>%
+  mutate(value = as.numeric(clr(na.omit(value) + 1))) %>%
+  ungroup() %>%
+  mutate(name = str_c(name, "_score")) %>%
+  pivot_wider()
+
+clr_dat <- clr_dat %>%
+  mutate(
+    Ag_score = case_when(
+      exp == "exp-0" ~ ovalbumin_score,
+      exp == "exp-1" & tm == 21 ~ ABPS4_score,
+      exp == "exp-1" & tm == 42 ~ ABPS2_score,
+      exp == "exp-2" & tm == 21 ~ ABPS2_score,
+      exp == "exp-2" & tm == 42 ~ ABPS4_score
+    ),
+    Ag_score_3 = case_when(
+      exp == "exp-1" & (tm == 21 | vaccination == "dual") ~ ABPS4_score,
+      exp == "exp-2" & (tm == 21 | vaccination == "dual") ~ ABPS2_score
+    ),
+    Ag_score_6 = case_when(
+      exp == "exp-1" & (tm == 42 | vaccination == "dual") ~ ABPS2_score,
+      exp == "exp-2" & (tm == 42 | vaccination == "dual") ~ ABPS4_score
+    ),
+    mouse = fct_relevel(mouse, mice)
+  ) %>%
+  column_to_rownames("cell_id")
+
+plt_dat <- lec_so %>%
+  AddMetaData(clr_dat[c("Ag_score", "Ag_score_3", "Ag_score_6")])
+  
+plt_dat <- cd45neg_so %>%
+  AddMetaData(clr_dat[c("Ag_score", "Ag_score_3", "Ag_score_6")])
+  
+# Format data for plots
+ag_dat <- ag_dat %>%
+  mutate_meta(
+    mutate,
+    Ag_score = case_when(
+      exp == "exp-0" ~ ovalbumin_score,
+      exp == "exp-1" & tm == 21 ~ ABPS4_score,
+      exp == "exp-1" & tm == 42 ~ ABPS2_score,
+      exp == "exp-2" & tm == 21 ~ ABPS2_score,
+      exp == "exp-2" & tm == 42 ~ ABPS4_score
+    ),
+    Ag_score_3 = case_when(
+      exp == "exp-1" & (tm == 21 | vaccination == "dual") ~ ABPS4_score,
+      exp == "exp-2" & (tm == 21 | vaccination == "dual") ~ ABPS2_score
+    ),
+    Ag_score_6 = case_when(
+      exp == "exp-1" & (tm == 42 | vaccination == "dual") ~ ABPS2_score,
+      exp == "exp-2" & (tm == 42 | vaccination == "dual") ~ ABPS4_score
+    ),
+    mouse = fct_relevel(mouse, mice)
+  )
+
+plt_dat <- lec_so %>%
+  AddMetaData(FetchData(ag_dat, c("Ag_score", "Ag_score_3", "Ag_score_6")))
+
+plt_dat <- cd45neg_so %>%
+  AddMetaData(FetchData(ag_dat, c("Ag_score", "Ag_score_3", "Ag_score_6")))
+
+# Plot Ag-scores
+plt_dat@meta.data %>%
+  filter(vaccination == "single") %>%
+  mutate(
+    tm = fct_relevel(as.character(tm), tms),
+    exp = ifelse(exp == "exp-0", "exp-1", exp)
+  ) %>%
+  ggplot(aes(tm, Ag_score, fill = subtype)) +
+  geom_boxplot() +
+  facet_grid(exp ~ subtype) +
+  base_theme +
+  theme(aspect.ratio = 1.5)
+
+plt_dat@meta.data %>%
+  # filter(tm == 21 | vaccination == "dual") %>%
+  filter(tm == 42 | vaccination == "dual") %>%
+  # ggplot(aes(as.character(tm), Ag_score_3, fill = vaccination)) +
+  ggplot(aes(as.character(tm), Ag_score_6, fill = vaccination)) +
+  geom_boxplot(notch = TRUE) +
+  facet_grid(exp ~ subtype) +
+  base_theme +
+  theme(aspect.ratio = 1.5)
+```
