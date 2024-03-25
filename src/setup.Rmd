@@ -53,6 +53,7 @@ library(qs)
 library(openxlsx)
 library(xlsx)
 library(ComplexHeatmap)
+library(png)
 
 # Tidyverse
 library(tidyverse)
@@ -250,42 +251,6 @@ calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
   
   res
 }
-# # Subtract background signal and transform
-# res <- res %>%
-#   mutate_meta(~ {
-#     .x %>%
-#       group_by(!!sym(sample_clmn)) %>%
-#       mutate(across(
-#         all_of(cpm_clmns),
-#         ~ {
-#           res <- .x
-#           
-#           if (!is.null(control_types)) {
-#             missing <- control_types[!control_types %in% !!sym(type_clmn)]
-#             
-#             if (!is_empty(missing)) {
-#               cli_warn("{missing} w{?as/ere} not found in {type_clmn}.")
-#             }
-#             
-#             idx   <- !!sym(type_clmn) %in% control_types  # rows to use
-#             t_cut <- quantile(.x[idx], q)                 # set cutoff
-#             res   <- operation(.x, t_cut)                 # correct for background
-#             
-#             # replace negative values and log-transform
-#             res[res < 0] <- 0
-#           }
-#           
-#           res <- final_trans(res)
-#           
-#           res
-#         },
-#         .names = str_c("{.col}", suffix)
-#       )) %>%
-#       ungroup() %>%
-#       dplyr::rename(!!!final_clmns)
-#   })
-
-
 
 #' Format and normalize Ag meta.data columns
 #' 
@@ -390,7 +355,7 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
       alternative = p_alt
     ))), .groups = "drop") %>%
     unnest(corr) %>%
-    mutate(p_adj = p.adjust(p.value, method = "bonferroni")) %>%
+    mutate(p_adj = p.adjust(p.value, method = "BH")) %>%
     rowwise() %>%
     mutate(
       p_adj = .format_pvalue(p_adj, show_decimal = Inf),
@@ -629,7 +594,7 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
   }
   
   p_dat <- p_dat %>%
-    mutate(padj = p.adjust(pval, method = "fdr")) %>%
+    mutate(padj = p.adjust(pval, method = "BH")) %>%
     rowwise() %>%
     mutate(
       plab = .format_pvalue(padj),
@@ -741,7 +706,7 @@ create_exchange_scatter <- function(df_in,
       n       = label_comma()(n),
       .groups = "drop"
     ) %>%
-    mutate(p_adj = p.adjust(p_val, method = "bonferroni")) %>%
+    mutate(p_adj = p.adjust(p_val, method = "BH")) %>%
     rowwise() %>%
     mutate(
       p_lab = .format_pvalue(p_adj),
@@ -844,7 +809,7 @@ create_module_boxes <- function(df_in, ag_class_clmn = "Ag_class_dual",
       bind_rows(.id = "subtype") %>%
       filter(group1 == "double-high") %>%
       mutate(
-        p_adj   = p.adjust(p.value, method = "bonferroni"),
+        p_adj   = p.adjust(p.value, method = "BH"),
         ln_x    = match(group2, lvls),
         ln_xend = match(group1, lvls),
         y_fctr  = ((ymax - ymin) * 0.1),
@@ -873,7 +838,7 @@ create_module_boxes <- function(df_in, ag_class_clmn = "Ag_class_dual",
         .groups = "drop"
       ) %>%
       unnest(corr) %>%
-      mutate(p_adj = p.adjust(p.value, method = "bonferroni")) %>%
+      mutate(p_adj = p.adjust(p.value, method = "BH")) %>%
       rowwise() %>%
       mutate(
         p_adj = .format_pvalue(p_adj, show_decimal = Inf),
@@ -1007,7 +972,7 @@ create_module_scatter <- function(df_in, ag_clmns, module_clmns, module_title,
       # n       = label_comma()(n_distinct(.cell_id)),
       .groups = "drop"
     ) %>%
-    mutate(p_adj = p.adjust(p_val, method = "bonferroni")) %>%
+    mutate(p_adj = p.adjust(p_val, method = "BH")) %>%
     rowwise() %>%
     mutate(
       r_lab = str_c("italic(r[s]) == ", round(cor, digits = 2)),
@@ -1135,27 +1100,98 @@ create_ag_boxes <- function(df_in, clrs, facet_vars = "subtype") {
 #' Create bargraphs summarizing the fraction of Ag-competent cells
 #' 
 #' Used for figure 5
-create_chikv_class_bars <- function(df_in, p_data, ttl) {
+create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
+                                    ttl, n_p = NULL) {
   
-  p_data <- p_data %>%
-    filter(subtype %in% df_in$subtype)
+  # Set colors
+  grps <- unique(df_in[[x]])
+  clrs <- clrs[names(clrs) %in% grps]
   
-  res <- df_in %>%
-    ggplot(aes(treatment, frac_comp, fill = treatment, alpha = rep)) +
+  # Format data for bargraphs
+  df_in <- df_in %>%
+    mutate(
+      !!sym(x) := fct_relevel(!!sym(x), names(clrs)),
+      x_clmn    = str_c(subtype, "-", !!sym(x))
+    ) %>%
+    arrange(!!sym(x)) %>%
+    mutate(x_clmn = fct_inorder(x_clmn))
+  
+  dat <- df_in %>%
+    group_by(x_clmn, !!sym(x), subtype, rep) %>%
+    summarize(
+      frac_comp = sum(pred_grp == "Ag-competent") / n(),
+      .groups = "drop"
+    )
+  
+  # Perform fisher exact test
+  p_dat <- df_in %>%
+    group_by(x_clmn, subtype, !!sym(x)) %>%
+    mutate(n = n()) %>%
+    group_by(x_clmn, subtype, !!sym(x), n) %>%
+    summarize(
+      n_comp = sum(pred_grp == "Ag-competent"),
+      .groups = "drop"
+    ) %>%
+    group_by(subtype) %>%
+    mutate(
+      frac_comp = n_comp / n,
+      tot_comp  = sum(n_comp),
+      tot       = sum(n)
+    ) %>%
+    ungroup()
+  
+  p_vals <- p_dat %>%
+    rowwise() %>%
+    mutate(p = .calc_fisher(
+      x = n_comp,
+      k = n,
+      m = tot_comp,
+      n = tot - tot_comp
+    )) %>%
+    ungroup() %>%
+    distinct(subtype, p) %>%    # there should be a single p-value per cell type
+    mutate(
+      p_adj = p.adjust(
+        p,
+        method = "BH",
+        n = n_p %||% length(p)  # specifying n_p is useful when only plotting a 
+      )                         # single panel and showing the other panels in
+    ) %>%                       # other figures
+    rowwise() %>%
+    mutate(p_adj = str_c("italic(p) == ", .format_pvalue(p_adj))) %>%
+    ungroup()
+  
+  if (nrow(p_vals) > n_distinct(p_vals$subtype)) {
+    cli_abort("Malformed p-value data, check calculations")
+  }
+  
+  # Format x-axis labels
+  x_labs <- p_dat %>%
+    mutate(
+      n = str_c("n = ", label_comma()(n)),
+      n = str_c(!!sym(x), "\n", n)
+    )
+  
+  x_labs <- set_names(x_labs$n, x_labs$x_clmn)
+  
+  # Create bargraphs
+  res <- dat %>%
+    ggplot(aes(x_clmn, frac_comp, fill = !!sym(x), alpha = rep)) +
     geom_col(position = position_dodge2(padding = 0.15)) +
     
     geom_text(
       aes(1.5, Inf, fill = NULL, alpha = NULL, label = p_adj),
-      data  = p_data,
+      data  = p_vals,
       parse = TRUE,
       vjust = 1.3,
       size  = 12 / .pt
     ) +
     
-    facet_wrap(~ subtype) +
+    facet_wrap(~ subtype, scales = "free_x") +
     scale_fill_manual(values = treat_clrs) +
     scale_alpha_manual(values = rep(1, n_distinct(df_in$rep))) +
     scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
+    scale_x_discrete(labels = x_labs) +
     guides(alpha = "none") +
     labs(y = ttl) +
     base_theme +
@@ -1172,43 +1208,66 @@ create_chikv_class_bars <- function(df_in, p_data, ttl) {
 #' Create boxplots comparing Ag module scores for mock vs CHIKV
 #' 
 #' Used for figure 5
-create_chikv_module_boxes <- function(df_in, module_clmns, clrs = treat_clrs,
-                                      ttl, n_p = NULL) {
+create_chikv_module_boxes <- function(df_in, x = "treatment", module_clmns,
+                                      clrs = treat_clrs, ttl, n_p = NULL) {
+  
+  # Format colors
+  grps <- unique(df_in[[x]])
+  clrs <- clrs[names(clrs) %in% grps]
   
   # Format data for plotting
-  treats <- unique(df_in$treatment)
+  if (length(grps) > 2) {
+    cli_warn("More than two groups present in `x`, using the first two")
+  }
   
   dat <- df_in %>%
     pivot_longer(all_of(module_clmns)) %>%
     mutate(
       module_subtype = str_remove(name, "_[^_]+$"),
       module_type    = str_remove(name, "^.+_"),
-      module_type    = str_c("Ag-", module_type)
-      # module_subtype = fct_relevel(module_subtype, rf_typs),
-      # module_type    = fct_relevel(module_type, c("Ag-high", "Ag-low"))
+      module_type    = str_c("Ag-", module_type),
+      !!sym(x)      := fct_relevel(!!sym(x), names(clrs)),
+      x_clmn         = str_c(subtype, "-", !!sym(x))
     ) %>%
-    filter(subtype == module_subtype)
+    filter(subtype == module_subtype) %>%
+    arrange(!!sym(x)) %>%
+    mutate(x_clmn = fct_inorder(x_clmn))
   
   # Calculate p-values
   p_dat <- dat %>%
     group_by(subtype, module_type) %>%
     summarize(
       p = wilcox.test(
-        value[treatment == treats[1]],
-        value[treatment == treats[2]]
+        value[!!sym(x) == grps[1]],
+        value[!!sym(x) == grps[2]]
       )$p.value,
       .groups = "drop"
     ) %>%
     mutate(
-      p_adj = p.adjust(p, method = "fdr", n = n_p %||% length(p))
-    ) %>%
+      p_adj = p.adjust(
+        p,
+        method = "BH",
+        n = n_p %||% length(p)  # specifying n_p is useful when only plotting a 
+      )                         # single panel and showing the other panels in
+    ) %>%                       # other figures
     rowwise() %>%
     mutate(p_adj = str_c("italic(p) == ", .format_pvalue(p_adj))) %>%
     ungroup()
     
+  # Format x-axis labels
+  x_labs <- dat %>%
+    group_by(!!sym(x), x_clmn) %>%
+    summarize(n = n_distinct(.cell_id), .groups = "drop") %>%
+    mutate(
+      n = str_c("n = ", label_comma()(n)),
+      n = str_c(!!sym(x), "\n", n)
+    )
+  
+  x_labs <- set_names(x_labs$n, x_labs$x_clmn)
+  
   # Create boxplots
   res <- dat %>%
-    ggplot(aes(treatment, value, fill = treatment, alpha = rep)) +
+    ggplot(aes(x_clmn, value, fill = !!sym(x), alpha = rep)) +
     geom_boxplot(outlier.size = 0.5) +
     
     geom_text(
@@ -1219,10 +1278,11 @@ create_chikv_module_boxes <- function(df_in, module_clmns, clrs = treat_clrs,
       size  = 12 / .pt
     ) +
     
-    facet_grid(module_type ~ subtype, scales = "free_y") +
+    facet_grid(module_type ~ subtype, scales = "free") +
     scale_fill_manual(values = clrs) +
     scale_alpha_manual(values = rep(1, n_distinct(df_in$rep))) +
     scale_y_continuous(expand = expansion(c(0.05, 0.1))) +
+    scale_x_discrete(labels = x_labs) +
     guides(alpha = "none") +
     labs(y = ttl) +
     base_theme +
@@ -2008,13 +2068,18 @@ tm_clrs <- set_names(
 tm_clrs[3] <- "#6A51A3"
 tm_clrs[4] <- "#D7301F"
 
-# Key for mouse IDs
+# Sample keys
 mouse_key <- lec_so@meta.data %>%
   distinct(mouse, orig.ident)
 
 mouse_key <- set_names(
   mouse_key$mouse, mouse_key$orig.ident
 )
+
+tm_key <- sam_info %>%
+  distinct(tm, mouse)
+
+tm_key <- set_names(tm_key$tm, tm_key$mouse)
 ```
 
 

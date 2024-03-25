@@ -28,6 +28,19 @@ geo_m_clrs <- m_clrs %>%
 
 geo_m_clrs["naive"] <- "grey85"
 
+# Label keys
+geo_m_key <- c(
+  `3wk`     = "day 21",
+  `6wk`     = "day 42",
+  `6wk-3wk` = "dual",
+  naive     = "naive"
+)
+
+geo_seg_key      <- names(seg_clrs)
+idx              <- geo_seg_key != "Other"
+geo_seg_key[idx] <- str_c(geo_seg_key[idx], "+")
+geo_seg_key      <- set_names(geo_seg_key, names(seg_clrs))
+
 # geomx files
 geomx_dir   <- here("results/geomx")
 img_dir     <- here("data/230623_A00405_0707_AHCK7MDSX7/images")
@@ -346,7 +359,7 @@ ag_tms   <- c("3wk", "6wk")
 ag_clmns <- set_names(str_c("Ag_", ag_tms, "_score"), ag_tms)
 
 ag_dat <- geomx[ag_bcs, ] %>%
-  assayDataElement(elt = "q_norm") %>%
+  assayDataElement(elt = "neg_norm") %>%
   t() %>%
   as.data.frame() %>%
   rownames_to_column("dcc")
@@ -408,6 +421,10 @@ save_objs(geomx,      ob_dir = here(params$geomx_dir))
 ```{r "load geomx objects"}
 geomx     <- qread(here(params$geomx_dir, "geomx.qs"))
 geomx_raw <- qread(here(params$geomx_dir, "geomx_raw.qs"))
+
+geomx_dat <- geomx %>%
+  pData() %>%
+  as_tibble(rownames = "dcc")
 ```
 
 ```{r "geomx images"}

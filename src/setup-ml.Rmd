@@ -831,7 +831,7 @@ fetch_genes <- function(terms, mart) {
 #' OrgDb
 #' @param sim_data Similarity data to use for simplifying GO terms, generated
 #' using [clusterProfiler::godata()]
-#' @param file Path to output file for saving results
+#' @param file Path to output file for saving results, do not include extension
 get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
                    min_term_size = 10, db = "BP", simplify_terms = TRUE,
                    n_bkgd = Inf, exclude_genes = "^(Rp[sl]|mt-)",
