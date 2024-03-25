@@ -1063,7 +1063,7 @@ shared_feats <- rf_feats %>%
         )
       })
   }) %>%
-  filter(subtype %in% rf_typs) %>%
+  # filter(subtype %in% rf_typs) %>%
   group_by(class, gene) %>%
   filter(n_distinct(subtype) > 1) %>%
   ungroup()
@@ -1139,19 +1139,22 @@ fig2
 
 ### Figure S3
 
-A.  The top 15 gene ontology terms are shown for Ag-high gene modules for each
+A.  The top 15 gene ontology terms are shown for Ag-high gene modules
+    for each cLECs, fLECs, and collecting LECs.
+B.  Top gene ontology terms are shown for Ag-low gene modules as described in A.
+C.  The expression of each Ag-high gene module is shown for naive LECs
+    (0 days post vaccination) along with each time point.
+D.  The expression of each Ag-low gene module is shown as described in C.
+E.  The fraction of cells predicted to be Ag-low and Ag-high is shown for each
     LEC subset.
-B.  Top gene ontology terms are shown for Ag-low gene modules as described in E.
-C.  The fraction of cells predicted to be Ag-low and Ag-high is shown for each
-    LEC subset.
-D.  Ag-low module score is shown for Ag-low, Ag-high, and predicted
+F.  Ag-low module score is shown for Ag-low, Ag-high, and predicted
     Ag-competent LECs.
     The Spearman correlation between Ag classes and Ag-high module score is
     shown for each timepoint.
     One-sided p values were calculated and adjusted using Benjamini-Hochberg
     correction.
-E.  UMAP projections show fLEC Ag-high module scores for each timepoint.
-F.  UMAP projections show collecting LEC Ag-high module scores for each
+G.  UMAP projections show fLEC Ag-high module scores for each timepoint.
+H.  UMAP projections show collecting LEC Ag-high module scores for each
     timepoint.
 
 ```{r "RF GO"}
@@ -2175,7 +2178,7 @@ all_geo_bxs <- geo_clmns %>%
       facet_grid(Segment ~ sample, scales = "free_y", labeller = as_labeller(geo_lab_fn)) +
       scale_fill_manual(values = reg_clrs) +
       scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
-      labs(y = .y) +
+      labs(y = .x) +
       base_theme +
       theme(
         aspect.ratio    = 1.4,
