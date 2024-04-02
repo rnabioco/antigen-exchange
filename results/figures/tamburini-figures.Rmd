@@ -2481,43 +2481,6 @@ fig5 <- plot_grid(
 )
 
 fig5
-
-
-
-# # Save figure for Tem's grant
-# c("C", "A") %>%
-#   iwalk(~ {
-#     chikv_u$cLEC[[.y]][[1]] <<- chikv_u$cLEC[[.y]][[1]] + labs(tag = .x)
-#   })
-# 
-# mid <- wrap_plots(
-#   chikv_u$cLEC[[2]],
-#   chikv_ag_bars + labs(tag = "B"),
-#   chikv_u$cLEC[[1]],
-#   chikv_ag_bxs + labs(tag = "D"),
-#   widths = c(1, 0.3)
-# ) &
-#   theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
-# 
-# new_fig5 <- plot_grid(
-#   mid, heat,
-#   ncol       = 1,
-#   labels     = c("", "E"),
-#   label_size = ttl_pt2 * 1.5,
-#   hjust      = c(0, -0.5),
-#   vjust      = c(1, 0),
-#   rel_heights = c(2.5, 1)
-# )
-# 
-# new_fig5 %>%
-#   ggsave(
-#     filename = here("results", str_c(Sys.Date(), "_fig5.png")),
-#     device = "png",
-#     width  = 12,
-#     height = 13.2,
-#     bg     = "white",
-#     dpi    = 600
-#   )
 ```
 
 <br>
@@ -2587,6 +2550,45 @@ figS6
 
 ```{r "session info"}
 sessionInfo()
+```
+
+
+
+```{r "TEMS GRANT FIG", eval = FALSE}
+# Save figure for Tem's grant March 2024
+c("C", "A") %>%
+  iwalk(~ {
+    chikv_u$cLEC[[.y]][[1]] <<- chikv_u$cLEC[[.y]][[1]] + labs(tag = .x)
+  })
+
+mid <- wrap_plots(
+  chikv_u$cLEC[[2]],
+  chikv_ag_bars + labs(tag = "B"),
+  chikv_u$cLEC[[1]],
+  chikv_ag_bxs + labs(tag = "D"),
+  widths = c(1, 0.3)
+) &
+  theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
+
+new_fig5 <- plot_grid(
+  mid, heat,
+  ncol       = 1,
+  labels     = c("", "E"),
+  label_size = ttl_pt2 * 1.5,
+  hjust      = c(0, -0.5),
+  vjust      = c(1, 0),
+  rel_heights = c(2.5, 1)
+)
+
+new_fig5 %>%
+  ggsave(
+    filename = here("results", str_c(Sys.Date(), "_fig5.png")),
+    device = "png",
+    width  = 12,
+    height = 13.2,
+    bg     = "white",
+    dpi    = 600
+  )
 ```
 
 
