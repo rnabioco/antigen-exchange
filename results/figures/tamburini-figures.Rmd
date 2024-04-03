@@ -26,7 +26,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -2321,7 +2321,7 @@ chikv_u <- u_args %>%
         typ           = .x,
         ag_class_clmn = "pred_grp",
         module_clmn   = str_c(.x, "_high"),
-        module_title  = str_c(.x, "\nAg-high module"),
+        module_title  = str_c(.x, " Ag-high module"),
         facet_var     = "treatment",
         lab_fn        = "label_value",
         class_clrs    = chikv_clrs,
@@ -2460,6 +2460,14 @@ c("D", "B") %>%
     chikv_u$cLEC[[.y]][[1]] <<- chikv_u$cLEC[[.y]][[1]] + labs(tag = .x)
   })
 
+chikv_u$cLEC[[1]] <- chikv_u$cLEC[[1]] &
+  theme(
+    legend.position   = "left",
+    legend.title      = element_text(size = ttl_pt2, hjust = 0.5, angle = 90),
+    legend.key.height = unit(30, "pt"),
+    legend.key.width  = unit(6, "pt")
+  )
+
 mid <- wrap_plots(
   chikv_u$cLEC[[2]],
   chikv_ag_bars + labs(tag = "C"),
@@ -2553,6 +2561,140 @@ sessionInfo()
 ```
 
 
+
+```{r "BETHS GRANT FIG", fig.width = 12, fig.height = 18, eval = FALSE}
+# Features to plot
+heat_feats <- rf_feats$cLEC$high
+heat_feats <- heat_feats[heat_feats %in% rownames(chikv_so)]
+
+# Format Ira's data
+# object was saved with Seurat v5, need to convert to v4 object
+ira_so <- read_rds(here(params$so_dir, "lec_complete_object.rds"))
+
+cell_ids <- attr(ira_so[["RNA"]], "cells")@.Data %>%
+  as.data.frame() %>%
+  filter(counts)
+
+genes <- attr(ira_so[["RNA"]], "features")@.Data %>%
+  as.data.frame() %>%
+  filter(counts)
+
+counts <- attr(ira_so[["RNA"]], "layers")$counts
+
+rownames(counts) <- rownames(genes)
+colnames(counts) <- rownames(cell_ids)
+
+# Check that sparse matrix has correct column/row names
+count_sums <- colSums(counts)
+feat_sums  <- colSums(counts > 0)
+
+stopifnot(
+  identical(colnames(counts), rownames(ira_so@meta.data)),
+  all(count_sums == ira_so@meta.data$nCount_RNA),
+  all(feat_sums  == ira_so@meta.data$nFeature_RNA)
+)
+
+# Create new object and format data
+ira_dat <- counts %>%
+  CreateSeuratObject(meta.data = ira_so@meta.data) %>%
+  NormalizeData(normalization.method = "LogNormalize") %>%
+  subset(orig.ident == "2d") %>%
+  FetchData(c("orig.ident", "cell_type", heat_feats)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(
+    !is.na(cell_type),
+    cell_type == "ISG-high LEC"
+  ) %>%
+  mutate(
+    rep = cell_type,
+    treatment = "ISG\nhigh"
+  ) %>%
+  rename(lec_subtype = cell_type)
+
+# Add Ira's data to CHIKV object
+ira_dat <- chikv_so %>%
+  FetchData(c("orig.ident", "treatment", "rep", "lec_subtype", heat_feats)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(lec_subtype %in% rf_cell_type) %>%
+  
+  bind_rows(ira_dat) %>%
+  pivot_longer(all_of(heat_feats))
+
+heat_dat <- ira_dat %>%
+  group_by(orig.ident, lec_subtype, treatment, rep, name) %>%
+  summarize(value = mean(value), .groups = "drop")
+  
+# Format heatmap data
+gn_lvls <- heat_dat %>%
+  filter(orig.ident != "2d") %>%
+  select(treatment, rep, name, value) %>%
+  pivot_wider(names_from = treatment, values_from = value) %>%
+  mutate(value = CHIKV / mock, .keep = "unused") %>%
+  arrange(desc(value)) %>%
+  pull(name) %>%
+  unique()
+
+heat_dat <- heat_dat %>%
+  group_by(name) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup() %>%
+  mutate(
+    treatment = fct_relevel(treatment, c("mock", "CHIKV")),
+    name      = fct_relevel(name, rev(gn_lvls))
+  )
+
+# Ag heatmap
+heat <- heat_dat %>%
+  ggplot(aes(name, rep, fill = value)) +
+  geom_tile() +
+  scale_fill_gradientn(colours = c("#56B4E9", "white", "#D7301F")) +
+  facet_grid(treatment ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  guides(fill = guide_colorbar(
+    barwidth = unit(150, "pt"),
+    barheight = unit(6, "pt")
+  )) +
+  base_theme +
+  theme(
+    strip.placement = "outside",
+    strip.clip      = "off",
+    legend.position = "bottom",
+    legend.title    = element_blank(),
+    axis.title      = element_blank(),
+    axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    axis.text.y     = element_blank()
+  )
+
+# Create final figure
+plot_grid(
+  top, mid, heat,
+  ncol       = 1,
+  labels     = c("A", "", "F"),
+  label_size = ttl_pt2 * 1.5,
+  hjust      = c(0, 0, -0.5),
+  vjust      = c(1.5, 1, 0),
+  rel_heights = c(1, 2.5, 1)
+)
+
+ggsave(
+  filename = here("results/figures/2024-04-02_fig5_for_grant.png"),
+  device = "png",
+  dpi    = 300,
+  bg     = "white",
+  width  = 12,
+  height = 18,
+)
+
+# # Boxplots
+# ira_dat %>%
+#   mutate(
+#     treatment = fct_relevel(treatment, c("mock", "CHIKV", "ISG\nhigh")),
+#     name = fct_relevel(name, rev(gn_lvls))
+#   ) %>%
+#   ggplot(aes(orig.ident, value, fill = treatment)) +
+#   geom_boxplot() +
+#   facet_wrap(~ name) +
+#   base_theme
+```
 
 ```{r "TEMS GRANT FIG", eval = FALSE}
 # Save figure for Tem's grant March 2024

@@ -468,18 +468,18 @@ create_rf_module_umaps <- function(df_in, typ, module_clmn, module_title,
           scale_limits = scale_limits
         ) +
         facet_wrap(facet_frm, labeller = lab_fn) +
-        theme(
-          legend.position = "bottom",
-          legend.text     = element_text(size = 10)
-        )
+        theme(legend.text = element_text(size = 10))
       
       if (show_scale_title) {
         u <- u +
           guides(fill = guide_colorbar(
-            ticks = FALSE, title.position = "left", title = module_title,
-            barheight = unit(6, "pt"), barwidth = unit(120, "pt"), 
+            ticks = FALSE, title.position = "left", title = module_title
           )) +
-          theme(legend.title = element_text(size = ttl_pt2, hjust = 0.5))
+          theme(
+            legend.title = element_text(size = ttl_pt2, hjust = 0.5),
+            legend.key.height = unit(6, "pt"),
+            legend.key.width  = unit(30, "pt")
+          )
       }
       
       if (circle_cells) {
@@ -519,7 +519,11 @@ create_rf_module_umaps <- function(df_in, typ, module_clmn, module_title,
           size     = pt_size[2],
           na_color = "grey85"
         ) +
-        facet_wrap(facet_frm, labeller = lab_fn)
+        facet_wrap(facet_frm, labeller = lab_fn) +
+        theme(
+          legend.position = c(0.5, -0.1),
+          legend.direction = "horizontal"
+        )
     }) %>%
     wrap_plots(nrow = 1)
   
