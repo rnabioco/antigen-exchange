@@ -54,6 +54,7 @@ library(openxlsx)
 library(xlsx)
 library(ComplexHeatmap)
 library(png)
+library(pzfx)
 
 # Tidyverse
 library(tidyverse)
@@ -1213,7 +1214,7 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
 #' 
 #' Used for figure 5
 create_chikv_module_boxes <- function(df_in, x = "treatment", module_clmns,
-                                      clrs = treat_clrs, ttl, n_p = NULL) {
+                                      clrs = treat_clrs, ttl, n_p = NULL, ...) {
   
   # Format colors
   grps <- unique(df_in[[x]])
@@ -1272,7 +1273,7 @@ create_chikv_module_boxes <- function(df_in, x = "treatment", module_clmns,
   # Create boxplots
   res <- dat %>%
     ggplot(aes(x_clmn, value, fill = !!sym(x), alpha = rep)) +
-    geom_boxplot(outlier.size = 0.5) +
+    geom_boxplot(outlier.size = 0.5, ...) +
     
     geom_text(
       aes(1.5, Inf, fill = NULL, alpha = NULL, label = p_adj),
