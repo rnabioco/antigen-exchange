@@ -82,7 +82,23 @@ ag_exps <- list(LEC = "exp-1", DC = "exp-2")
 subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
 
 # Adjust theme
+txt_pt1  <- 10
+txt_pt2  <- 12
+ttl_pt1  <- 14
+ttl_pt2  <- 18
+ln_pt    <- 0.5
+ln_col   <- "grey85"
 ln_col_2 <- "grey75"
+cir_size <- 3.5
+sqr_size <- 4
+
+txt_theme_1 <- theme(
+  strip.text   = element_text(size = ttl_pt2),
+  legend.text  = element_text(size = ttl_pt1),
+  axis.title   = element_text(size = ttl_pt2),
+  axis.text    = element_text(size = txt_pt2, color = "black"),
+  legend.title = element_text(size = ttl_pt2),
+)
 
 base_theme <- djvdj_theme(line_color = ln_col_2) +
   theme(
@@ -685,7 +701,8 @@ go_fig <- go_sig %>%
         legend.position = "none",
         plot.title      = element_text(size = ttl_pt2 * 1.5, hjust = 0.25),
         axis.title.y    = element_blank(),
-        axis.text.y     = element_text(size = ttl_pt1)
+        axis.text.y     = element_text(size = ttl_pt1),
+        strip.clip      = "off"
       )
   })
 ```
@@ -718,25 +735,34 @@ med_dat <- fig_dat %>%
   )
 
 # Create boxplots
-naive_fig <- med_dat %>%
+naive_fig <- fig_dat %>%
   split(.$module_ag) %>%
   imap(~ {
     pt_dat <- fig_dat %>%
       filter(module_ag == .y)
     
-    plt <- .x %>%
-      ggplot(aes(tm, med, color = subtype)) +
-      geom_point(
-        aes(tm, value, group = subtype, color = NULL),
-        data = pt_dat,
-        size = 0.001,
-        color = ln_col
+    plt <- pt_dat %>%
+      ggplot(aes(tm, value, color = subtype)) +
+      geom_boxplot(
+        color         = ln_col,
+        fill          = ln_col,
+        width         = 0.25,
+        linewidth     = 0.75,
+        outlier.color = ln_col,
+        outlier.size  = 0.001
       ) +
-      geom_segment(
-        aes(x = tm, xend = tm, y = q1, yend = q3),
-        linewidth = 3.2, color = ln_col_2
-      ) +
-      geom_point(size = 3.2)
+      stat_summary(geom = "point", fun = median, size = 3.2)
+      # geom_point(
+      #   aes(tm, value, group = subtype, color = NULL),
+      #   data = pt_dat,
+      #   size = 0.001,
+      #   color = ln_col
+      # ) +
+      # geom_segment(
+      #   aes(x = tm, xend = tm, y = q1, yend = q3),
+      #   linewidth = 3.2, color = ln_col_2
+      # ) +
+      # geom_point(size = 3.2)
     
     plt +
       facet_grid(subtype ~ ., scales = "free_y") +
@@ -749,7 +775,8 @@ naive_fig <- med_dat %>%
         aspect.ratio    = 0.45,
         plot.margin     = margin(),
         legend.position = "none",
-        panel.border    = element_rect(color = ln_col_2)
+        panel.border    = element_rect(color = ln_col_2),
+        strip.clip      = "off"
       )
   })
 ```
@@ -795,8 +822,7 @@ D.  Select example genes from the cLEC Ag-high gene module are shown, triangles
 rf_bar_dat <- lec_so@meta.data %>%
   filter(
     tm %in% rf_tms,
-    subtype %in% rf_typs,
-    !training_data
+    subtype %in% rf_typs
   ) %>%
   mutate(
     subtype    = fct_relevel(subtype, rf_typs),
@@ -1134,7 +1160,7 @@ ex_mod_bxs <- rf_mod_args %>%
         p_x          = args$p_x,
         p_hjust      = args$p_hjust
       ) +
-      theme(plot.margin = margin(15, 15, 5, 15))
+      theme(plot.margin = margin(0, 15, 5, 15))
   }) %>%
   wrap_plots(nrow = 1)
 ```
@@ -1354,7 +1380,7 @@ geo_bxs <- bx_dat %>%
     linewidth = ln_pt * 1.5, alpha = 1, outlier.color = NA, width = 0.65,
     key_glyph = draw_key_point
   ) +
-  geom_jitter(size = 2, width = 0.1) +
+  geom_jitter(size = 1.5, width = 0.1) +
   geom_text(
     aes(region_3, Inf, label = n, fill = NULL),
     data  = n_dat,
@@ -1452,7 +1478,7 @@ geo_sct <- sct_dat %>%
   )
 ```
 
-```{r "FIG 5 CSHL POSTER", fig.width = 14, fig.height = 10}
+```{r "FIG 5 CSHL POSTER", fig.width = 12, fig.height = 8.5}
 bot <- plot_grid(
   geo_bxs, geo_sct,
   nrow   = 1,
@@ -1656,6 +1682,7 @@ pzfx_plt <- pzfx_dat %>%
   labs(y = tbl_nm) +
   base_theme +
   theme(
+    plot.margin     = margin(20, 0, 0, 0),
     aspect.ratio    = 1.3,
     legend.position = "none",
     axis.title.x    = element_blank(),
@@ -1670,7 +1697,8 @@ plot_grid(
   align  = "h",
   axis   = "tb",
   labels = c("A", "B", "C"),
-  label_size = ttl_pt2 * 1.5
+  label_size = ttl_pt2 * 1.5,
+  vjust  = 1
 )
 ```
 

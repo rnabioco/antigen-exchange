@@ -284,13 +284,35 @@ get_cell_types <- function(so_in, type_clmn, sample_clmn, n_cells = 3) {
 #' @export
 classify_markers <- function(so_in, feats, filt, type_label, clst_col, type_col,
                              summary_fn = mean) {
+  
   clsts <- so_in %>%
-    FetchData(c(feats, clst_col, type_col)) %>%
+    FetchData(unique(c(feats, clst_col, type_col)))
+  
+  num_feats <- clsts %>%
+    keep(is.numeric) %>%
+    colnames()
+  
+  num_feats <- feats[feats %in% num_feats]
+  chr_feats <- feats[!feats %in% num_feats]
+  
+  clsts <- clsts %>%
     group_by(!!sym(clst_col)) %>%
-    summarize(across(all_of(feats), summary_fn), .groups = "drop") %>%
+    summarize(
+      across(all_of(num_feats), summary_fn),
+      across(all_of(chr_feats), unique),
+      .groups = "drop"
+    )
+  
+  n_clsts <- nrow(clsts)
+  
+  clsts <- clsts %>%
     filter({{filt}}) %>%
     pull(clst_col) %>%
     as.character()
+  
+  if (n_distinct(so_in[[clst_col]]) != n_clsts) {
+    warning("multiple values of a one of the `feats` of type character are present for some clusters")
+  }
   
   res <- so_in %>%
     mutate_meta(

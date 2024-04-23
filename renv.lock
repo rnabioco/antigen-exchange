@@ -941,8 +941,13 @@
     "Seurat": {
       "Package": "Seurat",
       "Version": "4.4.0",
-      "Source": "Repository",
-      "Repository": "RSPM",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteRepo": "seurat",
+      "RemoteUsername": "satijalab",
+      "RemoteRef": "seurat4",
+      "RemoteSha": "74905f1be2f14438e55b8cd3c96e89e6d13b4857",
       "Requirements": [
         "KernSmooth",
         "MASS",
@@ -998,13 +1003,18 @@
         "utils",
         "uwot"
       ],
-      "Hash": "622e2dca3e48ed689fd418bffc0dc34e"
+      "Hash": "bd95f1612c1dd6c94194a4cb475be952"
     },
     "SeuratObject": {
       "Package": "SeuratObject",
       "Version": "4.1.4",
-      "Source": "Repository",
-      "Repository": "RSPM",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteRepo": "seurat-object",
+      "RemoteUsername": "mojaveazure",
+      "RemoteRef": "release/4.1.4",
+      "RemoteSha": "8ca9ab586e0dba609f31f247b2216b99e929aa83",
       "Requirements": [
         "Matrix",
         "R",
@@ -1022,7 +1032,7 @@
         "tools",
         "utils"
       ],
-      "Hash": "1548d1c211c0a2eff1771991d4f71a9d"
+      "Hash": "86a374d5d590745f38e3133254d4018d"
     },
     "SingleCellExperiment": {
       "Package": "SingleCellExperiment",
@@ -4341,6 +4351,16 @@
         "vctrs"
       ],
       "Hash": "1cba04a4e9414bdefc9dcaa99649a8dc"
+    },
+    "pzfx": {
+      "Package": "pzfx",
+      "Version": "0.3.0",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "xml2"
+      ],
+      "Hash": "c58e424997ba04370d99176d20002364"
     },
     "qs": {
       "Package": "qs",
