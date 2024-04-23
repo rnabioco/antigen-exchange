@@ -44,7 +44,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 <br>
@@ -80,7 +80,7 @@ create_object <- !file.exists(here(params$so_dir, "xen.qs"))
 
 ```{r "functions"}
 .plot_full_fov <- function(df_in, fov_in, color, trace = list(), clrs,
-                           size = 0.5, trace_size = 2, trace_clr = "black") {
+                           size = 0.3, trace_size = 1, trace_clr = "black") {
   # Format input data
   plt_theme <- umap_theme +
     theme(
@@ -119,8 +119,7 @@ create_object <- !file.exists(here(params$so_dir, "xen.qs"))
         scale_fill_manual(values = clrs, labels = n_labs) +
         guides(fill = guide_legend(override.aes = list(size = 10, color = NA))) +
         coord_fixed() +
-        plt_theme +
-        theme(aspect.ratio = NULL)
+        plt_theme
     })
   
   res
@@ -691,7 +690,6 @@ base_theme <- djvdj_theme() +
 
 umap_theme <- base_theme +
   theme(
-    aspect.ratio = 0.9,
     panel.border = element_rect(color = NA, fill = NA),
     axis.title   = element_blank(),
     axis.line.x  = element_blank(),
@@ -788,7 +786,7 @@ lec_lvls <- c(
 <u>To do</u>
 
 * Comparison of 3 week and 6 week Ag signals
-* Further refinement of cell types
+* Further refinement of cell types (current annotations are rough)
 * Analysis of slide 2
 
 <br>
@@ -829,6 +827,7 @@ plts <- fovs %>%
       guides(fill = guide_legend(override.aes = list(shape = 22, size = 4))) +
       scale_fill_manual(values = typ_clrs, labels = lgnd_labs) +
       labs(tag = .x) +
+      coord_fixed() +
       umap_theme +
       theme(
         legend.key.height = unit(35, "pt"),
@@ -887,7 +886,7 @@ fig
 
 LEC and DC populations of interest are shown for LN sections.
 Cells were downsampled to allow for visualization of all cell types.
-LN sections showing all cells are included at the bottom.
+High-resolution images showing all cells are included at the bottom.
 
 ```{r "SLIDE 3: LEC DC sections", fig.width = 13, fig.height = 6}
 # Create section plots
@@ -1038,6 +1037,33 @@ marker_plt <- gns %>%
 marker_plt
 ```
 
+```{r "CCR7 EXPRESSION", eval = FALSE}
+gns <- "Ccr7"
+
+xen@active.assay <- "SCT"
+
+dat <- xen %>%
+  FetchData(
+    c("cell_type", "Ag_class", "Ag_type", gns),
+    slot = "data"
+  ) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(gns))
+
+dat %>%
+  mutate(Ag_class = fct_relevel(Ag_class, c("Ag-low", "Ag-high"))) %>%
+  ggplot(aes(cell_type, value, fill = Ag_class)) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_manual(values = c("lightblue", "#D7301F")) +
+  labs(y = "expression") +
+  facet_wrap(~ name) +
+  base_theme +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1)
+  )
+```
+
 <br>
 
 <br>
@@ -1156,9 +1182,10 @@ fovs %>%
       .plot_full_fov(
         fov        = .x,
         color      = "Ag_type",
+        clrs       = typ_clrs,
         trace      = list(ag_types),
         trace_clr  = NA,
-        clrs       = typ_clrs
+        trace_size = 1.5
       ) %>%
       plot_grid(
         plotlist = .,
@@ -1382,9 +1409,10 @@ fovs %>%
       .plot_full_fov(
         fov        = .x,
         color      = "lec_type",
+        clrs       = lec_clrs,
         trace      = list(ag_types),
         trace_clr  = NA,
-        clrs       = lec_clrs
+        trace_size = 2
       ) %>%
       plot_grid(
         plotlist = .,
@@ -1433,20 +1461,6 @@ ag_brs <- ag_dat %>%
   )
 
 # Format labels to plot
-small <- small %>%
-  mutate_meta(
-    mutate,
-    lec_Ag_type = ifelse(Ag_class == "Ag-high", as.character(lec_type), "Ag-low"),
-    lec_Ag_type = fct_relevel(lec_Ag_type, levels(ag_dat$lec_type))
-  )
-
-xen <- xen %>%
-  mutate_meta(
-    mutate,
-    lec_Ag_type = ifelse(Ag_class == "Ag-high", as.character(lec_type), "Ag-low"),
-    lec_Ag_type = fct_relevel(lec_Ag_type, levels(ag_dat$lec_type))
-  )
-
 lec_ag_labs <- xen@meta.data %>%
   group_by(lec_Ag_type) %>%
   summarize(n = n(), .groups = "drop") %>%
@@ -1520,9 +1534,10 @@ fovs %>%
       .plot_full_fov(
         fov        = .x,
         color      = "lec_Ag_type",
+        clrs       = lec_clrs,
         trace      = list(ag_types),
         trace_clr  = NA,
-        clrs       = lec_clrs
+        trace_size = 2
       ) %>%
       plot_grid(
         plotlist = .,
@@ -1540,7 +1555,7 @@ fovs %>%
 
 Ag+ LECs and DCs are shown for LN sections.
 
-```{r "Ag+ LECs and DCs", fig.width = 13, fig.height = 7}
+```{r "Ag+ LECs and DCs", fig.width = 13, fig.height = 6}
 # Format legend labels
 lec_dc_ag_labs <- small@meta.data %>%
   group_by(lec_dc_Ag_type) %>%
@@ -1594,8 +1609,9 @@ plts <- fovs %>%
 # Create final figure
 fig <- plts %>%
   wrap_plots(
-    nrow = 2,
-    guides = "collect"
+    nrow    = 2,
+    guides  = "collect",
+    heights = c(1, 1)
   ) &
   theme(
     legend.position = "right",
@@ -1885,13 +1901,13 @@ prox_plts <- dcs %>%
             hjust = -0.2,
             size  = txt_pt2 / .pt
           ) +
-          coord_equal() +
           guides(color = guide_colorbar(ticks = FALSE)) +
           scale_color_gradientn(
             colours = c("#D7301F", "black"),
             name = "distance from\nAg+ LEC",
             limits = c(0, 700)
           ) +
+          coord_fixed() +
           umap_theme_2 +
           theme(
             plot.title        = element_text(size = ttl_pt2 * 1.5, hjust = 0.5),
