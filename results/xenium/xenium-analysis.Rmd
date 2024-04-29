@@ -122,6 +122,8 @@ create_object <- !file.exists(here(params$so_dir, "xen.qs"))
         plt_theme
     })
   
+  if (length(trace) == 1) res <- res[[1]]
+  
   res
 }
 ```
@@ -438,6 +440,8 @@ xen <- xen %>%
 
 ```{r "calculate distance from Ag+ LEC", eval = create_object}
 # Calculate distance from closest Ag+ LEC
+fovs <- sort(unique(xen$fov))
+
 dist_meta <- fovs %>%
   map_dfr(~ {
     # Pull cell coordinates from object
@@ -1186,12 +1190,6 @@ fovs %>%
         trace      = list(ag_types),
         trace_clr  = NA,
         trace_size = 1.5
-      ) %>%
-      plot_grid(
-        plotlist = .,
-        nrow  = 1,
-        align = "h",
-        axis  = "tb"    
       )
     
     print(fig)
@@ -1413,12 +1411,6 @@ fovs %>%
         trace      = list(ag_types),
         trace_clr  = NA,
         trace_size = 2
-      ) %>%
-      plot_grid(
-        plotlist = .,
-        nrow  = 1,
-        align = "h",
-        axis  = "tb"    
       )
     
     print(fig)
@@ -1538,12 +1530,6 @@ fovs %>%
         trace      = list(ag_types),
         trace_clr  = NA,
         trace_size = 2
-      ) %>%
-      plot_grid(
-        plotlist = .,
-        nrow  = 1,
-        align = "h",
-        axis  = "tb"    
       )
     
     print(fig)
@@ -1555,7 +1541,7 @@ fovs %>%
 
 Ag+ LECs and DCs are shown for LN sections.
 
-```{r "Ag+ LECs and DCs", fig.width = 13, fig.height = 6}
+```{r "Ag+ LECs/DCs", fig.width = 13, fig.height = 6}
 # Format legend labels
 lec_dc_ag_labs <- small@meta.data %>%
   group_by(lec_dc_Ag_type) %>%
@@ -1625,10 +1611,81 @@ fig
 
 <br>
 
-Ag+ LECs and DCs are shown for tissue section D. Lines (bottom) connect the nearest
-Ag+ LEC identified for each DC.
+Ag+ LECs and DCs are shown for all DCs for tissue section `r top_fov`.
+Lines (bottom) connect the nearest Ag+ LEC identified for each DC.
 
-```{r "FOV D Ag+ LECs/DCs", fig.width = 13, fig.height = 5.5}
+```{r "FOV D Ag+ LECs/DCs 1", fig.width = 8, fig.height = 5}
+# Format LEC/DC data
+dc_dat <- xen_dat %>%
+  filter(fov == top_fov) %>%
+  mutate(lec_dc_Ag_type = recode(lec_dc_Ag_type, `Ag-low` = "other")) %>%
+  arrange(desc(lec_dc_Ag_type))
+
+# Format n label data
+lec_dc_ag_labs <- dc_dat %>%
+  group_by(lec_dc_Ag_type) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  mutate(n_lab = str_c(lec_dc_Ag_type, "\nn = ", label_comma()(n))) %>%
+  arrange(lec_dc_Ag_type)
+
+lec_dc_ag_labs <- set_names(
+  lec_dc_ag_labs$n_lab,
+  lec_dc_ag_labs$lec_dc_Ag_type
+)
+
+# Create tissue section plot
+dc_dat %>%
+  ggplot(aes(y_cell, x_cell, fill = lec_dc_Ag_type)) +
+  geom_point_trace(size = 1, trace_position = "bottom") +
+  guides(fill = guide_legend(
+    title = "Ag+ LECs/DCs",
+    title.position = "top",
+    override.aes = list(size = 4)
+  )) +
+  scale_fill_manual(values = top_typ_clrs_2, labels = lec_dc_ag_labs) +
+  coord_fixed() +
+  umap_theme_2
+```
+
+```{r "FOV D Ag+ LEC/DC pairs 1", fig.width = 8, fig.height = 5}
+dc_dat %>%
+  ggplot(aes(y_cell, x_cell, color = lec_dc_Ag_type)) +
+  
+  geom_point_trace(
+    size  = 1,
+    color = "black",
+    fill  = "grey99",
+    trace_position = "bottom"
+  ) +
+  geom_segment(
+    aes(x = y_cell, xend = y_lec, y = x_cell, yend = x_lec),
+    data     = ~ filter(.x, lec_dc_Ag_type %in% c("LEC", dcs)),
+    color    = "black",
+    linetype = 1
+  ) +
+  geom_point(
+    data = ~ filter(.x, lec_dc_Ag_type %in% top_types),
+    size = 1
+  ) +
+  
+  guides(color = guide_legend(
+    title = "Ag+ LECs/DCs",
+    title.position = "top",
+    override.aes = list(size = 4)
+  )) +
+  scale_color_manual(values = top_typ_clrs_2, labels = lec_dc_ag_labs) +
+  coord_fixed() +
+  umap_theme_2
+```
+
+<br>
+
+<br>
+
+Ag+ LECs and DCs are shown for each DC subset for tissue section `r top_fov`.
+Lines (bottom) connect the nearest Ag+ LEC identified for each DC.
+
+```{r "FOV D Ag+ LECs/DCs 2", fig.width = 13, fig.height = 5.5}
 # Plot Ag+ LECs and DCs
 plts <- dcs %>%
   map(~ {
@@ -1666,7 +1723,7 @@ fig <- plts %>%
 fig
 ```
 
-```{r "FOV D Ag+ LECs/DCs w/lines", fig.width = 13, fig.height = 5.5}
+```{r "FOV D Ag+ LEC/DC pairs 2", fig.width = 13, fig.height = 5.5}
 # Plot Ag+ LECs and DCs
 plts <- dcs %>%
   map(~ {
@@ -1729,6 +1786,12 @@ The distance from the nearest Ag+ LEC is shown for Ag+ and Ag- cells for each
 cell type. Vertical lines indicate the median distance.
 
 ```{r "proximity histograms", fig.width = 18, fig.height = 13}
+# Ag class labels
+ag_classes <- c(
+  `Ag-low`  = "Ag-",
+  `Ag-high` = "Ag+"
+)
+
 # Format data for histograms
 hist_dat <- xen@meta.data %>%
   as_tibble(rownames = ".cell_id") %>%
@@ -1748,7 +1811,7 @@ ln_dat <- hist_dat %>%
 n_dat <- ln_dat %>%
   group_by(fov, cell_type) %>%
   mutate(
-    n_lab = str_c(Ag_class, " (", label_comma()(n), " cells)")
+    n_lab = str_c(ag_classes[Ag_class], " (", label_comma()(n), " cells)")
   ) %>%
   summarize(
     n_lab = str_c(n_lab, collapse = "\n"),
@@ -1807,9 +1870,9 @@ hist <- hist_dat %>%
   
   facet_grid(cell_type ~ fov, scales = "free_y") +
   labs(x = "distance from nearest Ag+ LEC", y = "density") +
-  scale_fill_manual(values = c(`Ag-low` = "grey85", `Ag-high` = "#D7301F")) +
-  scale_color_manual(values = c(`Ag-low` = "black", `Ag-high` = "#D7301F")) +
-  scale_alpha_manual(values = c(`Ag-low` = 0.5, `Ag-high` = 0.85)) +
+  scale_fill_manual(values = c(`Ag-low` = "grey85", `Ag-high` = "#D7301F"), labels = ag_classes) +
+  scale_color_manual(values = c(`Ag-low` = "black", `Ag-high` = "#D7301F"), labels = ag_classes) +
+  scale_alpha_manual(values = c(`Ag-low` = 0.5, `Ag-high` = 0.85), labels = ag_classes) +
   scale_x_log10() +
   base_theme +
   theme(
@@ -1826,9 +1889,136 @@ hist
 <br>
 
 The distance from the nearest Ag+ LEC is shown for Ag+ and Ag- cells for
-DC subsets. Vertical lines indicate the median distance.
+cDC1 and cDC2 subsets. Vertical lines indicate the median distance.
 
-```{r "DC proximity histograms"}
+```{r "DC proximity histograms 1"}
+# DC labels
+ag_classes <- c(
+  `Ag-low`  = "Ag- DCs",
+  `Ag-high` = "Ag+ DCs"
+)
+
+top_dcs <- dcs[dcs != "Siglec-H DC"]
+
+# Plot distance from nearest Ag+ LEC
+dc_hist <- hist_dat %>%
+  filter(cell_type %in% top_dcs, fov == top_fov) %>%
+  ggplot(aes(lec_dist, fill = Ag_class, alpha = Ag_class)) +
+  geom_density(aes(color = Ag_class)) +
+  geom_vline(
+    aes(xintercept = lec_dist, color = Ag_class, alpha = NULL),
+    data      = filter(ln_dat, cell_type %in% top_dcs, fov == "D"),
+    linetype  = 2,
+    linewidth = 0.75,
+    show.legend = FALSE
+  ) +
+  
+  geom_text(
+    aes(x = 3, y = Inf, label = p_lab, fill = NULL, alpha = NULL),
+    data  = filter(p_dat, cell_type %in% top_dcs, fov == top_fov),
+    parse = TRUE,
+    hjust = 0,
+    vjust = 1.2,
+    size  = txt_pt2 / .pt,
+    show.legend = FALSE
+  ) +
+  
+  facet_grid(cell_type ~ ., scales = "free_y") +
+  labs(x = "distance from Ag+ LEC", y = "density") +
+  scale_fill_manual(values = c(`Ag-low` = "grey85", `Ag-high` = "#D7301F"), labels = ag_classes) +
+  scale_color_manual(values = c(`Ag-low` = "black", `Ag-high` = "#D7301F"), labels = ag_classes) +
+  scale_alpha_manual(values = c(`Ag-low` = 0.5, `Ag-high` = 0.85), labels = ag_classes) +
+  scale_x_log10() +
+  base_theme +
+  theme(
+    aspect.ratio    = 0.5,
+    legend.position = "bottom",
+    legend.title    = element_blank()
+  )
+```
+
+```{r "DC proximity sections 1", fig.width = 16, fig.height = 7}
+# Scatter plot with points colored by distance from Ag+ LEC
+prox_plts <- ag_classes %>%
+  imap(~ {
+    cls <- .y
+    
+    n_dat <- small_dat %>%
+      filter(fov == top_fov) %>%
+      filter(cell_type %in% top_dcs & Ag_class == cls) %>%
+      group_by(Ag_class) %>%
+      summarize(n = n(), .groups = "drop") %>%
+      mutate(n_lab = str_c(label_comma()(n), " cells"))
+    
+    plt <- small_dat %>%
+      filter(fov == top_fov) %>%
+      ggplot(aes(y_cell, x_cell)) +
+      geom_point(
+        data = ~ filter(.x, .cell_id %in% plt_cells),
+        size = 1, color = "grey85"
+      ) +
+      geom_point(
+        aes(color = lec_dist),
+        data = ~ filter(.x, cell_type %in% top_dcs & Ag_class == cls)
+      ) +
+      geom_text(
+        aes(-Inf, Inf, label = n_lab),
+        data  = n_dat,
+        vjust = 1.5,
+        hjust = -0.2,
+        size  = ttl_pt2 / .pt
+      ) +
+      guides(color = guide_colorbar(ticks = FALSE)) +
+      scale_color_gradientn(
+        colours = c("#D7301F", "black"),
+        name = "distance from\nAg+ LEC",
+        limits = c(0, 700)
+      ) +
+      coord_fixed() +
+      labs(title = .x) +
+      umap_theme_2 +
+      theme(
+        plot.title        = element_text(size = ttl_pt2 * 1.5, hjust = 0.5),
+        legend.key.height = unit(12, "pt"),
+        legend.key.width  = unit(40, "pt"),
+        legend.text       = element_text(size = txt_pt2)
+      )
+    
+    plt
+  })
+
+# Create final figure
+prox_plts <- prox_plts %>%
+  wrap_plots(
+    nrow   = 1,
+    guides = "collect",
+    byrow  = FALSE
+  ) &
+  theme(legend.position = "bottom")
+
+fig <- plot_grid(
+  prox_plts, dc_hist,
+  nrow  = 1,
+  rel_widths = c(1, 0.35)
+)
+
+fig
+```
+
+<br>
+
+<br>
+
+The distance from the nearest Ag+ LEC is shown for Ag+ and Ag- cells for
+each DC subset. Vertical lines indicate the median distance.
+
+```{r "DC proximity histograms 2"}
+# DC labels
+ag_classes <- c(
+  `Ag-low`  = "Ag- DCs",
+  `Ag-high` = "Ag+ DCs"
+)
+
 # Plot distance from nearest Ag+ LEC
 dc_hist <- hist_dat %>%
   filter(cell_type %in% dcs, fov == top_fov) %>%
@@ -1853,10 +2043,10 @@ dc_hist <- hist_dat %>%
   ) +
   
   facet_grid(cell_type ~ ., scales = "free_y") +
-  labs(x = "distance from nearest Ag+ LEC", y = "density") +
-  scale_fill_manual(values = c(`Ag-low` = "grey85", `Ag-high` = "#D7301F")) +
-  scale_color_manual(values = c(`Ag-low` = "black", `Ag-high` = "#D7301F")) +
-  scale_alpha_manual(values = c(`Ag-low` = 0.5, `Ag-high` = 0.85)) +
+  labs(x = "distance from Ag+ LEC", y = "density") +
+  scale_fill_manual(values = c(`Ag-low` = "grey85", `Ag-high` = "#D7301F"), labels = ag_classes) +
+  scale_color_manual(values = c(`Ag-low` = "black", `Ag-high` = "#D7301F"), labels = ag_classes) +
+  scale_alpha_manual(values = c(`Ag-low` = 0.5, `Ag-high` = 0.85), labels = ag_classes) +
   scale_x_log10() +
   base_theme +
   theme(
@@ -1866,22 +2056,22 @@ dc_hist <- hist_dat %>%
   )
 ```
 
-```{r "DC proximity sections", fig.width = 14, fig.height = 7}
+```{r "DC proximity sections 2", fig.width = 14, fig.height = 7}
 # Scatter plot with points colored by distance from Ag+ LEC
 prox_plts <- dcs %>%
   map(~ {
     typ <- .x
     
-    dist_plts <- c("Ag-low", "Ag-high") %>%
-      map(~ {
-        cls <- .x
+    ag_classes %>%
+      imap(~ {
+        cls <- .y
         
         n_dat <- small_dat %>%
           filter(fov == top_fov) %>%
           filter(cell_type == typ & Ag_class == cls) %>%
           group_by(cell_type, Ag_class) %>%
           summarize(n = n(), .groups = "drop") %>%
-          mutate(n_lab = str_c(Ag_class, "\n", label_comma()(n), " cells"))
+          mutate(n_lab = str_c(.x, "\n", label_comma()(n), " cells"))
         
         plt <- small_dat %>%
           filter(fov == top_fov) %>%
