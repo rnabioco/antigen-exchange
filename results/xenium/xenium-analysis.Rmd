@@ -15,6 +15,7 @@ params:
   xen_dir:     "20240322__194506__032224_Tamburini_Run_1"
   so_dir:      "~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/2024-03-22/sobjs"
   ref_dir:     "ref"
+  slide_regex: "output-XETG00230__0022624__[A-Z]__"
   samples:
     value:
       A: "6wk"
@@ -44,7 +45,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 <br>
@@ -72,6 +73,8 @@ library(cowplot)
 library(scales)
 library(colorblindr)
 library(ggtrace)
+library(sf)
+library(sp)
 
 source(here("src/funs.R"))
 
@@ -164,7 +167,7 @@ ref_immgen_dc <- cbind(ref_immgen[shared_gns, ], ref_mousespleenDC[shared_gns, ]
 # Identify samples to load
 xen_dirs <- dir(
   here(params$res_dir, params$xen_dir),
-  pattern = "output-XETG00230__0022624__[A-Z]__",
+  pattern = params$slide_regex,
   full.names = TRUE
 )
 
@@ -442,54 +445,68 @@ xen <- xen %>%
 # Calculate distance from closest Ag+ LEC
 fovs <- sort(unique(xen$fov))
 
-dist_meta <- fovs %>%
+dists <- fovs %>%
   map_dfr(~ {
-    # Pull cell coordinates from object
-    cell_coords <- xen@images[[.x]]@boundaries$centroids
+    # Convert to sf object (sp package is deprecated)
+    # first convert to sp::SpatialPolygonsDataFrame
+    # mol <- obj@images$A@molecules$molecules$GeoMx_Barcode01_ERCC00142
+    # Ensure geometries are valid
+    cells <- xen@images[[.x]]@boundaries$segmentation@polygons
+    plys  <- SpatialPolygons(cells)
     
-    cell_coords <- cell_coords@coords %>%
-      as_tibble() %>%
-      mutate(.cell_id = cell_coords@cells)
-    
-    # Pull cell types
-    cell_coords <- xen@meta.data %>%
+    cell_meta <- xen@meta.data %>%
       filter(fov == .x) %>%
       as_tibble(rownames = ".cell_id") %>%
-      dplyr::select(.cell_id, cell_type, Ag_class) %>%
-      left_join(cell_coords, by = ".cell_id")
+      dplyr::select(.cell_id, cell_type, Ag_class)
     
-    lecs <- cell_coords %>%
+    plys <- SpatialPolygonsDataFrame(
+      plys,
+      data = data.frame(
+        id        = seq_along(cells),
+        cell_type = cell_meta$cell_type,
+        Ag_class  = cell_meta$Ag_class,
+        row.names = map_chr(cells, ~ .x@ID)
+      )
+    )
+    
+    plys <- plys %>%
+      st_as_sf() %>%
+      st_make_valid()
+    
+    # Pull cell types
+    lecs <- cell_meta %>%
       filter(cell_type == "LEC" & Ag_class == "Ag-high")
     
-    # Get all possible neighboring LECs for each cell
-    cell_dist <- expand_grid(
-      LEC   = lecs$.cell_id,
-      other = cell_coords$.cell_id
-    ) %>%
-      inner_join(cell_coords, by = c(other = ".cell_id")) %>%
-      inner_join(lecs, by = c(LEC = ".cell_id"), suffix = c("", "_lec")) %>%
-      dplyr::select(-cell_type_lec, -Ag_class_lec)
+    # Calculate distances between each LEC and all other cells
+    dists <- st_distance(plys[lecs$.cell_id, ], plys)
     
-    # Calculate distance and determine closest LEC
-    cell_dist <- cell_dist %>%
-      mutate(
-        lec_dist = sqrt(((x - x_lec)^2) + ((y - y_lec)^2))
-      ) %>%
+    rownames(dists) <- lecs$.cell_id
+    colnames(dists) <- rownames(plys)
+    
+    dists <- dists %>%
+      as_tibble(rownames = "lec_id") %>%
+      pivot_longer(-lec_id, names_to = "other", values_to = "lec_dist") %>%
+      left_join(cell_meta, by = c(other = ".cell_id"))
+    
+    # Determine closest LEC
+    res <- dists %>%
       group_by(other) %>%
-      slice_min(lec_dist, n = 1, with_ties = FALSE) %>%
-      ungroup()
-    
-    res <- cell_dist %>%
-      dplyr::select(
-        other,
-        lec_id = LEC, lec_dist,
-        x_cell = x, y_cell = y,
-        matches("^[xy]_")
+      mutate(
+        closest = dist == min(dist),
+        fov = .x
       ) %>%
-      column_to_rownames("other")
-    
+      ungroup()
+
     res
   })
+
+dist_meta <- dists %>%
+  filter(closest) %>%
+  group_by(other) %>%
+  slice(1) %>%
+  ungroup() %>%
+  dplyr::select(other, lec_id, lec_dist) %>%
+  column_to_rownames("other")
 
 xen <- xen %>%
   AddMetaData(dist_meta)
@@ -1537,7 +1554,7 @@ fovs %>%
   })
 ```
 
-## LEC-DC Ag exchange
+## LEC-DC proximity
 
 Ag+ LECs and DCs are shown for LN sections.
 
@@ -1611,146 +1628,65 @@ fig
 
 <br>
 
-Ag+ LECs and DCs are shown for all DCs for tissue section `r top_fov`.
+### {.tabset .tabset-pills}
+
+Ag+ LECs and DCs are shown for all DCs for each tissue section.
 Lines (bottom) connect the nearest Ag+ LEC identified for each DC.
 
-```{r "FOV D Ag+ LECs/DCs 1", fig.width = 8, fig.height = 5}
+```{r "Ag+ LECs/DCs 1", fig.width = 8, fig.height = 10, out.width = "50%", results = "asis"}
 # Format LEC/DC data
-dc_dat <- xen_dat %>%
-  filter(fov == top_fov) %>%
-  mutate(lec_dc_Ag_type = recode(lec_dc_Ag_type, `Ag-low` = "other")) %>%
-  arrange(desc(lec_dc_Ag_type))
-
-# Format n label data
-lec_dc_ag_labs <- dc_dat %>%
-  group_by(lec_dc_Ag_type) %>%
-  summarize(n = n(), .groups = "drop") %>%
-  mutate(n_lab = str_c(lec_dc_Ag_type, "\nn = ", label_comma()(n))) %>%
-  arrange(lec_dc_Ag_type)
-
-lec_dc_ag_labs <- set_names(
-  lec_dc_ag_labs$n_lab,
-  lec_dc_ag_labs$lec_dc_Ag_type
-)
-
-# Create tissue section plot
-dc_dat %>%
-  ggplot(aes(y_cell, x_cell, fill = lec_dc_Ag_type)) +
-  geom_point_trace(size = 1, trace_position = "bottom") +
-  guides(fill = guide_legend(
-    title = "Ag+ LECs/DCs",
-    title.position = "top",
-    override.aes = list(size = 4)
-  )) +
-  scale_fill_manual(values = top_typ_clrs_2, labels = lec_dc_ag_labs) +
-  coord_fixed() +
-  umap_theme_2
-```
-
-```{r "FOV D Ag+ LEC/DC pairs 1", fig.width = 8, fig.height = 5}
-dc_dat %>%
-  ggplot(aes(y_cell, x_cell, color = lec_dc_Ag_type)) +
-  
-  geom_point_trace(
-    size  = 1,
-    color = "black",
-    fill  = "grey99",
-    trace_position = "bottom"
-  ) +
-  geom_segment(
-    aes(x = y_cell, xend = y_lec, y = x_cell, yend = x_lec),
-    data     = ~ filter(.x, lec_dc_Ag_type %in% c("LEC", dcs)),
-    color    = "black",
-    linetype = 1
-  ) +
-  geom_point(
-    data = ~ filter(.x, lec_dc_Ag_type %in% top_types),
-    size = 1
-  ) +
-  
-  guides(color = guide_legend(
-    title = "Ag+ LECs/DCs",
-    title.position = "top",
-    override.aes = list(size = 4)
-  )) +
-  scale_color_manual(values = top_typ_clrs_2, labels = lec_dc_ag_labs) +
-  coord_fixed() +
-  umap_theme_2
-```
-
-<br>
-
-<br>
-
-Ag+ LECs and DCs are shown for each DC subset for tissue section `r top_fov`.
-Lines (bottom) connect the nearest Ag+ LEC identified for each DC.
-
-```{r "FOV D Ag+ LECs/DCs 2", fig.width = 13, fig.height = 5.5}
-# Plot Ag+ LECs and DCs
-plts <- dcs %>%
+plts <- fovs %>%
+  set_names() %>%
   map(~ {
-    typ <- .x
+    dc_dat <- xen_dat %>%
+      filter(fov == .x) %>%
+      mutate(lec_dc_Ag_type = recode(lec_dc_Ag_type, `Ag-low` = "other")) %>%
+      arrange(desc(lec_dc_Ag_type))
     
-    small_dat %>%
-      filter(fov == top_fov) %>%
-      filter(lec_dc_Ag_type %in% c("LEC", .x, "other", "Ag-low")) %>%
-      arrange(desc(lec_dc_Ag_type)) %>%
-      
+    # Format n label data
+    lec_dc_ag_labs <- dc_dat %>%
+      group_by(lec_dc_Ag_type) %>%
+      summarize(n = n(), .groups = "drop") %>%
+      mutate(n_lab = str_c(lec_dc_Ag_type, "\nn = ", label_comma()(n))) %>%
+      arrange(lec_dc_Ag_type)
+    
+    lec_dc_ag_labs <- set_names(
+      lec_dc_ag_labs$n_lab,
+      lec_dc_ag_labs$lec_dc_Ag_type
+    )
+    
+    # Create tissue section plot
+    plt_1 <- dc_dat %>%
       ggplot(aes(y_cell, x_cell, fill = lec_dc_Ag_type)) +
-      geom_point_trace(size = 1.75, trace_position = "bottom") +
+      geom_point_trace(size = 1, trace_position = "bottom") +
       guides(fill = guide_legend(
         title = "Ag+ LECs/DCs",
         title.position = "top",
         override.aes = list(size = 4)
       )) +
-      scale_fill_manual(values = top_typ_clrs_2, drop = FALSE) +
-      labs(title = .x) +
+      scale_fill_manual(values = top_typ_clrs_2, labels = lec_dc_ag_labs) +
       coord_fixed() +
       umap_theme_2
-  })
-
-fig <- plts %>%
-  wrap_plots(
-    nrow = 1,
-    guides = "collect"
-  ) &
-  theme(
-    legend.position = "bottom",
-    legend.text     = element_text(size = ttl_pt2),
-    plot.title      = element_text(size = ttl_pt2 * 1.5, hjust = 0.5)
-  )
-
-fig
-```
-
-```{r "FOV D Ag+ LEC/DC pairs 2", fig.width = 13, fig.height = 5.5}
-# Plot Ag+ LECs and DCs
-plts <- dcs %>%
-  map(~ {
-    typ <- .x
     
-    small_dat %>%
-      filter(fov == top_fov) %>%
-      filter(lec_dc_Ag_type %in% c("LEC", .x, "other", "Ag-low")) %>%
-      arrange(desc(lec_dc_Ag_type)) %>%
-      
+    # Add lines
+    plt_2 <- dc_dat %>%
       ggplot(aes(y_cell, x_cell, color = lec_dc_Ag_type)) +
       
       geom_point_trace(
-        size  = 1.75,
+        size  = 1,
         color = "black",
         fill  = "grey99",
         trace_position = "bottom"
       ) +
-      geom_point(
-        data = ~ filter(.x, lec_dc_Ag_type %in% top_types),
-        size = 1.75
-      ) +
       geom_segment(
         aes(x = y_cell, xend = y_lec, y = x_cell, yend = x_lec),
-        data     = ~ filter(.x, lec_dc_Ag_type %in% c("LEC", typ)),
+        data     = ~ filter(.x, lec_dc_Ag_type %in% c("LEC", dcs)),
         color    = "black",
-        linetype = 2
+        linetype = 1
+      ) +
+      geom_point(
+        data = ~ filter(.x, lec_dc_Ag_type %in% top_types),
+        size = 1
       ) +
       
       guides(color = guide_legend(
@@ -1758,32 +1694,145 @@ plts <- dcs %>%
         title.position = "top",
         override.aes = list(size = 4)
       )) +
-      scale_color_manual(values = top_typ_clrs_2, drop = FALSE) +
-      labs(title = .x) +
+      scale_color_manual(values = top_typ_clrs_2, labels = lec_dc_ag_labs) +
       coord_fixed() +
       umap_theme_2
+    
+    # Create final figure
+    plot_grid(
+      plt_1, plt_2,
+      ncol  = 1,
+      align = "v",
+      axis  = "rl"
+    )
   })
 
-fig <- plts %>%
-  wrap_plots(
-    nrow = 1,
-    guides = "collect"
-  ) &
-  theme(
-    legend.position = "bottom",
-    legend.text     = element_text(size = ttl_pt2),
-    plot.title      = element_text(size = ttl_pt2 * 1.5, hjust = 0.5)
-  )
-
-fig
+plts %>%
+  iwalk(~ {
+    cat("\n\n####", .y, "\n\n")
+    print(.x)
+    cat("\n\n<br>\n\n<br>\n\n")
+  })
 ```
 
-<br>
+### {.tabset .tabset-pills}
 
-<br>
+Ag+ LECs and DCs are shown for each DC subset for each tissue section.
+Lines (bottom) connect the nearest Ag+ LEC identified for each DC.
+
+```{r "Ag+ LECs/DCs 2", fig.width = 13, fig.height = 11, results = "asis"}
+# Plot Ag+ LECs and DCs
+plts <- fovs %>%
+  set_names() %>%
+  map(~ {
+    fov_name <- .x
+    
+    plts <- dcs %>%
+      map(~ {
+        typ <- .x
+        
+        small_dat %>%
+          filter(fov == fov_name) %>%
+          filter(lec_dc_Ag_type %in% c("LEC", .x, "other", "Ag-low")) %>%
+          arrange(desc(lec_dc_Ag_type)) %>%
+          
+          ggplot(aes(y_cell, x_cell, fill = lec_dc_Ag_type)) +
+          geom_point_trace(size = 1.75, trace_position = "bottom") +
+          guides(fill = guide_legend(
+            title = "Ag+ LECs/DCs",
+            title.position = "top",
+            override.aes = list(size = 4)
+          )) +
+          scale_fill_manual(values = top_typ_clrs_2, drop = FALSE) +
+          labs(title = .x) +
+          coord_fixed() +
+          umap_theme_2
+      })
+    
+    plt_1 <- plts %>%
+      wrap_plots(
+        nrow = 1,
+        guides = "collect"
+      ) &
+      theme(
+        legend.position = "bottom",
+        legend.text     = element_text(size = ttl_pt2),
+        plot.title      = element_text(size = ttl_pt2 * 1.5, hjust = 0.5)
+      )
+    
+    # Plot Ag+ LECs and DCs
+    plts <- dcs %>%
+      map(~ {
+        typ <- .x
+        
+        small_dat %>%
+          filter(fov == fov_name) %>%
+          filter(lec_dc_Ag_type %in% c("LEC", .x, "other", "Ag-low")) %>%
+          arrange(desc(lec_dc_Ag_type)) %>%
+          
+          ggplot(aes(y_cell, x_cell, color = lec_dc_Ag_type)) +
+          
+          geom_point_trace(
+            size  = 1.75,
+            color = "black",
+            fill  = "grey99",
+            trace_position = "bottom"
+          ) +
+          geom_point(
+            data = ~ filter(.x, lec_dc_Ag_type %in% top_types),
+            size = 1.75
+          ) +
+          geom_segment(
+            aes(x = y_cell, xend = y_lec, y = x_cell, yend = x_lec),
+            data     = ~ filter(.x, lec_dc_Ag_type %in% c("LEC", typ)),
+            color    = "black",
+            linetype = 2
+          ) +
+          
+          guides(color = guide_legend(
+            title = "Ag+ LECs/DCs",
+            title.position = "top",
+            override.aes = list(size = 4)
+          )) +
+          scale_color_manual(values = top_typ_clrs_2, drop = FALSE) +
+          labs(title = .x) +
+          coord_fixed() +
+          umap_theme_2
+      })
+    
+    plt_2 <- plts %>%
+      wrap_plots(
+        nrow = 1,
+        guides = "collect"
+      ) &
+      theme(
+        legend.position = "bottom",
+        legend.text     = element_text(size = ttl_pt2),
+        plot.title      = element_text(size = ttl_pt2 * 1.5, hjust = 0.5)
+      )
+    
+    # Create final figure
+    plot_grid(
+      plt_1, plt_2,
+      ncol  = 1,
+      align = "v",
+      axis  = "rl"
+    )
+  })
+
+plts %>%
+  iwalk(~ {
+    cat("\n\n####", .y, "\n\n")
+    print(.x)
+    cat("\n\n<br>\n\n<br>\n\n")
+  })
+```
+
+###
 
 The distance from the nearest Ag+ LEC is shown for Ag+ and Ag- cells for each
 cell type. Vertical lines indicate the median distance.
+For ease of plotting, a pseudo count of `1` was added to distance measurements.
 
 ```{r "proximity histograms", fig.width = 18, fig.height = 13}
 # Ag class labels
@@ -1797,7 +1846,7 @@ hist_dat <- xen@meta.data %>%
   as_tibble(rownames = ".cell_id") %>%
   dplyr::select(.cell_id, fov, cell_type, lec_type, Ag_class, lec_id, lec_dist) %>%
   filter(cell_type != "LEC")
-
+  
 # Format data for median lines
 ln_dat <- hist_dat %>%
   group_by(fov, cell_type, Ag_class) %>%
@@ -1839,6 +1888,9 @@ p_dat <- hist_dat %>%
 
 # Plot distance from nearest Ag+ LEC
 hist <- hist_dat %>%
+  
+  mutate(lec_dist = lec_dist + 1) %>%  # ADD 1
+  
   ggplot(aes(lec_dist, fill = Ag_class, alpha = Ag_class)) +
   geom_vline(
     aes(xintercept = lec_dist, color = Ag_class, alpha = NULL),
@@ -1889,7 +1941,9 @@ hist
 <br>
 
 The distance from the nearest Ag+ LEC is shown for Ag+ and Ag- cells for
-cDC1 and cDC2 subsets. Vertical lines indicate the median distance.
+cDC1 and cDC2 subsets for section `r top_fov`.
+Vertical lines indicate the median distance.
+For ease of plotting, a pseudo count of `1` was added to distance measurements.
 
 ```{r "DC proximity histograms 1"}
 # DC labels
@@ -1902,6 +1956,9 @@ top_dcs <- dcs[dcs != "Siglec-H DC"]
 
 # Plot distance from nearest Ag+ LEC
 dc_hist <- hist_dat %>%
+  
+  mutate(lec_dist = lec_dist + 1) %>%  # ADD 1
+  
   filter(cell_type %in% top_dcs, fov == top_fov) %>%
   ggplot(aes(lec_dist, fill = Ag_class, alpha = Ag_class)) +
   geom_density(aes(color = Ag_class)) +
@@ -2010,7 +2067,9 @@ fig
 <br>
 
 The distance from the nearest Ag+ LEC is shown for Ag+ and Ag- cells for
-each DC subset. Vertical lines indicate the median distance.
+each DC subset for section `r top_fov`.
+Vertical lines indicate the median distance.
+For ease of plotting, a pseudo count of `1` was added to distance measurements.
 
 ```{r "DC proximity histograms 2"}
 # DC labels
@@ -2021,6 +2080,9 @@ ag_classes <- c(
 
 # Plot distance from nearest Ag+ LEC
 dc_hist <- hist_dat %>%
+  
+  mutate(lec_dist = lec_dist + 1) %>%  # ADD 1
+  
   filter(cell_type %in% dcs, fov == top_fov) %>%
   ggplot(aes(lec_dist, fill = Ag_class, alpha = Ag_class)) +
   geom_density(aes(color = Ag_class)) +
@@ -2128,13 +2190,396 @@ prox_plts <- prox_plts %>%
 fig <- plot_grid(
   prox_plts, dc_hist,
   nrow  = 1,
-  rel_widths = c(1, 0.43)
+  rel_widths = c(1, 0.3)
 )
 
 fig
 ```
 
+---
 
+<br>
+
+<br>
+
+## LEC-DC Ag exchange
+
+Patterns in intracellular Ag localization were assessed for Ag+ LECs interacting
+with a DC.
+The distance of Ag molecules from the cell boundary was compared for
+DC interacting and non-interacting Ag+ LECs (left).
+The distance from the site of the LEC-DC interaction was also measured for each
+Ag molecule,
+this was compared to the distance of Ag molecules from the cell boundary for
+non-interacting LECs (right).
+
+```{r "quantify Ag distance"}
+# Pull LECs
+# No indication of Ag spatial bias for LECs interacting with a DC
+get_lec_interactions <- function(obj, fov_name, mol_feats = c("GeoMx_Barcode01_ERCC00142", "GeoMx_Barcode02_ERCC00144")) {
+  
+  dat <- obj@meta.data %>%
+    filter(fov == fov_name)
+  
+  # Convert to sf object (sp package is deprecated)
+  # first convert to sp::SpatialPolygonsDataFrame
+  # mol <- obj@images$A@molecules$molecules$GeoMx_Barcode01_ERCC00142
+  cells <- obj@images[[fov_name]]@boundaries$segmentation@polygons
+  plys  <- SpatialPolygons(cells)
+  
+  plys <- SpatialPolygonsDataFrame(
+    plys,
+    data = data.frame(
+      id        = seq_along(cells),
+      cell_type = dat$cell_type,
+      Ag_class  = dat$Ag_class,
+      row.names = map_chr(cells, ~ .x@ID)
+    )
+  )
+  
+  plys <- st_as_sf(plys)
+  
+  # Ensure geometries are valid
+  plys <- st_make_valid(plys)
+  
+  # Subset Ag-high LECs
+  lec_plys <- plys %>%
+    subset(cell_type == "LEC" & Ag_class == "Ag-high")
+  
+  dc_plys <- plys %>%
+    subset(cell_type %in% c("cDC1", "cDC2"))
+  
+  dc_info <- dc_plys %>%
+    as.data.frame() %>%
+    as_tibble(rownames = "dc_cell") %>%
+    dplyr::select(-c(geometry, id), dc_class = Ag_class, dc_type = cell_type)
+  
+  # Generate spatial index and find intersections
+  int_mat <- st_intersects(dc_plys, lec_plys, sparse = TRUE)
+
+  # Identify DCs that touch an Ag+ LEC
+  int_matches <- which(lengths(int_mat) > 0, arr.ind = TRUE)
+  
+  int_matches <- tibble(
+    dc_id  = int_matches,
+    lec_id = int_mat[int_matches]
+  ) %>%
+    unnest(everything()) %>%
+    mutate(
+      dc_cell  = rownames(dc_plys)[dc_id],
+      lec_cell = rownames(lec_plys)[lec_id]
+    )
+  
+  dc_touches     <- dc_plys[unique(int_matches$dc_cell), ]
+  lec_touches    <- lec_plys[unique(int_matches$lec_cell), ]
+  lec_no_touches <- lec_plys[!rownames(lec_plys) %in% rownames(lec_touches), ]
+  
+  # Merge barcode SpatialPoints and convert to sf object
+  ag_mols <- obj@images[[fov_name]]@molecules$molecules[mol_feats]
+  
+  ag_mols <- ag_mols %>%
+    map(~ {
+      .x %>%
+        SpatialPointsDataFrame(
+          data = data.frame(id = seq_along(.x))
+        )
+    }) %>%
+    reduce(rbind) %>%
+    st_as_sf()
+  
+  # Intersect Ag coords with Ag+ LECs
+  ag_int_mat <- st_intersects(ag_mols, lec_plys)
+  ag_matches <- which(lengths(ag_int_mat) > 0, arr.ind = TRUE)
+  
+  ag_int_df <- tibble(
+    ag_id  = ag_matches,
+    lec_id = ag_int_mat[ag_matches]
+  ) %>%
+    unnest(everything()) %>%
+    mutate(lec_cell = rownames(lec_plys)[lec_id])
+  
+  # Add index for nearest DC
+  ag_int_df <- ag_int_df %>%
+    left_join(
+      int_matches,
+      by = c("lec_id", "lec_cell"),
+      relationship = "many-to-many"
+    ) %>%
+    left_join(dc_info, by = "dc_cell")
+  
+  res <- list(
+    df = ag_int_df,
+    lec_plys = lec_plys,
+    dc_plys  = dc_plys,
+    mols     = ag_mols
+  )
+  
+  res
+}
+
+quantify_ag_dist <- function(lec_int_df, lec_plys, dc_plys, ag_mols) {
+  
+  # Determine which polygon edge for LEC touches DC
+  calc_intersection_dist <- function(ply1, ply2, mol) {
+    intsct <- ply1 <- st_boundary(ply1)
+    
+    if (!is.null(ply2)) {
+      intsct <- st_intersection(ply1, ply2)
+    }
+    
+    res <- min(st_distance(mol, intsct))
+    
+    res
+  }
+  
+  res <- lec_int_df %>%
+    pmap_dfr(~ {
+      args <- list(...)
+      
+      dc_ply <- NULL
+      
+      if (!is.na(args$dc_cell)) {
+        dc_ply <- dc_plys[args$dc_cell, ]
+      }
+      
+      dist <- calc_intersection_dist(
+        ply1 = lec_plys[args$lec_cell, ],
+        ply2 = NULL,
+        mol  = ag_mols[args$ag_id, ]
+      )
+      
+      dist_to_int <- calc_intersection_dist(
+        ply1 = lec_plys[args$lec_cell, ],
+        ply2 = dc_ply,
+        mol  = ag_mols[args$ag_id, ]
+      )
+      
+      tibble(!!!args, dist = dist, dist_to_int = dist_to_int)
+    }) %>%
+    mutate(DC_interaction = !is.na(dc_cell)) %>%
+    group_by(ag_id, lec_cell, DC_interaction) %>%
+    summarize(
+      dist        = min(dist),
+      dist_to_int = min(dist_to_int),
+      .groups     = "drop"
+    )
+  
+  res
+}
+
+plot_interactions <- function(..., mol, clrs, mol_clr = "black", ttl = NULL) {
+  
+  plys <- list(...) %>%
+    purrr::discard(is.null)
+  
+  plt <- ggplot()
+  
+  plys %>%
+    iwalk(~ {
+      plt <<- plt +
+        geom_sf(
+          data = .x,
+          color = clrs[.y],
+          fill  = clrs[.y],
+          alpha = 0.5,
+          linewidth = 0.75
+        )
+    })
+  
+  plt <- plt +
+    geom_sf(data = mol, color = mol_clr, size = 3) +
+    labs(subtitle = ttl) +
+    umap_theme_2
+  
+  plt
+}
+
+ag_dists <- fovs %>%
+  map_dfr(~ {
+    int_objs <- xen %>%
+      get_lec_interactions(fov_name = .x)
+    
+    plts <- int_objs$df %>%
+      filter(!is.na(dc_cell)) %>%
+      split(.$lec_cell) %>%
+      imap_dfr(~ {
+        lecs <- int_objs$lec_plys[unique(.x$lec_cell), ]
+        dcs  <- int_objs$dc_plys[unique(.x$dc_cell), ]
+        ags  <- int_objs$mols[unique(.x$ag_id), ]
+        
+        plt <- plot_interactions(
+          rbind(lecs), rbind(dcs),
+          
+          mol  = rbind(ags),
+          clrs = typ_clrs[c("LEC", "cDC1")],
+          ttl  = .y
+        )
+        
+        tibble(lec_cell = .y, plt = list(plt))
+      })
+    
+    dists <- int_objs$df %>%
+      quantify_ag_dist(
+        lec_plys = int_objs$lec_plys,
+        dc_plys  = int_objs$dc_plys,
+        ag_mols  = int_objs$mols
+      ) %>%
+      mutate(fov = .x)
+    
+    if (!is_empty(plts)) {
+      dists <- dists %>%
+        left_join(plts, by = "lec_cell")
+    }
+    
+    dists
+  })
+```
+
+```{r "plot Ag distance", out.width = "50%"}
+# Create boxplots
+bx_dat <- ag_dists %>%
+  group_by(DC_interaction) %>%
+  mutate(
+    lab = str_c(label_comma()(n()))
+  )
+
+bx_params <- list(
+  y = c("dist", "dist_to_int"),
+  ttl = c(
+    "distance to cell boundary",
+    "distance to DC interaction"
+  )
+)
+
+bxs <- bx_params %>%
+  pmap(~ {
+    args <- list(...)
+    
+    bx_dat %>%
+      ggplot(aes(DC_interaction, !!sym(args$y), color = DC_interaction, fill = DC_interaction)) +
+      geom_boxplot(notch = FALSE, alpha = 0.5, outlier.alpha = 1) +
+      geom_text(
+        aes(y = Inf, label = lab),
+        data = ~ distinct(.x, DC_interaction, lab),
+        vjust = 1.3,
+        color = "black"
+      ) +
+      scale_color_manual(values = clrs) +
+      scale_fill_manual(values = clrs) +
+      scale_y_log10(expand = expansion(c(0.05, 0.15))) +
+      labs(x = "LEC-DC interaction", y = args$ttl) +
+      base_theme +
+      theme(
+        legend.position = "none",
+        aspect.ratio = 2
+      )
+  })
+
+# Create final figure
+plot_grid(
+  plotlist = bxs,
+  nrow  = 1,
+  align = "h",
+  axis  = "tb"
+)
+```
+
+<br>
+
+LEC-DC interactions are shown for Ag+ LECs.
+Each LEC is shown in blue, DCs in purple, and Ag molecules are shown as
+black points for each Ag+ LEC.
+Ag molecules are not shown for DCs.
+
+```{r "plot LEC-DC interactions", fig.width = 10, fig.height = 12}
+plt_dat <- ag_dists %>%
+  filter(DC_interaction) %>%
+  distinct(lec_cell, plt, fov)
+
+plot_grid(
+  plotlist = plt_dat$plt,
+  nrow     = 5,
+  ncol     = 4,
+  align    = "vh",
+  axis     = "tl"
+)
+```
+
+---
+
+<br>
+
+<br>
+
+## Session info
+
+```{r}
+sessionInfo()
+```
+
+
+
+```{r "LEC-DC INTERACTIONS", eval = FALSE}
+fov_id <- "D"
+
+# Pull cell coordinates from object
+lec_dc_obj <- xen %>%
+  subset(cell_type %in% c("LEC", dcs))
+
+cell_coords <- lec_dc_obj@images[[fov_id]]@boundaries$segmentation@polygons %>%
+  imap(~ {
+    meta <- xen_dat %>%
+      filter(.cell_id == .y) %>%
+      dplyr::select(.cell_id, cell_type, Ag_class)
+    
+    .x@Polygons[[1]]@coords %>%
+      as_tibble() %>%
+      mutate(.cell_id = .y, .before = x) %>%
+      left_join(meta, by = ".cell_id")
+  })
+
+lecs <- xen_dat %>%
+  filter(cell_type == "LEC" & Ag_class == "Ag-high") %>%
+  pull(.cell_id)
+
+# Compare LEC-DC pairs identified using centroid coordinates
+lec_dc_pairs <- set_names(xen_dat$lec_id, xen_dat$.cell_id)
+
+mem_dist <- cell_coords %>%
+  imap_dfr(~ {
+    x <- cell_coords[[.y]] %>%
+      mutate(id = as.character(row_number()))
+    
+    y <- cell_coords[[lec_dc_pairs[[.y]]]] %>%
+      mutate(id = as.character(row_number()))
+    
+    res <- expand_grid(other = x$id, lec = y$id) %>%
+      left_join(x, by = c(other = "id")) %>%
+      left_join(y, by = c(lec = "id"), suffix = c("", "_lec")) %>%
+      mutate(
+        mem_dist = sqrt(((x - x_lec)^2) + ((y - y_lec)^2))
+      ) %>%
+      group_by(.cell_id, lec_id = .cell_id_lec) %>%
+      summarize(mem_dist = min(mem_dist), .groups = "drop")
+    
+    res
+  })
+
+# Summarize interacting cells
+dist_dat <- xen_dat %>%
+  filter(fov == "D", cell_type %in% c("LEC", dcs)) %>%
+  left_join(mem_dist, by = c(".cell_id", "lec_id")) %>%
+  mutate(LEC_interacting = mem_dist < 0.5)
+
+dist_dat %>%
+  group_by(fov, cell_type, Ag_class) %>%
+  summarize(
+    n         = n(),
+    n_intr    = sum(LEC_interacting),
+    frac_intr = n_intr / n,
+    .groups   = "drop"
+  )
+```
 
 ```{r "PROXIMITY CELL PAIRS", fig.width = 14, fig.height = 7, eval = FALSE}
 # Scatter plot with lines connecting closest Ag-high LEC
