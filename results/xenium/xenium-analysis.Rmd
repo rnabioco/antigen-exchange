@@ -6,16 +6,20 @@ output:
   html_document:
     toc:            true
     toc_float:      true
-    toc_depth:      4
+    toc_depth:      2
     df_print:       "paged"
     code_folding:   "hide"
     self_contained: true
 params:
-  res_dir:     "results/2024-03-22"
+  res_dir:     "results/xenium"
   xen_dir:     "20240322__194506__032224_Tamburini_Run_1"
   so_dir:      "~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/2024-03-22/sobjs"
   ref_dir:     "ref"
-  slide_regex: "output-XETG00230__0022624__[A-Z]__"
+  clst_rsln:   10
+  # slide_id:    1
+  # slide_regex: "output-XETG00230__0022624__[A-Z]__"
+  slide_id:    2
+  slide_regex: "output-XETG00230__0022841__[A-Z]__"
   samples:
     value:
       A: "6wk"
@@ -25,6 +29,10 @@ params:
       E: "3wk"
       F: "3wk"
       G: "naive"
+  ag_targets:
+    value:
+      Ag_tag_1: "GeoMx-Barcode01-ERCC00142"
+      Ag_tag_2: "GeoMx-Barcode02-ERCC00144"
   custom_targets:
     - "Ag-tag-A-(ERCC2)"
     - "Ag-tag-B-(ERCC3)"
@@ -45,7 +53,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 <br>
@@ -78,7 +86,9 @@ library(sp)
 
 source(here("src/funs.R"))
 
-create_object <- !file.exists(here(params$so_dir, "xen.qs"))
+sffx <- str_c("_s", params$slide_id, ".qs")
+
+create_object <- !file.exists(here(params$so_dir, str_c("xen", sffx)))
 ```
 
 ```{r "functions"}
@@ -129,6 +139,100 @@ create_object <- !file.exists(here(params$so_dir, "xen.qs"))
   
   res
 }
+
+.process_xenium <- function(obj, dims = 1:40, resolution = c(1, 3, 5, 10)) {
+
+  res <- obj %>%
+    SCTransform(assay = "Xenium") %>%
+    RunPCA(
+      assay    = "SCT",
+      npcs     = 50,
+      features = rownames(.)
+    ) %>%
+    RunUMAP(
+      assay       = "SCT",
+      reduction   = "pca",
+      dims        = dims,
+      umap.method = "umap-learn"
+    )
+  
+  res <- res %>%
+    FindNeighbors(
+      assay     = "SCT",
+      reduction = "pca",
+      dims      = dims
+    ) %>%
+    FindClusters(resolution = resolution)
+  
+  u_coords <- res %>%
+    FetchData(c("UMAP_1", "UMAP_2"))
+  
+  res <- res %>%
+    AddMetaData(u_coords)
+  
+  res
+}
+
+.classify_t_b <- function(obj, clmn) {
+  res <- obj %>%
+    classify_markers(
+      Ptprc > 0.7,
+      feats      = "Ptprc",
+      type_label = "other CD45+",
+      clst_col   = clmn,
+      type_col   = "cell_type"
+    ) %>%
+    classify_markers(
+      cell_type == "other CD45+" & Cd3d > 0.45,
+      feats      = c("cell_type", "Cd3d"),
+      type_label = "T cells",
+      clst_col   = clmn,
+      type_col   = "cell_type"
+    ) %>%
+    classify_markers(
+      cell_type == "other CD45+" & Cd19 > 1.1,
+      feats      = c("cell_type", "Cd19"),
+      type_label = "B cells",
+      clst_col   = clmn,
+      type_col   = "cell_type"
+    )
+  
+  res
+}
+
+.classify_dcs <- function(obj, clmn) {
+  res <- obj %>%
+    classify_markers(
+      cell_type == "other CD45+" & Itgax > 0.15,
+      feats      = c("cell_type", "Itgax"),
+      type_label = "other DC",
+      clst_col   = clmn,
+      type_col   = "cell_type"
+    ) %>% 
+    classify_markers(
+      cell_type == "other DC" & Sirpa > 0.15 & Itgam > 0.15,
+      feats      = c("cell_type", "Sirpa", "Itgam"),
+      type_label = "cDC2",
+      clst_col   = clmn,
+      type_col   = "cell_type"
+    ) %>%
+    classify_markers(
+      cell_type == "other DC" & Xcr1 > 0.15,
+      feats      = c("cell_type", "Xcr1"),
+      type_label = "cDC1",
+      clst_col   = clmn,
+      type_col   = "cell_type"
+    ) %>%
+    classify_markers(
+      cell_type %in% c("other DC", "other CD45+") & Siglech > 0.5,
+      feats      = c("cell_type", "Siglech"),
+      type_label = "Siglec-H DC",
+      clst_col   = clmn,
+      type_col   = "cell_type"
+    ) 
+  
+  res
+}
 ```
 
 ```{r "references"}
@@ -174,6 +278,15 @@ xen_dirs <- dir(
 names(xen_dirs) <- xen_dirs %>%
   str_extract("(?<=__)[A-Z](?=__)")
 
+# Custom targets
+ag_targets <- unname(params$ag_targets)
+ag_clmns   <- names(params$ag_targets)
+
+custom_targets <- ag_targets %>%
+  c(params$custom_targets) %>%
+  unique() %>%
+  unlist()
+
 # Create Seurat object
 # store custom targets as separate assay
 xen <- xen_dirs %>%
@@ -183,10 +296,10 @@ xen <- xen_dirs %>%
       subset(nCount_Xenium > 0)
     
     gns <- rownames(obj)
-    gns <- gns[!gns %in% params$custom_targets]
+    gns <- gns[!gns %in% custom_targets]
     
     cstm <- obj %>%
-      subset(features = params$custom_targets)
+      subset(features = custom_targets)
     
     obj <- obj %>%
       subset(features = gns)
@@ -199,133 +312,71 @@ xen <- xen_dirs %>%
 xen <- merge(xen[[1]], xen[-1], add.cell.ids = names(xen))
 ```
 
-```{r "process object", eval = create_object}
+```{r "process object", include = FALSE, eval = create_object}
+# Process data
 # Add FOV labels
 xen <- xen %>%
   mutate_meta(
     mutate,
     fov = str_extract(.cell_id, "^[A-Z]+(?=_)")
-  )
-  
-# Process data
-xen <- xen %>%
-  SCTransform(assay = "Xenium") %>%
-  RunPCA(assay = "SCT", npcs = 50, features = rownames(xen)) %>%
-  RunUMAP(
-    assay       = "SCT",
-    reduction   = "pca",
-    dims        = 1:40,
-    umap.method = "umap-learn"
-  )
-
-xen <- xen %>%
-  FindNeighbors(
-    assay     = "SCT",
-    reduction = "pca",
-    dims      = 1:40
   ) %>%
-  FindClusters(resolution = c(0.5, 1, 2))
-
-u_coords <- xen %>%
-  FetchData(c("UMAP_1", "UMAP_2"))
-  
-xen <- xen %>%
-  AddMetaData(u_coords)
+  .process_xenium(
+    dims = 1:40,
+    resolution = params$clst_rsln
+  )
 
 # Identify Ag+ cells
-ag_feats <- c("GeoMx-Barcode01-ERCC00142", "GeoMx-Barcode02-ERCC00144") %>%
-  str_c("xenium_custom_", .)
+ag_feats <- str_c("xenium_custom_", ag_targets)
 
 xen <- xen %>%
   AddMetaData(
     FetchData(., ag_feats),
-    col.name = c("Ag_tag_1", "Ag_tag_2")
+    col.name = ag_clmns
   ) %>%
-  mutate_meta(
-    mutate,
-    Ag_class = ifelse(
-      Ag_tag_1 > 0 | Ag_tag_2 > 0,
-      "Ag-high",
-      "Ag-low"
-    )
-  )
+  mutate_meta(~ {
+    .x %>%
+      mutate(
+        Ag_class = ifelse(
+          rowSums(select(., all_of(ag_clmns)) > 0) > 0,
+          "Ag-high",
+          "Ag-low"
+        )
+      )
+  })
 ```
 
 ```{r "cell types", eval = create_object}
-clst_clmn <- "SCT_snn_res.2"
+clst_clmn <- str_c("SCT_snn_res.", params$clst_rsln)
 
-# Annotate B/T cells
+# Annotate CD45+ cells
 xen <- xen %>%
   mutate_meta(mutate, cell_type = "unassigned") %>%
-  classify_markers(
-    Ptprc > 1.2,
-    feats      = "Ptprc",
-    type_label = "other CD45+",
-    clst_col   = clst_clmn,
-    type_col   = "cell_type"
-  ) %>%
-  classify_markers(
-    cell_type == "other CD45+" & Cd3d > 0.45,
-    feats      = c("cell_type", "Cd3d"),
-    type_label = "T cells",
-    clst_col   = clst_clmn,
-    type_col   = "cell_type"
-  ) %>%
-  classify_markers(
-    cell_type == "other CD45+" & Cd19 > 1.1,
-    feats      = c("cell_type", "Cd19"),
-    type_label = "B cells",
-    clst_col   = clst_clmn,
-    type_col   = "cell_type"
-  )
+  .classify_t_b(clst_clmn) %>%
+  .classify_dcs(clst_clmn)
 
 # Annotate LECs
 xen <- xen %>%
   classify_markers(
-    Pdpn > 0.1 & Pecam1 > 0.5 & Prox1 > 0.2,
+    Ptprc <= 0.7,
+    feats      = "Ptprc",
+    type_label = "other CD45-",
+    clst_col   = clst_clmn,
+    type_col   = "cell_type"
+  ) %>%
+  classify_markers(
+    cell_type == "other CD45-" & Pdpn > 0.1 & Pecam1 > 0.5 & Prox1 > 0.2,
     feats      = c("cell_type", "Pdpn", "Pecam1", "Prox1"),
     type_label = "LEC",
     clst_col   = clst_clmn,
     type_col   = "cell_type"
   ) %>%
   classify_markers(
-    Pdpn < 0.1 & Pecam1 > 1,
+    cell_type == "other CD45-" & Pdpn < 0.1 & Pecam1 > 1,
     feats      = c("cell_type", "Pdpn", "Pecam1", "Prox1"),
     type_label = "BEC",
     clst_col   = clst_clmn,
     type_col   = "cell_type"
   )
-
-# Annotate DCs
-xen <- xen %>%
-  classify_markers(
-    cell_type == "other CD45+" & Itgax > 0.15,
-    feats      = c("cell_type", "Itgax"),
-    type_label = "DC",
-    clst_col   = clst_clmn,
-    type_col   = "cell_type"
-  ) %>% 
-  classify_markers(
-    cell_type == "DC" & Sirpa > 0.15 & Itgam > 0.15,
-    feats      = c("cell_type", "Sirpa", "Itgam"),
-    type_label = "cDC2",
-    clst_col   = clst_clmn,
-    type_col   = "cell_type"
-  ) %>%
-  classify_markers(
-    cell_type == "DC" & Xcr1 > 0.15,
-    feats      = c("cell_type", "Xcr1"),
-    type_label = "cDC1",
-    clst_col   = clst_clmn,
-    type_col   = "cell_type"
-  ) %>%
-  classify_markers(
-    cell_type %in% c("DC", "other CD45+") & Siglech > 0.75,
-    feats      = c("cell_type", "Siglech"),
-    type_label = "Siglec-H DC",
-    clst_col   = clst_clmn,
-    type_col   = "cell_type"
-  ) 
 
 xen <- xen %>%
   mutate_meta(
@@ -335,110 +386,72 @@ xen <- xen %>%
   )
 ```
 
-```{r "create lec object", eval = create_object}
+```{r "create lec/frc objects", include = FALSE, eval = create_object}
 # Process data
-lec_clst_clmn <- "SCT_snn_res.3"
+type_key <- c(lec = "LEC", frc = "other CD45-")
 
-lec <- xen %>%
-  subset(cell_type == "LEC")
-
-lec <- lec %>%
-  SCTransform(assay = "Xenium") %>%
-  RunPCA(
-    assay    = "SCT",
-    npcs     = 30,
-    features = rownames(.)
-  ) %>%
-  RunUMAP(
-    assay       = "SCT",
-    reduction   = "pca",
-    dims        = 1:30,
-    umap.method = "umap-learn"
-  )
-
-lec <- lec %>%
-  FindNeighbors(
-    assay     = "SCT",
-    reduction = "pca",
-    dims      = 1:30
-  ) %>%
-  FindClusters(resolution = c(0.5, 0.75, 1, 1.5, 2, 2.5, 3, 5))
-
-u_coords <- lec %>%
-  FetchData(c("UMAP_1", "UMAP_2"))
-
-lec <- lec %>%
-  AddMetaData(u_coords)
+cd45neg <- type_key %>%
+  imap(~ {
+    obj <- xen %>%
+      subset(cell_type == .x) %>%
+      .process_xenium(
+        dims = 1:30,
+        resolution = c(1, 2, 3, 5)
+      )
+    
+    obj
+  })
 ```
 
-```{r "refine cell types", eval = create_object}
+```{r "refine cell types", include = FALSE, eval = create_object}
 # Adjust LEC annotations based on marker genes
 # clustifyr annotation exclude fLECs despite expression of fLEC markers
-lec <- lec %>%
-  classify_markers(
-    Ptprc > 0.5,
-    feats      = "Ptprc",
-    type_label = "other CD45+",
-    clst_col   = lec_clst_clmn,
-    type_col   = "cell_type"
-  ) %>%
-  classify_markers(
-    cell_type == "other CD45+" & Cd3d > 0.45,
-    feats      = c("cell_type", "Cd3d"),
-    type_label = "T cells",
-    clst_col   = lec_clst_clmn,
-    type_col   = "cell_type"
-  ) %>%
-  classify_markers(
-    cell_type == "other CD45+" & Cd19 > 1.1,
-    feats      = c("cell_type", "Cd19"),
-    type_label = "B cells",
-    clst_col   = lec_clst_clmn,
-    type_col   = "cell_type"
-  )
+lec_clst_clmn <- "SCT_snn_res.3"
 
-lec <- lec %>%
-  classify_markers(
-    cell_type == "other CD45+" & Itgax > 0.15,
-    feats      = c("cell_type", "Itgax"),
-    type_label = "DC",
-    clst_col   = lec_clst_clmn,
-    type_col   = "cell_type"
-  ) %>% 
-  classify_markers(
-    cell_type == "DC" & Sirpa > 0.15 & Itgam > 0.15,
-    feats      = c("cell_type", "Sirpa", "Itgam"),
-    type_label = "cDC2",
-    clst_col   = lec_clst_clmn,
-    type_col   = "cell_type"
-  ) %>%
-  classify_markers(
-    cell_type == "DC" & Xcr1 > 0.15,
-    feats      = c("cell_type", "Xcr1"),
-    type_label = "cDC1",
-    clst_col   = lec_clst_clmn,
-    type_col   = "cell_type"
-  ) %>%
-  classify_markers(
-    cell_type %in% c("DC", "other CD45+") & Siglech > 0.75,
-    feats      = c("cell_type", "Siglech"),
-    type_label = "Siglec-H DC",
-    clst_col   = lec_clst_clmn,
-    type_col   = "cell_type"
-  )
+cd45neg <- cd45neg %>%
+  map(~ {
+    obj <- .x %>%
+      .classify_t_b(lec_clst_clmn) %>%
+      .classify_dcs(lec_clst_clmn)
+
+    obj
+  })
 
 # Update cell type annotations
-xen <- xen %>%
-  AddMetaData(lec$cell_type, col.name = "new_type") %>%
-  mutate_meta(~ {
-    .x %>%
-      mutate(
-        cell_type    = ifelse(is.na(new_type), cell_type, new_type),
-        type_cluster = ifelse(cell_type == "unassigned", !!sym(clst_clmn), cell_type),
-        Ag_type      = ifelse(Ag_class == "Ag-high", cell_type, "Ag-low")
-      ) %>%
-      dplyr::select(-new_type)
+cd45neg %>%
+  walk(~ {
+    xen <<- xen %>%
+      AddMetaData(.x$cell_type, col.name = "new_type") %>%
+      mutate_meta(~ {
+        .x %>%
+          mutate(
+            cell_type    = ifelse(is.na(new_type), cell_type, new_type),
+            type_cluster = ifelse(cell_type == "unassigned", !!sym(clst_clmn), cell_type),
+            Ag_type      = ifelse(Ag_class == "Ag-high", cell_type, "Ag-low")
+          ) %>%
+          dplyr::select(-new_type)
+      })
   })
+
+# Recluster filtered LECs/FRCs
+cd45neg <- cd45neg %>%
+  imap(~ {
+    obj <- .x %>%
+      subset(cell_type == type_key[.y]) %>%
+      .process_xenium(
+        dims = 1:30,
+        resolution = c(1, 2, 3, 5)
+      )
+    
+    obj
+  })
+
+# Split list
+lec <- cd45neg$lec
+frc <- cd45neg$frc
+
+rm(cd45neg)
+gc()
 ```
 
 ```{r "calculate distance from Ag+ LEC", eval = create_object}
@@ -447,17 +460,25 @@ fovs <- sort(unique(xen$fov))
 
 dists <- fovs %>%
   map_dfr(~ {
+    # Pull cell centroid coordinates
+    cell_coords <- xen@images[[.x]]@boundaries$centroids
+    
+    cell_coords <- cell_coords@coords %>%
+      as_tibble() %>%
+      mutate(.cell_id = cell_coords@cells)
+    
+    cell_meta <- xen@meta.data %>%
+      filter(fov == .x) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      dplyr::select(.cell_id, cell_type, Ag_class) %>%
+      left_join(cell_coords, by = ".cell_id")
+    
     # Convert to sf object (sp package is deprecated)
     # first convert to sp::SpatialPolygonsDataFrame
     # mol <- obj@images$A@molecules$molecules$GeoMx_Barcode01_ERCC00142
     # Ensure geometries are valid
     cells <- xen@images[[.x]]@boundaries$segmentation@polygons
     plys  <- SpatialPolygons(cells)
-    
-    cell_meta <- xen@meta.data %>%
-      filter(fov == .x) %>%
-      as_tibble(rownames = ".cell_id") %>%
-      dplyr::select(.cell_id, cell_type, Ag_class)
     
     plys <- SpatialPolygonsDataFrame(
       plys,
@@ -488,11 +509,18 @@ dists <- fovs %>%
       pivot_longer(-lec_id, names_to = "other", values_to = "lec_dist") %>%
       left_join(cell_meta, by = c(other = ".cell_id"))
     
+    dists <- dists %>%
+      left_join(
+        cell_coords,
+        by     = c(lec_id = ".cell_id"),
+        suffix = c("_cell", "_lec")
+      )
+    
     # Determine closest LEC
     res <- dists %>%
       group_by(other) %>%
       mutate(
-        closest = dist == min(dist),
+        closest = lec_dist == min(lec_dist),
         fov = .x
       ) %>%
       ungroup()
@@ -505,7 +533,7 @@ dist_meta <- dists %>%
   group_by(other) %>%
   slice(1) %>%
   ungroup() %>%
-  dplyr::select(other, lec_id, lec_dist) %>%
+  dplyr::select(other, lec_id, lec_dist, matches("^[xy]_")) %>%
   column_to_rownames("other")
 
 xen <- xen %>%
@@ -513,38 +541,6 @@ xen <- xen %>%
 ```
 
 ```{r "lec types", eval = create_object}
-# Recluster filtered LECs
-lec <- lec %>%
-  subset(cell_type == "LEC")
-
-lec <- lec %>%
-  SCTransform(assay = "Xenium") %>%
-  RunPCA(
-    assay    = "SCT",
-    npcs     = 30,
-    features = rownames(.)
-  ) %>%
-  RunUMAP(
-    assay       = "SCT",
-    reduction   = "pca",
-    dims        = 1:30,
-    umap.method = "umap-learn"
-  )
-
-lec <- lec %>%
-  FindNeighbors(
-    assay     = "SCT",
-    reduction = "pca",
-    dims      = 1:30
-  ) %>%
-  FindClusters(resolution = c(0.5, 0.75, 1, 1.5, 2, 2.5, 3, 5))
-
-u_coords <- lec %>%
-  FetchData(c("UMAP_1", "UMAP_2"))
-
-lec <- lec %>%
-  AddMetaData(u_coords)
-
 # Annotate LEC types
 ann <- clustify(
   input       = lec@assays$SCT@data,
@@ -585,7 +581,117 @@ xen <- xen %>%
 
 # Save objects
 lec %>%
-  qsave(here(params$so_dir, "lec.qs"))
+  qsave(here(params$so_dir, str_c("lec", sffx)))
+
+frc %>%
+  qsave(here(params$so_dir, str_c("frc", sffx)))
+```
+
+```{r "FRC TYPES", eval = FALSE}
+# As a test combine lec and frc references
+ref_new <- rownames(ref_lec)
+ref_new <- ref_new[ref_new %in% rownames(ref_frc)]
+ref_new <- bind_cols(ref_frc[ref_new, ], ref_lec[ref_new, ])
+
+# Annotate FRC types
+ann <- clustify(
+  input       = frc@assays$SCT@data,
+  ref_mat     = ref_new,
+  metadata    = frc@meta.data,
+  cluster_col = frc_clst_clmn,
+  vec_out     = TRUE
+)
+
+names(ann) <- colnames(frc)
+
+frc <- frc %>%
+  AddMetaData(ann, col.name = "frc_type")
+
+frc %>%
+  plot_scatter(
+    "frc_type",
+    group_col = "fov",
+    size = 0.2
+  )
+
+# # FRC markers
+# clst_clmn <- "SCT_snn_res.2"
+# 
+# dat <- xen %>%
+#   subset(cell_type == "other CD45-") %>%
+#   classify_markers(
+#     Ptprc > 1,
+#     feats      = "Ptprc",
+#     type_label = "other CD45+",
+#     clst_col   = clst_clmn,
+#     type_col   = "cell_type"
+#   ) %>%
+#   subset(cell_type == "other CD45-")
+
+# Plot markers
+gns <- c(
+  "Ptprc", "Pdpn", "Pecam1",
+  "Prox1", "Lyve1",
+  "Cr2",
+  # "Cxcl13",
+  # "Pthlh",
+  # "Tmem119",
+  "Sox9",
+  "Cr2",
+  "Acta2",
+  # "Pdgfrb",
+  "Itga7",
+  "Cd34",
+  # "Il7",
+  # "Ccl21a",
+  # "Ccl19",
+  # "Tnfsf13b",
+  "Cxcl9",
+  "Cxcl10",
+  # "Tnfsf11",
+  "Ch25h",
+  # "Cxcl13",
+  "Nr4a1",
+  "Inmt",
+  # "Cdh1",
+  "Krt8",
+  "Muc1"
+  # "Ocln",
+  
+  # "Ptprc",
+  # # "Cd14",
+  # "Itgam",
+  # # "Fcer1g",
+  # "Cx3cr1"
+  # # "Fcgr3",
+  # # "Ly6g",
+  # # "Ceacam2",
+  # # "Fut4",
+  # # "Fcgr3"
+)
+
+marker_plt <- gns %>%
+  map(~ {
+    frc %>%
+      plot_violin(
+        .x,
+        cluster_col   = "frc_type",
+        # plot_colors   = typ_clrs,
+        method        = "boxplot",
+        outlier.size  = 0.5,
+        outlier.alpha = 1,
+        top           = Inf
+        # n_label       = "none"
+      )
+  }) %>%
+  plot_grid(
+    plotlist = .,
+    nrow     = 3,
+    align    = "vh",
+    axis     = "trbl"
+  )
+
+marker_plt
 ```
 
 ```{r "small object", eval = create_object}
@@ -595,11 +701,21 @@ dcs <- xen$cell_type %>%
   grep("DC", ., value = TRUE) %>%
   sort()
 
+lecs <- xen$lec_type %>%
+  table() %>%
+  sort() %>%
+  rev() %>%
+  names()
+
+lecs <- lecs[lecs != "other"]
+
 top_types <- c("LEC", dcs)
 
 xen <- xen %>%
   mutate_meta(
     mutate,
+    lec_Ag_type    = ifelse(Ag_class == "Ag-high", as.character(lec_type), "Ag-low"),
+    lec_Ag_type    = fct_relevel(lec_Ag_type, lecs),
     lec_dc_type    = ifelse(cell_type %in% top_types, as.character(cell_type), "other"),
     lec_dc_type    = fct_relevel(lec_dc_type, top_types),
     lec_dc_Ag_type = ifelse(Ag_class == "Ag-high", as.character(lec_dc_type), "Ag-low"),
@@ -626,23 +742,30 @@ small <- xen %>%
 
 # Save objects
 xen %>%
-  qsave(here(params$so_dir, "xen.qs"))
+  qsave(here(params$so_dir, str_c("xen", sffx)))
 
 small %>%
-  qsave(here(params$so_dir, "small.qs"))
+  qsave(here(params$so_dir, str_c("small", sffx)))
 ```
 
 ```{r "load objects"}
 # Load objects
-xen   <- qread(here(params$so_dir, "xen.qs"))
-lec   <- qread(here(params$so_dir, "lec.qs"))
-small <- qread(here(params$so_dir, "small.qs"))
+xen   <- qread(here(params$so_dir, str_c("xen", sffx)))
+small <- qread(here(params$so_dir, str_c("small", sffx)))
+lec   <- qread(here(params$so_dir, str_c("lec", sffx)))
 
-# Top cell types
+# Top cell types to plot
 dcs <- xen$cell_type %>%
   unique() %>%
   grep("DC", ., value = TRUE) %>%
   sort()
+
+ag_dcs <- xen@meta.data %>%
+  filter(cell_type %in% dcs) %>%
+  group_by(cell_type) %>%
+  filter(all(table(Ag_class) > 15)) %>%
+  pull(cell_type) %>%
+  unique()
 
 top_types <- c("LEC", dcs)
 
@@ -790,7 +913,7 @@ lec_lvls <- c(
 ## Summary
 
 * Xenium data were analyzed for the 3 week/6 week Ag exchange experiment for
-  slide 1 (the slide 2 technical replicates need to be analyzed).
+  slide `r params$slide_id`.
 * Ag signals are sparse (most Ag+ cells have 1 count).
   This is at least partly due to the short length of the Ag tags, which only
   accommodate a single Xenium probe.
@@ -803,12 +926,9 @@ lec_lvls <- c(
   Ag+ LECs.
   This supports our previous GeoMx data and is in line with published work
   showing Ag is passed to DCs by LECs.
-
-<u>To do</u>
-
-* Comparison of 3 week and 6 week Ag signals
-* Further refinement of cell types (current annotations are rough)
-* Analysis of slide 2
+* Analysis of intracellular localization of Ag molecules for LECs interacting
+  with a DC was inconclusive. This was due to the very few LEC-DC interactions,
+  and the low number of Ag molecules.
 
 <br>
 
@@ -816,9 +936,9 @@ lec_lvls <- c(
 
 ---
 
-## Cell types {.tabset .tabset-pills}
+## Cell types
 
-Annotated cell types are shown for LN sections from slide 1.
+Annotated cell types are shown for LN sections from slide `r params$slide_id`.
 Cells were downsampled to allow for visualization of all cell types.
 
 ```{r "SLIDE 1: cell type sections", fig.width = 13, fig.height = 7}
@@ -905,9 +1025,13 @@ fig <- wrap_plots(
 fig
 ```
 
+### {.tabset .tabset-pills}
+
 LEC and DC populations of interest are shown for LN sections.
 Cells were downsampled to allow for visualization of all cell types.
-High-resolution images showing all cells are included at the bottom.
+High-resolution images showing all cells are included at the bottom,
+LECs are highlighted in blue (center) and DCs are highlighted in purple, pink,
+and orange (right).
 
 ```{r "SLIDE 3: LEC DC sections", fig.width = 13, fig.height = 6}
 # Create section plots
@@ -1003,7 +1127,7 @@ fig
 ```{r, fig.width = 45, fig.height = 10, results = "asis", out.height = "70%"}
 fovs %>%
   walk(~ {
-    cat("\n\n###", .x, "\n\n")
+    cat("\n\n####", .x, "\n\n")
     
     fig <- xen_dat %>%
       .plot_full_fov(
@@ -1024,16 +1148,20 @@ fovs %>%
   })
 ```
 
-##
+###
 
 The expression of key marker genes is shown below.
 
-```{r "cell type markers", fig.width = 15, fig.height = 7}
+```{r "cell type markers", fig.width = 15, fig.height = 9}
 gns <- c(
   "Ptprc", "Pdpn", "Pecam1",
   "Cd3d", "Cd19",
   "Prox1", "Lyve1",
-  "Itgax", "Xcr1", "Sirpa", "Itgam", "Siglech"
+  "Itgax",           # DCs
+  "Xcr1",            # cDC1
+  "Sirpa", "Itgam",  # cDC2
+  "Siglech",         # Siglech DCs
+  "Ccr7"
 )
 
 marker_plt <- gns %>%
@@ -1050,39 +1178,12 @@ marker_plt <- gns %>%
   }) %>%
   plot_grid(
     plotlist = .,
-    nrow     = 3,
+    ncol     = 4,
     align    = "vh",
     axis     = "trbl"
   )
 
 marker_plt
-```
-
-```{r "CCR7 EXPRESSION", eval = FALSE}
-gns <- "Ccr7"
-
-xen@active.assay <- "SCT"
-
-dat <- xen %>%
-  FetchData(
-    c("cell_type", "Ag_class", "Ag_type", gns),
-    slot = "data"
-  ) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(gns))
-
-dat %>%
-  mutate(Ag_class = fct_relevel(Ag_class, c("Ag-low", "Ag-high"))) %>%
-  ggplot(aes(cell_type, value, fill = Ag_class)) +
-  geom_boxplot(alpha = 0.8) +
-  scale_fill_manual(values = c("lightblue", "#D7301F")) +
-  labs(y = "expression") +
-  facet_wrap(~ name) +
-  base_theme +
-  theme(
-    axis.title.x = element_blank(),
-    axis.text.x  = element_text(angle = 45, hjust = 1)
-  )
 ```
 
 <br>
@@ -1092,6 +1193,7 @@ dat %>%
 ### Ag+ cells {.tabset .tabset-pills}
 
 Ag+ cells are shown for LN sections.
+High-resolution images showing all cells are included at the bottom
 
 ```{r "SLIDE 2: Ag+ cell types", fig.width = 13, fig.height = 7}
 # Fraction of cell types that are Ag+
@@ -1214,7 +1316,7 @@ fovs %>%
   })
 ```
 
-## LEC subsets {.tabset .tabset-pills}
+## LEC subsets
 
 UMAP projections show annotated LEC subsets and marker gene expression. 
 
@@ -1348,7 +1450,10 @@ marker_plt
 
 <br>
 
+### {.tabset .tabset-pills}
+
 Annotated LEC subsets are shown for LN sections.
+High-resolution images showing all cells are included at the bottom
 
 ```{r "SLIDE 5: LEC type sections", fig.width = 13, fig.height = 6}
 # Legend labels
@@ -1418,7 +1523,7 @@ ag_types <- xen_dat$lec_type %>%
 
 fovs %>%
   walk(~ {
-    cat("\n\n###", .x, "\n\n")
+    cat("\n\n####", .x, "\n\n")
     
     fig <- xen_dat %>%
       .plot_full_fov(
@@ -1435,11 +1540,10 @@ fovs %>%
   })
 ```
 
-##
-
 ### Ag+ LECs {.tabset .tabset-pills}
 
 Ag+ LECs are shown for LN sections.
+High-resolution images showing all cells are included at the bottom
 
 ```{r "SLIDE 6: Ag+ LEC types", fig.width = 13, fig.height = 7}
 # Fraction of cell types that are Ag+
@@ -1624,16 +1728,7 @@ fig <- plts %>%
 fig
 ```
 
-<br>
-
-<br>
-
-### {.tabset .tabset-pills}
-
-Ag+ LECs and DCs are shown for all DCs for each tissue section.
-Lines (bottom) connect the nearest Ag+ LEC identified for each DC.
-
-```{r "Ag+ LECs/DCs 1", fig.width = 8, fig.height = 10, out.width = "50%", results = "asis"}
+```{r "Ag+ LECs/DCs 1", fig.width = 8, fig.height = 10, out.width = "50%", results = "asis", eval = FALSE}
 # Format LEC/DC data
 plts <- fovs %>%
   set_names() %>%
@@ -1715,6 +1810,10 @@ plts %>%
   })
 ```
 
+<br>
+
+<br>
+
 ### {.tabset .tabset-pills}
 
 Ag+ LECs and DCs are shown for each DC subset for each tissue section.
@@ -1727,7 +1826,7 @@ plts <- fovs %>%
   map(~ {
     fov_name <- .x
     
-    plts <- dcs %>%
+    plts <- ag_dcs %>%
       map(~ {
         typ <- .x
         
@@ -1761,7 +1860,7 @@ plts <- fovs %>%
       )
     
     # Plot Ag+ LECs and DCs
-    plts <- dcs %>%
+    plts <- ag_dcs %>%
       map(~ {
         typ <- .x
         
@@ -1831,7 +1930,9 @@ plts %>%
 ###
 
 The distance from the nearest Ag+ LEC is shown for Ag+ and Ag- cells for each
-cell type. Vertical lines indicate the median distance.
+cell type.
+Cell types with >5 Ag+ cells are shown.
+Vertical lines indicate the median distance.
 For ease of plotting, a pseudo count of `1` was added to distance measurements.
 
 ```{r "proximity histograms", fig.width = 18, fig.height = 13}
@@ -1842,10 +1943,17 @@ ag_classes <- c(
 )
 
 # Format data for histograms
+# only include cell types that have both Ag-low/high cells
 hist_dat <- xen@meta.data %>%
   as_tibble(rownames = ".cell_id") %>%
   dplyr::select(.cell_id, fov, cell_type, lec_type, Ag_class, lec_id, lec_dist) %>%
-  filter(cell_type != "LEC")
+  filter(cell_type != "LEC") %>%
+  group_by(fov, cell_type) %>%
+  filter(
+    all(names(ag_classes) %in% Ag_class),
+    all(table(Ag_class) > 5)
+  ) %>%
+  ungroup()
   
 # Format data for median lines
 ln_dat <- hist_dat %>%
@@ -2083,7 +2191,7 @@ dc_hist <- hist_dat %>%
   
   mutate(lec_dist = lec_dist + 1) %>%  # ADD 1
   
-  filter(cell_type %in% dcs, fov == top_fov) %>%
+  filter(cell_type %in% ag_dcs, fov == top_fov) %>%
   ggplot(aes(lec_dist, fill = Ag_class, alpha = Ag_class)) +
   geom_density(aes(color = Ag_class)) +
   geom_vline(
@@ -2120,7 +2228,7 @@ dc_hist <- hist_dat %>%
 
 ```{r "DC proximity sections 2", fig.width = 14, fig.height = 7}
 # Scatter plot with points colored by distance from Ag+ LEC
-prox_plts <- dcs %>%
+prox_plts <- ag_dcs %>%
   map(~ {
     typ <- .x
     
@@ -2163,6 +2271,7 @@ prox_plts <- dcs %>%
           umap_theme_2 +
           theme(
             plot.title        = element_text(size = ttl_pt2 * 1.5, hjust = 0.5),
+            strip.clip        = "off",
             legend.key.height = unit(12, "pt"),
             legend.key.width  = unit(40, "pt"),
             legend.text       = element_text(size = txt_pt2)
@@ -2190,7 +2299,7 @@ prox_plts <- prox_plts %>%
 fig <- plot_grid(
   prox_plts, dc_hist,
   nrow  = 1,
-  rel_widths = c(1, 0.3)
+  rel_widths = c(1, 0.4)
 )
 
 fig

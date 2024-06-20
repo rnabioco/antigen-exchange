@@ -1,2 +1,4 @@
 results/xenium/2024-04-23_xenium-analysis.html filter=lfs diff=lfs merge=lfs -text
 results/xenium/xenium-analysis.html filter=lfs diff=lfs merge=lfs -text
+results/xenium/xenium-slide-1.html filter=lfs diff=lfs merge=lfs -text
+results/xenium/xenium-slide-2.html filter=lfs diff=lfs merge=lfs -text
