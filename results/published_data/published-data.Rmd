@@ -1,0 +1,2215 @@
+---
+title:  "Human Ag-tracking analysis"
+author: "Ryan Sheridan"
+date:   "`r Sys.Date()`"
+output:
+  html_document:
+    toc:            false
+    toc_float:      true
+    toc_depth:      2
+    df_print:       "paged"
+    code_folding:   "hide"
+    self_contained: true
+    highlight:      "kate"
+params:
+  ref_dir: "ref"
+  mod_dir: "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-11-01"
+  so_dir:  "~/Dropbox/Ryan/Projects/antigen-exchange/results/published_data"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r "setup", include = FALSE}
+# Chunk options
+knitr::opts_chunk$set(
+  message = FALSE, 
+  warning = FALSE,
+  comment = "",
+  echo    = FALSE,
+  dpi     = 600
+)
+
+# Packages
+library("biomaRt")
+library("Seurat")
+library("here")
+library("tidyverse")
+library("djvdj")
+library("ggtrace")
+library("ggforce")
+library("qs")
+library("colorblindr")
+library("knitr")
+library("cowplot")
+library("presto")
+library("MetBrewer")
+library("xlsx")
+library("openxlsx")
+library("M3Drop")
+library("scales")
+library("patchwork")
+library("ggtext")
+library("gprofiler2")
+library("clustifyrdata")
+library("clustifyr")
+library("ranger")
+
+source(here("src/funs.R"))
+```
+
+```{r "functions", eval = FALSE}
+
+#' Get point size to use for UMAPs
+get_pt_size <- function(df_in) {
+  n_cells <- nrow(df_in)
+  
+  res <- case_when(
+    n_cells > 10000 ~ 0.0001,
+    n_cells > 4000  ~ 0.1,
+    n_cells > 1000  ~ 0.4,
+    n_cells > 200   ~ 1,
+    TRUE            ~ 2
+  )
+  
+  res
+}
+
+#' Format p-values to add exponent
+#' for use with ggtext::geom_richtext()
+format_pvalue <- function(p, digits = 1) {
+  p <- scales::label_scientific(digits = digits)(p)
+
+  nm <- str_extract(p, "[+\\-][0-9]+$")
+  
+  p <- str_remove(p, str_c("\\", nm, "$"))
+  
+  nm <- nm %>%
+    as.numeric() %>%
+    as.character() %>%
+    str_c("<sup>", ., "</sup>")
+  
+  p <- str_replace(p, "e", "x10")
+  p <- str_c(p, nm)
+  
+  p
+}
+
+#' Calculate pseudo count for provided vector
+#' smallest non-zero value * multiplication factor
+calc_pseudo_count <- function(x, fctr = 0.5) {
+  p <- x[x > 0]
+  p <- ifelse(!is_empty(p), min(p) * fctr, 0)
+  p
+}
+
+#' Calculate mean expression for gene lists
+#' @param sobj_in Seurat object
+#' @param features Names list of vectors. Each vector should contain genes to
+#' calculate mean expression for. List names should indicate new meta.data
+#' column name
+calc_mean_gene_expression <- function(sobj_in, features) {
+  mean_expr <- features %>%
+    imap(~ {
+      sobj_in %>%
+        FetchData(.x) %>%
+        as_tibble(rownames = ".cell_id") %>%
+        pivot_longer(any_of(.x)) %>%
+        group_by(.cell_id) %>%
+        summarize(!!sym(.y) := mean(value), .groups = "drop")
+    }) %>%
+    purrr::reduce(left_join, by = ".cell_id") %>%
+    column_to_rownames(".cell_id")
+  
+  res <- sobj_in %>%
+    AddMetaData(mean_expr)
+
+ res 
+}
+
+#' Format CHIKV data for plots
+format_chikv_data <- function(sobj, grp_clmn = "chikv_grp") {
+  
+  fib_cell_types <- c(
+    "Fibroblasts",
+    "Stromal cells",
+    "Stromal cells (DN)"
+  )
+  
+  # Split objects
+  sos <- sobj %>%
+    SplitObject("treatment")
+    
+  # Re-process
+  sos <- sos %>%
+    map(~ {
+      .x %>%
+        run_m3drop(var_p = 0.05) %>%
+        ScaleData(vars.to.regress = "nCount_RNA") %>%
+        RunPCA() %>%
+        RunUMAP(dims = 1:40) %>%
+        AddMetaData(FetchData(., c("UMAP_1", "UMAP_2")))
+    })
+  
+  # Format cell type labels
+  # add pseudo count to % CHIKV counts to allow log transformation
+  # set column containing CHIKV-high/low groups
+  sos <- sos %>%
+    map(~ {
+      clmn <- ifelse(
+        "tot_pct_CHIKV" %in% colnames(.x@meta.data),
+        "tot_pct_CHIKV",
+        "pct_CHIKV"
+      )
+      
+      p <- calc_pseudo_count(.x[[clmn, drop = TRUE]])
+      
+      .x %>%
+        mutate_meta(
+          mutate,
+          !!sym(chikv_sig_clmn) := !!sym(clmn) + p,
+
+          cell_type = case_when(
+            fib_subtype %in% c("PvC", "FDC") ~ fib_subtype,
+            cell_type %in% fib_cell_types    ~ "FRC",
+            lec_type  == "BEC"               ~ lec_type,
+            cell_type == "Endothelial cells" ~ lec_type,
+            TRUE                             ~ "other"
+          ),
+
+          cell_type = ifelse(grepl("^unassigned", cell_type), "other", cell_type)
+        )
+    })
+  
+  # if grp_clmn not provided set all cells with >0 counts as "high"
+  if (is.null(grp_clmn)) {
+    sos <- sos %>%
+      map(
+        mutate_meta,
+        mutate,
+        !!sym(sig_grp_clmn) := ifelse(tot_nCount_CHIKV > 0, sig_grps[2], sig_grps[1])
+      )
+    
+    return(sos)
+  }
+  
+  sos <- sos %>%
+    map(
+      mutate_meta,
+      mutate,
+      !!sym(sig_grp_clmn) := str_remove(!!sym(grp_clmn), "^CHIKV-")
+    )
+  
+  sos
+}
+
+#' Format ova data for plots
+format_ova_data <- function(sobjs, nms, ag_clmn = "ova_fc",
+                            grp_clmn = "type_GMM_grp") {
+  
+  # Merge objects
+  res <- sobjs[nms] %>%
+    imap(~ {
+      .x %>%
+        mutate_meta(
+          mutate,
+          orig.ident = .y
+        )
+    })
+  
+  res <- merge(res[[1]], res[2:length(res)])
+  
+  # Re-process
+  res <- res %>%
+    run_m3drop(var_p = 0.05) %>%
+    ScaleData() %>%
+    RunPCA() %>%
+    RunUMAP(dims = 1:40)
+  
+  res <- res %>%
+    AddMetaData(FetchData(., c("UMAP_1", "UMAP_2")))
+  
+  # Format cell type labels
+  # add pseudo count to % CHIKV counts to allow log transformation
+  # set column containing CHIKV-high/low groups
+  p <- calc_pseudo_count(res[[ag_clmn, drop = TRUE]])
+  
+  res <- res %>%
+    mutate_meta(
+      mutate,
+      !!sym(ag_sig_clmn) := !!sym(ag_clmn) + p,
+      
+      cell_type = case_when(
+        subtype %in% c("PvC", "FDC", "BEC") ~ subtype,
+        cell_type == "LEC"                  ~ subtype,
+        cell_type == "fibroblast"           ~ "FRC",
+        TRUE                                ~ "other"
+      ),
+      
+      # Set CHIKV-high/low groups
+      !!sym(sig_grp_clmn) := str_remove(!!sym(grp_clmn), "^ova ")
+    )
+  
+  res
+}
+
+#' Format ova data from 2nd experiment
+format_ova_data_2 <- function(sobj, ag_clmn = "rel_tot_Ag",
+                              grp_clmn = "Ag_class") {
+  
+  # Subset and split objects
+  typs <- c("LEC", "BEC", "Fibroblasts", "Stromal cells")
+  
+  sobjs <- sobj %>%
+    subset(cell_type %in% typs) %>%
+    SplitObject("mouse")
+  
+  # Re-process
+  res <- sobjs %>%
+    map(~ {
+      .x %>%
+        run_m3drop(var_p = 0.05) %>%
+        ScaleData() %>%
+        RunPCA() %>%
+        RunUMAP(dims = 1:40) %>%
+        AddMetaData(FetchData(., c("UMAP_1", "UMAP_2")))
+    })
+  
+  # Format cell type labels
+  # add pseudo count to % CHIKV counts to allow log transformation
+  # set column containing CHIKV-high/low groups
+  format_type_labels <- function(so) {
+    p <- calc_pseudo_count(so[[ag_clmn, drop = TRUE]])
+    
+    fib_typs <- c("Fibroblasts", "Stromal cells")
+    
+    res <- so %>%
+      mutate_meta(
+        mutate,
+        !!sym(ag_sig_clmn) := !!sym(ag_clmn) + p,
+        
+        cell_type = case_when(
+          sub_type == "unassigned"      ~ "other",
+          sub_type %in% c("PvC", "FDC") ~ sub_type,
+          cell_type == "LEC"            ~ sub_type,
+          cell_type == "BEC"            ~ cell_type,
+          cell_type %in% fib_typs       ~ "FRC",
+          TRUE                          ~ "other"
+        ),
+        
+        # Set CHIKV-high/low groups
+        # !!sym(sig_grp_clmn) := recode(
+        #   !!sym(grp_clmn),
+        #   "Ag+"     = sig_grps[2],
+        #   "double-" = sig_grps[1]
+        # )
+        !!sym(sig_grp_clmn) := !!sym(grp_clmn)
+      )
+    
+    res
+  }
+  
+  res <- res %>%
+    map(format_type_labels)
+  
+  names(res) <- names(res) %>%
+    str_replace_all("_", "-") %>%
+    str_c("Ag ", .)
+  
+  res
+}
+
+#' Fetch genes for the provided annotations
+fetch_genes <- function(terms, mart) {
+  att  <- c("ensembl_gene_id", "external_gene_name")
+  names(terms) <- names(terms) %||% rep("go_parent_name", length(terms))
+  names(terms)[names(terms) == ""] <- "go_parent_name"
+  
+  res <- terms %>%
+    imap(~ {
+      getBM(
+        attributes = att,
+        filters    = .y,
+        values     = .x,
+        mart       = mart
+      ) %>%
+        pull(external_gene_name)
+    }) %>%
+    reduce(c) %>%
+    unique()
+  
+  res
+}
+
+#' Create summary figure with UMAP, bargraph, and boxplot panels
+create_ag_summary_fig <- function(df_in, fill, feat, filt = TRUE, plot_clrs,
+                                  feat_clrs = c("white", "#D7301F"), plot_lvls = NULL,
+                                  order_by_n = TRUE, size = 0.0001, stroke = 0.75,
+                                  legd_rows = 10, legd_cols = 2, ttl = NULL,
+                                  n_label = TRUE, umap_aspect_ratio = 0.9,
+                                  bar_aspect_ratio = NULL, legd_labs = NULL,
+                                  violin = TRUE, log_trans = FALSE, ...) {
+  
+  txt_pt2 <- 12
+  
+  # Plot Ag/CHIKV-low cells as a separate color
+  show_ag_low <- TRUE
+  
+  # Add Ag-low/high labels to df_in
+  ag_low <- str_c("Ag-", sig_grps[1])
+  
+  df_in <- df_in %>%
+    as_tibble(rownames = ".cell_id") %>%
+    mutate(
+      ag_cell_type = if_else(
+        sig_grp == sig_grps[2],
+        as.character(cell_type),
+        ag_low
+      )
+    )
+  
+  if (all(df_in$ag_cell_type == ag_low)) {
+    show_ag_low <- FALSE
+    ag_clrs     <- plot_clrs
+    
+    df_in <- df_in %>%
+      mutate(ag_cell_type = as.character(cell_type))
+  }
+  
+  if (show_ag_low) {
+    violin  <- FALSE
+    ag_clrs <- c(set_names("grey80", ag_low), plot_clrs)
+  }
+  
+  # Set legend labels
+  tot_lab <- df_in %>%
+    filter(sig_grp == sig_grps[2]) %>%
+    nrow()
+  
+  tot_lab <- str_c("n = ", label_comma()(tot_lab))
+  tot_lab <- str_c(tot_lab, "/", label_comma()(nrow(df_in)))
+  
+  type_labs <- legd_labs
+  
+  if (is.null(legd_labs)) {
+    lab_dat <- df_in %>%
+      group_by(!!sym(fill)) %>%
+      summarize(
+        n_tot     = label_comma()(n()),
+        n         = length(sig_grp[sig_grp == sig_grps[2]]),
+        n         = label_comma()(n),
+        n_low     = length(sig_grp[sig_grp == sig_grps[1]]),
+        .groups   = "drop"
+      ) %>%
+      mutate(
+        cell_type = as.character(cell_type),
+        lab = str_c(cell_type, " (", n, "/", n_tot, ")"),
+        n_low = label_comma()(sum(n_low)),
+        n_low = str_c(ag_low, " (", n_low, ")")
+      )
+    
+    type_labs <- set_names(
+      c(lab_dat$lab),
+      c(lab_dat$cell_type)
+    )
+    
+    if (show_ag_low) {
+      type_labs <- c(type_labs, set_names(unique(lab_dat$n_low), ag_low))
+    }
+  }
+  
+  # Set plot order
+  if (order_by_n) {
+    lvls <- df_in %>%
+      group_by(!!sym(fill)) %>%
+      summarize(
+        n    = n(),
+        frac = length(sig_grp[sig_grp == sig_grps[2]]) / n,
+        .groups = "drop"
+      ) %>%
+      arrange(frac, n) %>%
+      pull(fill) %>%
+      as.character()
+    
+    if (show_ag_low) lvls <- c(ag_low, lvls)
+    
+    df_in <- df_in %>%
+      mutate(ag_cell_type = fct_relevel(ag_cell_type, lvls))
+    
+    plot_lvls <- lvls
+  }
+  
+  # Create Ag type UMAP
+  umap <- df_in %>%
+    plot_features(
+      feature = "ag_cell_type",
+      size    = size
+    ) +
+    scale_color_manual(values = ag_clrs[plot_lvls], labels = type_labs) +
+    ggtitle(ttl) +
+    guides(color = guide_legend(nrow = legd_rows, ncol = legd_cols, override.aes = list(size = 3), reverse = TRUE)) +
+    theme_void() +
+    theme(
+      panel.border      = element_rect(size = 0.5, fill = NA, color = "grey85"),
+      legend.position   = "bottom",
+      legend.direction  = "vertical",
+      legend.title      = element_blank(),
+      legend.key.height = unit(18, "pt"),
+      legend.text       = element_text(size = txt_pt2)
+    )
+  
+  if (n_label) {
+    umap <- umap + 
+      geom_text(
+        aes(-Inf, Inf),
+        label         = tot_lab,
+        check_overlap = TRUE,
+        color         = "black",
+        hjust         = -0.2,
+        vjust         = 2,
+        size          = txt_pt2 / .pt
+      )
+  }
+  
+  # Get legend
+  legd <- get_legend(umap)
+  
+  umap <- umap +
+    theme(legend.position = "none")
+  
+  # Create bar graphs
+  bx_dat <- df_in
+  bar    <- NULL
+  
+  if (show_ag_low) {
+    bx_dat <- df_in %>%
+      filter(sig_grp == sig_grps[2])
+    
+    bar <- bx_dat %>%
+      mutate(!!sym(fill) := fct_infreq(!!sym(fill))) %>%
+      ggplot(aes("", fill = !!sym(fill))) +
+      geom_bar(
+        position = "fill",
+        color    = NA,
+        alpha    = 0.9
+      ) +
+      scale_fill_manual(values = plot_clrs) +
+      theme_void() +
+      theme(legend.position = "none")
+  }
+  
+  # Create signal UMAP
+  feat_umap <- df_in %>%
+    arrange(!!sym(fill)) %>%
+    ggplot(aes(UMAP_1, UMAP_2, fill = !!sym(feat))) +
+    geom_point_trace(size = size * 1.5, stroke = stroke) +
+    ggtitle(ttl) +
+    guides(fill = guide_colorbar(
+      label.position = "top",
+      barwidth  = unit(150, "pt"),
+      barheight = unit(6, "pt"),
+      ticks     = FALSE
+    )) +
+    theme_void() +
+    theme(
+      legend.position = "top",
+      legend.title    = element_text(size = 18, vjust = -0.3),
+      legend.text     = element_text(size = 6, vjust = -3)
+    )
+  
+  if (!is.null(umap_aspect_ratio)) {
+    umap <- umap +
+      theme(aspect.ratio = umap_aspect_ratio)
+    
+    feat_umap <- feat_umap +
+      theme(aspect.ratio = umap_aspect_ratio)
+  }
+  
+  if (log_trans) {
+    feat_umap <- feat_umap +
+      scale_fill_gradientn(colours = feat_clrs, trans = "log10")
+  } else {
+    feat_umap <- feat_umap +
+      scale_fill_gradientn(colours = feat_clrs)
+  }
+  
+  # Set boxplot levels
+  bx_lvls <- bx_dat %>%
+    group_by(!!sym(fill)) %>%
+    summarize(
+      stats = list(boxplot.stats(!!sym(feat))),
+      stats = map(stats, pluck, "stats"),
+      med   = map_dbl(stats, pluck, 3),
+      q3    = map_dbl(stats, pluck, 4),
+      q4    = map_dbl(stats, pluck, 5),
+      max   = max(!!sym(feat))
+    ) %>%
+    arrange(med, q3, q4, max) %>%
+    pull(fill) %>%
+    rev() %>%
+    as.character()
+  
+  df_in <- df_in %>%
+    mutate(
+      !!sym(fill) := fct_relevel(!!sym(fill), bx_lvls),
+      sig_grp      = fct_relevel(sig_grp, sig_grps)
+    )
+  
+  # Create boxplots
+  bx_aes <- aes(
+    !!sym(fill), !!sym(feat),
+    fill  = !!sym(fill),
+    color = !!sym(fill)
+  )
+  
+  if (show_ag_low) {
+    bx_aes$alpha <- sym("sig_grp")
+  }
+  
+  boxes <- df_in %>%
+    ggplot(bx_aes) +
+    scale_fill_manual(values = plot_clrs) +
+    scale_color_manual(values = plot_clrs) +
+    guides(fill = "none", color = "none") +
+    guides(alpha = guide_legend(override.aes = list(size = 4, shape = 22, fill = c("white", "grey70"), alpha = 1, color = "black"))) +
+    theme(
+      legend.position  = c(0.8, 1),
+      legend.direction = "horizontal",
+      legend.title     = element_blank(),
+      panel.border     = element_blank(),
+      axis.line.y      = element_line(size = 0.5, color = "grey85"),
+      axis.ticks.x     = element_blank(),
+      axis.title.x     = element_blank(),
+      axis.title.y     = element_text(size = txt_pt2, angle = 90, hjust = 0.5),
+      axis.text.x      = element_text(size = txt_pt2, angle = 45, hjust = 1, vjust = 1)
+    )
+  
+  if (violin) {
+    boxes <- boxes +
+      geom_violin(alpha = 0.4, draw_quantiles = c(0.25, 0.75), scale = "width", key_glyph = "point") +
+      stat_summary(geom = "point", fun = median, size = 2)
+  } else {
+    bx_args <- list(
+      size         = 0.5,
+      outlier.size = 0.3,
+      key_glyph    = "point",
+      fatten       = 1,
+      position     = position_dodge2(preserve = "single")
+    )
+    
+    bx_fn <- lift_dl(geom_boxplot)
+    
+    if (show_ag_low) {
+      boxes <- boxes +
+        scale_alpha_manual(values = c(0.05, 0.45))
+    } else {
+      bx_args$alpha <- 0.4
+    }
+    
+    boxes <- boxes +
+      bx_fn(bx_args)
+  }
+  
+  if (log_trans) {
+    boxes <- boxes +
+      scale_y_log10()
+  }
+  
+  # Create final figure
+  top <- plot_grid(
+    bar, umap, feat_umap,
+    nrow        = 1,
+    rel_widths  = c(0.1, 1, 1),
+    align       = "h",
+    axis        = "tb"
+  )
+  
+  bot <- plot_grid(
+    legd, boxes,
+    nrow = 1,
+    rel_widths = c(0.9, 1)
+  )
+  
+  res <- plot_grid(
+    top, bot,
+    ncol = 1,
+    rel_heights = c(1, 0.5)
+  )
+  
+  res
+}
+
+#' Create summary figure with UMAP, bargraph, and boxplot panels
+create_summary_fig <- function(df_in, fill, feat, filt = TRUE, plot_clrs,
+                               feat_clrs = c("white", "#D7301F"), plot_lvls = NULL,
+                               order_by_n = TRUE, size = 0.0001, stroke = 0.75,
+                               legd_rows = 10, legd_cols = 2, ttl = NULL,
+                               n_label = TRUE, umap_aspect_ratio = 0.9,
+                               bar_aspect_ratio = NULL, legd_labs = NULL,
+                               violin = TRUE, log_trans = FALSE, ...) {
+  
+  txt_pt2 <- 12
+  
+  # Set legend labels
+  tot_lab   <- get_nlab_fun(df_in)
+  type_labs <- legd_labs
+  
+  if (is.null(legd_labs)) {
+    type_labs <- get_nlab_fun(df_in, "cell_type", sep = " ")
+  }
+  
+  # Filter bar graph data
+  df_in <- df_in %>%
+    as_tibble(rownames = ".cell_id")
+  
+  bar_df <- df_in %>%
+    filter({{filt}})
+  
+  # Set plot order
+  if (order_by_n) {
+    lvls <- bar_df %>%
+      group_by(!!sym(fill)) %>%
+      summarize(n = n()) %>%
+      arrange(desc(n)) %>%
+      pull(fill)
+    
+    bar_df <- bar_df %>%
+      mutate(!!sym(fill) := fct_relevel(!!sym(fill), lvls))
+    
+    df_in <- df_in %>%
+      mutate(!!sym(fill) := fct_relevel(!!sym(fill), lvls))
+    
+    plot_lvls <- lvls
+  }
+  
+  # Create type UMAP
+  umap <- df_in %>%
+    plot_features(
+      feature     = fill,
+      size        = size,
+      key_glyph   = draw_key_point
+    ) +
+    scale_color_manual(values = plot_clrs[plot_lvls], labels = type_labs) +
+    ggtitle(ttl) +
+    guides(color = guide_legend(nrow = legd_rows, ncol = legd_cols, override.aes = list(size = 3))) +
+    theme_void() +
+    theme(
+      panel.border      = element_rect(size = 0.5, fill = NA, color = "grey85"),
+      legend.position   = "bottom",
+      legend.direction  = "vertical",
+      legend.title      = element_blank(),
+      legend.key.height = unit(18, "pt"),
+      legend.text       = element_text(size = txt_pt2)
+    )
+  
+  if (n_label) {
+    umap <- umap + 
+      geom_text(
+        aes(-Inf, Inf),
+        label         = tot_lab,
+        check_overlap = TRUE,
+        color         = "black",
+        hjust         = -0.2,
+        vjust         = 2,
+        size          = txt_pt2 / .pt
+      )
+  }
+  
+  # Get legend
+  legd <- get_legend(umap)
+  
+  umap <- umap +
+    theme(legend.position = "none")
+  
+  # Create bar graphs
+  bar <- bar_df %>%
+    ggplot(aes("", fill = !!sym(fill))) +
+    geom_bar(
+      position = "fill",
+      color    = NA,
+      alpha    = 0.9
+    ) +
+    scale_fill_manual(values = plot_clrs) +
+    theme_void() +
+    theme(legend.position = "none")
+  
+  # Create signal UMAP
+  feat_umap <- df_in %>%
+    arrange(!!sym(fill)) %>%
+    ggplot(aes(UMAP_1, UMAP_2, fill = !!sym(feat))) +
+    geom_point_trace(size = size, stroke = stroke) +
+    ggtitle(ttl) +
+    guides(fill = guide_colorbar(
+      label.position = "top",
+      barwidth  = unit(150, "pt"),
+      barheight = unit(6, "pt"),
+      ticks     = FALSE
+    )) +
+    theme_void() +
+    theme(
+      legend.position = "top",
+      legend.title    = element_text(size = 18, vjust = -0.3),
+      legend.text     = element_text(size = 6, vjust = -3)
+    )
+  
+  if (!is.null(umap_aspect_ratio)) {
+    umap <- umap +
+      theme(aspect.ratio = umap_aspect_ratio)
+    
+    feat_umap <- feat_umap +
+      theme(aspect.ratio = umap_aspect_ratio)
+  }
+  
+  if (log_trans) {
+    feat_umap <- feat_umap +
+      scale_fill_gradientn(colours = feat_clrs, trans = "log10")
+  } else {
+    feat_umap <- feat_umap +
+      scale_fill_gradientn(colours = feat_clrs)
+  }
+  
+  # Set boxplot levels
+  bx_lvls <- bar_df %>%
+    group_by(!!sym(fill)) %>%
+    summarize(
+      stats = list(boxplot.stats(!!sym(feat))),
+      stats = map(stats, pluck, "stats"),
+      med   = map_dbl(stats, pluck, 3),
+      q3    = map_dbl(stats, pluck, 4),
+      q4    = map_dbl(stats, pluck, 5),
+      max   = max(!!sym(feat))
+    ) %>%
+    arrange(med, q3, q4, max) %>%
+    pull(fill) %>%
+    rev() %>%
+    as.character()
+  
+  bar_df <- bar_df %>%
+    mutate(!!sym(fill) := fct_relevel(!!sym(fill), bx_lvls))
+  
+  # Create boxplots
+  boxes <- bar_df %>%
+    ggplot(aes(!!sym(fill), !!sym(feat), fill = !!sym(fill), color = !!sym(fill))) +
+    scale_fill_manual(values = plot_clrs) +
+    scale_color_manual(values = plot_clrs) +
+    theme(
+      legend.position = "none",
+      panel.border    = element_blank(),
+      axis.line.y     = element_line(size = 0.5, color = "grey85"),
+      axis.ticks.x    = element_blank(),
+      axis.title.x    = element_blank(),
+      axis.title.y    = element_text(size = txt_pt2, angle = 90, hjust = 0.5),
+      axis.text.x     = element_text(size = txt_pt2, angle = 45, hjust = 1, vjust = 1)
+    )
+  
+  if (violin) {
+    boxes <- boxes +
+      geom_violin(alpha = 0.4, draw_quantiles = c(0.25, 0.75), scale = "width") +
+      stat_summary(geom = "point", fun = median, size = 2)
+  } else {
+    boxes <- boxes +
+      geom_boxplot(alpha = 0.4, outlier.size = 0.3)
+  }
+  
+  if (log_trans) {
+    boxes <- boxes +
+      scale_y_log10()
+  }
+  
+  # Create final figure
+  top <- plot_grid(
+    bar, umap, feat_umap,
+    nrow        = 1,
+    rel_widths  = c(0.1, 1, 1),
+    align       = "h",
+    axis        = "tb"
+  )
+  
+  bot <- plot_grid(
+    legd, boxes,
+    nrow = 1,
+    rel_widths = c(0.9, 1)
+  )
+  
+  res <- plot_grid(
+    top, bot,
+    ncol = 1,
+    rel_heights = c(1, 0.5)
+  )
+  
+  res
+}
+
+#' Create gene figure with UMAP and boxplot panels
+create_gene_fig <- function(df_in, grps, feat, feat_clrs = c("white", "#D7301F"),
+                            box_clrs, size = 0.0001, pval_dat = NULL, stroke = 0.75) {
+  
+  # Create UMAP
+  u <- df_in %>%
+    arrange(!!sym(feat)) %>%
+    ggplot(aes(UMAP_1, UMAP_2, fill = !!sym(feat))) +
+    geom_point_trace(size = size, stroke = stroke) +
+    scale_fill_gradientn(colours = feat_clrs) +
+    guides(fill = guide_colorbar(
+      title.position = "top",
+      barheight      = unit(6, "pt"),
+      barwidth       = unit(120, "pt"),
+      ticks          = FALSE)
+    ) +
+    theme_void() +
+    theme(
+      plot.margin     = margin(t = 15),
+      aspect.ratio    = 0.9,
+      legend.position = "top",
+      legend.title    = element_text(size = 18)
+    )
+  
+  # Set boxplot order
+  lvls <- df_in %>%
+    group_by(!!sym(grps)) %>%
+    summarize(
+      stats = list(boxplot.stats(!!sym(feat))),
+      stats = map(stats, pluck, "stats"),
+      med   = map_dbl(stats, pluck, 3),
+      q3    = map_dbl(stats, pluck, 4),
+      q4    = map_dbl(stats, pluck, 5),
+      max   = max(!!sym(feat))
+    ) %>%
+    arrange(med, q3, q4, max) %>%
+    pull(grps) %>%
+    rev() %>%
+    as.character()
+  
+  df_in <- df_in %>%
+    mutate(
+      !!sym(grps) := fct_relevel(!!sym(grps), lvls),
+      sig_grp      = fct_relevel(sig_grp, sig_grps)
+    )
+  
+  # Create boxplots
+  bx <- df_in %>%
+    ggplot(aes(!!sym(grps), !!sym(feat), fill = !!sym(grps), color = !!sym(grps), alpha = sig_grp)) + 
+    geom_boxplot(
+      outlier.alpha = 1,
+      outlier.size  = 0.075,
+      fatten        = 1,
+      position      = position_dodge2(preserve = "single")
+    ) +
+    
+    scale_alpha_manual(values = c(0.05, 0.45)) +
+    scale_fill_manual(values = box_clrs) +
+    scale_color_manual(values = box_clrs) +
+    djvdj_theme() +
+    theme(
+      plot.margin     = margin(r = 15, b = 15, l = 15),
+      legend.position = "none",
+      axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      axis.title      = element_blank()
+    )
+  
+  # Format pval data
+  # USING PVAL COLUMN INSTEAD OF PADJ!!
+  if (!is.null(pval_dat)) {
+    pval_clmn <- "pval"
+    
+    by <- set_names("cell_type", grps)
+    
+    pval_dat <- pval_dat %>%
+      filter(gene == feat)
+    
+    pval_dat <- df_in %>%
+      distinct(!!sym(grps)) %>%
+      inner_join(pval_dat, by = by) %>%
+      mutate(!!sym(pval_clmn) := format_pvalue(!!sym(pval_clmn)))
+    
+    if (nrow(pval_dat) > 0) {
+      bx <- bx +
+        annotate(
+          "richtext",
+          pval_dat$cell_type,
+          Inf,
+          label = pval_dat[[pval_clmn]],
+          vjust = 1.05,
+          size  = 6.5 / .pt,
+          fill  = NA,
+          label.color = NA
+        ) +
+        scale_y_continuous(expand = expansion(c(0.05, 0.2)))
+      
+      u <- u +
+        theme(legend.title = element_text(size = 18, face = "bold"))
+    }
+  }
+  
+  # Create final figure
+  res <- plot_grid(
+    u, bx,
+    ncol        = 1,
+    rel_heights = c(1, 0.5),
+    align       = "v",
+    axis        = "rl"
+  )
+  
+  res
+}
+
+#' Create heatmap summarizing Ag-high DEGs
+#' 
+#' @param sobjs Named list of Seurat objects
+#' @param genes Named list containing genes to plot for each cell type
+#' @param ovlp_lst Named list of data.frames with overlap information for each
+#' cell type. Input is in the same format required by ggupset
+#' @param goi_clrs Named vector specifying colors to use for genes of interest,
+#' genes missing a color specification will be colored black.
+#' @param type_clrs Named vector specifying colors to use for each cell type.
+create_ag_degs_summary <- function(sobjs, genes, ovlp_lst, goi_clrs,
+                                   type_clrs) {
+  
+  .create_heatmap <- function(df_in, ov_in, gns, gn_clrs, gn_face, ttl, clr) {
+
+    # Calculate mean expression
+    dat <- df_in %>%
+      group_by(dataset, cell_type, gene, sig_grp) %>%
+      summarize(value = mean(value), .groups = "drop") %>%
+      group_by(cell_type, gene) %>%
+      mutate(value = as.numeric(scale(value))) %>%
+      ungroup() %>%
+      filter(gene %in% gns) %>%
+      mutate(
+        sig_grp = fct_relevel(sig_grp, sig_grps),
+        gene    = fct_relevel(gene, gns)
+      )
+    
+    # Create heatmap
+    plt_clrs <- c(lighten(clr, 0.99), clr)
+    
+    n_gns <- n_distinct(dat$gene)
+    
+    strp_labs <- function(x) str_replace(str_c(x, " "), " \\(", " \n\\(")
+    
+    plt <- dat %>%
+      ggplot(aes(sig_grp, gene)) +
+      geom_tile(aes(fill = value)) +
+      facet_wrap(~ dataset, nrow = 1, strip.position = "bottom", labeller = as_labeller(strp_labs)) +
+      ggtitle(ttl) +
+      scale_fill_gradientn(colours = plt_clrs) +
+      scale_x_discrete(position = "top", labels = sig_labs) +
+      
+      guides(fill = guide_colorbar(ticks = FALSE, barwidth = unit(5, "pt"))) +
+      theme(
+        aspect.ratio = n_gns / 2,
+        legend.title = element_blank(),
+        axis.ticks   = element_blank(),
+        axis.title   = element_blank(),
+        axis.text.x  = element_text(size = 10, face = "bold"),
+        axis.text.y  = element_text(color = gn_clrs, face = gn_face, hjust = 1),
+        strip.text   = element_text(size = 8, angle = 90, hjust = 1),
+        strip.placement = "outside"
+      )
+    
+    if (nrow(ov_in) == 0) return(plt)
+    
+    plt +
+      geom_point(data = ov_in, aes(1.5, gene), shape = 5)
+  }
+  
+  # Check for duplicate genes
+  if (any(map_lgl(genes, ~ any(duplicated(.x))))) {
+    stop("Duplicate genes are present in list.")
+  }
+  
+  # Format overlap data
+  ovlp_lst <- ovlp_lst %>%
+    map(unnest, dataset) %>%
+    map(mutate, dataset = fct_relevel(dataset, datasets))
+
+  # Format plot data
+  all_gns <- flatten_chr(genes) %>%
+    names() %>%
+    unique()
+  
+  dat <- sobjs %>%
+    imap_dfr(~ {
+      .x %>%
+        FetchData(c("cell_type", "sig_grp", all_gns)) %>%
+        rownames_to_column(".cell_id") %>%
+        pivot_longer(any_of(all_gns), names_to = "gene") %>%
+        mutate(dataset = .y)
+    }) %>%
+    mutate(dataset = fct_relevel(dataset, datasets)) %>%
+    split(.$cell_type)
+  
+  # low/high labels
+  sig_labs <- set_names(c("-", "+"), sig_grps)
+  
+  # Create heatmaps
+  plts <- dat[names(genes)] %>%
+    imap(~ {
+      nms <- rev(genes[[.y]])
+      gns <- names(nms)
+      clr <- type_clrs[[.y]]
+      
+      ov_dat <- ovlp_lst[[.y]] %>%
+        filter(gene %in% gns)
+      
+      # Set gene aesthetics
+      gn_face <- rep("bold", length(gns))
+      gn_clrs <- goi_clrs[gns]
+      
+      gn_face[is.na(gn_clrs)] <- "plain"
+      gn_clrs[is.na(gn_clrs)] <- "black"
+      
+      .x %>%
+        .create_heatmap(
+          ov_in   = ov_dat,
+          gns     = gns,
+          gn_clrs = gn_clrs,
+          gn_face = gn_face,
+          ttl     = .y,
+          clr     = clr
+        ) +
+        scale_y_discrete(labels = nms) +
+        theme(plot.title = element_text(size = 18))
+    })
+  
+  # Create final figure
+  plts %>%
+    patchwork::wrap_plots(ncol = 4, nrow = 2)
+}
+
+#' Create heatmap summarizing cell type-specific DEGs
+#' 
+#' @param sobj Seurat object
+#' @param gene Named list containing genes to plot for each cell type
+#' @param ag_df data.frame containing antigen/CHIKV-high DEGs,
+#' should contain columns specifiying the cell_type and padj for each gene
+#' @param goi_clrs Named vector specifying colors to use for genes of interest,
+#' genes missing a color specification will be colored black.
+#' @param type_clrs Named vector specifying colors to use for each cell type.
+#' @param min_cells Minimum number of cells needed to include cell type in plot
+create_type_degs_summary <- function(sobj, genes, ag_df, goi_clrs, type_clrs,
+                                     min_cells = 10) {
+
+  all_gns <- flatten_chr(genes) %>%
+    names() %>%
+    unique()
+  
+  # Calculate mean expression
+  # determine which genes are Ag upregulated and/or a GOI
+  dat <- sobj %>%
+    FetchData(c("cell_type", all_gns)) %>%
+    as_tibble(rownames = ".cell_id") %>%
+    
+    pivot_longer(any_of(all_gns), names_to = "gene") %>%
+    group_by(cell_type) %>%
+    filter(n_distinct(.cell_id) > min_cells) %>%
+    ungroup() %>%
+    
+    group_by(gene, cell_type) %>%
+    summarize(value = mean(value), .groups = "drop") %>%
+
+    left_join(ag_df, by = c("gene", "cell_type")) %>%
+    mutate(
+      Ag_up = !is.na(padj),
+      goi   = gene %in% names(goi_clrs)
+    ) %>%
+    select(-c(dataset, geneset, pval, padj))
+  
+  # Identify top cell types
+  # order by most Ag upregulated genes, then by most genes of interest
+  typs <- unique(dat$cell_type)
+  typs <- typs[typs != "other"]
+  
+  typs <- typs %>%
+    map_dfr(~ {
+      dat %>%
+        filter(gene %in% names(genes[[.x]])) %>%
+        summarize(
+          cell_type = .x,
+          ag_score  = sum(Ag_up),
+          goi_score = sum(goi)
+        )
+    }) %>%
+    arrange(desc(ag_score), desc(goi_score)) %>%
+    pull(cell_type)
+  
+  dat <- dat %>%
+    mutate(cell_type = fct_relevel(cell_type, typs))
+  
+  # Create heatmaps
+  res <- typs %>%
+    map(~ {
+      nms <- rev(genes[[.x]])
+      gns <- names(nms)
+      
+      # Filter and scale data for plotting
+      dat <- dat %>%
+        filter(gene %in% gns) %>%
+        mutate(gene = fct_relevel(gene, gns)) %>%
+        group_by(gene) %>%
+        mutate(value = as.numeric(scale(value))) %>%
+        ungroup()
+      
+      if (!.x %in% dat$cell_type) return(NULL)
+      
+      # Set gene aesthetics
+      gn_face <- rep("bold", length(gns))
+      gn_clrs <- goi_clrs[gns]
+      
+      gn_face[is.na(gn_clrs)] <- "plain"
+      gn_clrs[is.na(gn_clrs)] <- "black"
+      
+      clr <- type_clrs[[.x]]
+      
+      # Create heatmaps
+      n_typs <- n_distinct(dat$cell_type)
+      n_gns  <- length(gns)
+      
+      res <- dat %>%
+        ggplot(aes(cell_type, gene, fill = value)) +
+        geom_tile() +
+        
+        ggtitle(.x) +
+        scale_fill_gradientn(colours = c(lighten(clr, 0.99), clr)) +
+        scale_y_discrete(labels = nms) +
+        guides(fill = guide_colorbar(ticks = FALSE, barwidth = unit(5, "pt"))) +
+        theme(
+          aspect.ratio     = n_gns / n_typs,
+          legend.title     = element_blank(),
+          axis.title       = element_blank(),
+          axis.ticks       = element_blank(),
+          axis.text.x      = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          axis.text.y      = element_text(color = gn_clrs, face = gn_face, hjust = 1)
+        )
+      
+      # mark Ag upregulated genes
+      res <- res +
+        geom_point(data = ~ filter(.x, Ag_up), aes(cell_type, gene), shape = 5)
+      
+      res
+    })
+  
+  # Create final figure
+  # wrap_plots(ncol = 4, nrow = 3)
+  res %>%
+    purrr::discard(is.null) %>%
+    plot_grid(
+      plotlist = .,
+      nrow = 3,
+      ncol = 4
+    )
+}
+
+#' Create boxplot panels for Ag DEGs
+#' 
+#' @param sobj Seurat object
+#' @param genes Vector of genes to plot
+#' @param pval_dat Named list of data.frames containing table of p-values for
+#' each gene.
+#' @param chunk_ttl Prefix to use for knitted code chunk.
+#' @param fig_ht Figure height
+#' @param fig_wth Figure width
+#' @param n_genes Maximum number of genes to plot
+create_ag_degs_boxes <- function(sobj, genes, pval_dat, chunk_ttl = ttl,
+                                 goi_clrs, fig_ht = 6, fig_wth = 10,
+                                 genes_per_row = 4, n_genes = 100, ...) {
+
+  # Column in pval_dat that contains p-values
+  pval_clmn <- "pval"
+  
+  # Format plot data
+  plt_vars <- c(
+    "Ag_type", "sig_grp", "dataset",
+    "UMAP_1", "UMAP_2", genes
+  )
+  
+  dat <- sobj %>%
+    FetchData(plt_vars) %>%
+    mutate(
+      sig_grp = fct_relevel(sig_grp, sig_grps),
+      dataset = fct_relevel(dataset, datasets)
+    )
+  
+  # Set plot titles
+  genes <- set_names(
+    genes,
+    str_c(seq_along(genes), ". ", genes)
+  )
+  
+  # Place genes found in GO term lists at front
+  special_gns <- genes[genes %in% names(goi_clrs)]
+  
+  genes <- c(
+    special_gns,
+    genes[!genes %in% names(goi_clrs)]
+  )
+  
+  genes <- head(genes, n_genes)
+  
+  # Create box plots
+  plt <- genes %>%
+    imap(~ {
+      p_dt    <- pval_dat[[.x]]
+      ttl_aes <- list()
+      
+      if (.x %in% unique(names(goi_clrs))) {
+        ttl_aes$face  <- "bold"
+        ttl_aes$color <- goi_clrs[[.x]]
+      }
+      
+      sig_alpha <- set_names(c(0.05, 0.6), sig_grps)
+      
+      dat %>%
+        ggplot(aes(dataset, !!sym(.x), fill = Ag_type, alpha = sig_grp)) +
+        geom_boxplot(
+          outlier.alpha = 1,
+          outlier.size  = 0.2,
+          key_glyph     = draw_key_point,
+          position      = position_dodge2(preserve = "single")
+        ) +
+        annotate(
+          "richtext",
+          p_dt$dataset,
+          Inf,
+          label       = p_dt[[pval_clmn]],
+          vjust       = 1.05,
+          size        = 5.5 / .pt,
+          fill        = NA,
+          label.color = NA
+        ) +
+        scale_fill_manual(values  = ag_typ_clrs) +
+        scale_alpha_manual(values = sig_alpha) +
+        scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
+        
+        ggtitle(.y) +
+        theme(
+          aspect.ratio    = 0.5,
+          legend.position = "none",
+          plot.title      = element_text(vjust = 1, face = ttl_aes$face, color = ttl_aes$color, size = 13),
+          axis.title      = element_blank(),
+          axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5)
+        )
+    }) %>%
+    plot_grid(
+      plotlist = .,
+      align    = "vh",
+      axis     = "trbl",
+      ncol     = genes_per_row
+    )
+  
+  # Knit chunk
+  chunk_ttl <- chunk_ttl %>%
+    str_replace_all("[^[:alnum:]]", "_")
+  
+  plt %>%
+    subchunkify(
+      ttl     = chunk_ttl,
+      fig_ht  = fig_ht,
+      fig_wth = fig_wth,
+      ...
+    )
+}
+
+#' Create boxplot panels for cell type DEGs
+#' 
+#' @param sobjs List of Seurat objects
+#' @param genes Vector of genes to plot
+#' @param pval_dat Named list of data.frames containing table of p-values for
+#' each gene.
+#' @param ag_df data.frame containing antigen/CHIKV-high DEGs,
+#' should contain columns specifiying the cell_type and padj for each gene
+#' @param chunk_ttl Prefix to use for knitted code chunk.
+#' @param fig_ht Figure height
+#' @param fig_wth Figure width
+#' @param n_genes Maximum number of genes to plot
+create_type_degs_boxes <- function(sobjs, genes, pval_dat, ag_df, chunk_ttl = ttl,
+                                   goi_clrs, tile_clr = "red", fig_ht = 6,
+                                   genes_per_row = 3, fig_wth = 10,
+                                   n_genes = 100, ...) {
+  
+  # Format plot data
+  plt_vars <- c("cell_type", "UMAP_1", "UMAP_2", genes)
+  
+  dat <- sobjs %>%
+    imap_dfr(~ {
+      .x %>%  
+        FetchData(plt_vars) %>%
+        mutate(dataset = .y)
+    }) %>%
+    mutate(dataset = fct_relevel(dataset, datasets))
+  
+  # Set plot titles
+  genes <- set_names(
+    genes,
+    str_c(seq_along(genes), ". ", genes)
+  )
+  
+  # Place Ag genes and genes found in GO term lists at front
+  special_gns <- genes[genes %in% names(goi_clrs)]
+  genes       <- c(special_gns, genes[!genes %in% names(goi_clrs)])
+  
+  ag_gns <- pval_dat[genes] %>%
+    bind_rows() %>%
+    distinct(cell_type, dataset)
+  
+  ag_gns <- ag_df %>%
+    filter(
+      dataset %in% ag_gns$dataset,
+      cell_type %in% ag_gns$cell_type
+    )
+  
+  ag_gns <- genes[genes %in% ag_gns$gene]
+  genes  <- c(ag_gns, genes[!genes %in% ag_gns])
+  genes  <- head(genes, n_genes)
+  
+  # Create heatmaps
+  plts <- genes %>%
+    imap(~ {
+      p_dt    <- pval_dat[[.x]]
+      ttl_aes <- list()
+      
+      if (.x %in% unique(names(goi_clrs))) {
+        ttl_aes$face  <- "bold"
+        ttl_aes$color <- goi_clrs[[.x]]
+      }
+      
+      # Data for plotting
+      mn_fn <- function(x) mean(x, na.rm = TRUE)
+      
+      dat <- dat %>%
+        group_by(dataset, cell_type) %>%
+        summarize(!!sym(.x) := mean(!!sym(.x)), .groups = "drop") %>%
+        
+        group_by(dataset) %>%
+        mutate(scaled = as.numeric(scale(!!sym(.x)))) %>%
+        
+        ungroup() %>%
+        mutate(
+          cell_type = fct_reorder(cell_type, !!sym(.x), mn_fn, .desc = TRUE),
+          cell_type = fct_relevel(cell_type, unique(p_dt$cell_type)),
+          dataset   = fct_relevel(dataset, p_dt$dataset)
+        )
+      
+      # Set dataset text aesthetics
+      dtsts  <- levels(dat$dataset)
+      dtsts  <- dtsts[dtsts %in% dat$dataset]
+      dt_clr <- rep("black", length(dtsts))
+      dt_fce <- rep("plain", length(dtsts))
+      dt_clr[dtsts %in% p_dt$dataset] <- tile_clr
+      dt_fce[dtsts %in% p_dt$dataset] <- "bold"
+      
+      # Set cell type text aesthetics
+      typs    <- levels(dat$cell_type)
+      typ_clr <- rep("black", length(typs))
+      typ_fce <- rep("plain", length(typs))
+      typ_clr[typs %in% p_dt$cell_type] <- tile_clr
+      typ_fce[typs %in% p_dt$cell_type] <- "bold"
+      
+      # Create heatmap
+      tile_clr <- c(lighten(tile_clr, 0.99), tile_clr)
+      
+      dat %>%
+        ggplot(aes(cell_type, dataset)) +
+        geom_tile(aes(fill = scaled)) +
+        geom_point(data = filter(ag_df, gene == .x), shape = 5) +
+        
+        ggtitle(.y) +
+        guides(fill = guide_colorbar(ticks = FALSE, barwidth = unit(5, "pt"))) +
+        scale_fill_gradientn(colours = tile_clr, na.value = "white") +
+        theme(
+          aspect.ratio = n_distinct(dat$dataset) / n_distinct(dat$cell_type),
+          plot.title   = element_text(vjust = 1, face = ttl_aes$face, color = ttl_aes$color, size = 13),
+          legend.title = element_blank(),
+          axis.title   = element_blank(),
+          axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5, color = typ_clr, face = typ_fce),
+          axis.text.y  = element_text(hjust = 1, color = dt_clr, face = dt_fce),
+          axis.ticks   = element_blank()
+        )
+    })
+  
+  # Create final figure
+  plt <- plts %>%
+    plot_grid(
+      plotlist = .,
+      align    = "vh",
+      axis     = "trbl",
+      ncol     = genes_per_row
+    )
+  
+  # Knit chunk
+  chunk_ttl <- chunk_ttl %>%
+    str_replace_all("[^[:alnum:]]", "_")
+  
+  plt %>%
+    subchunkify(
+      ttl     = chunk_ttl,
+      fig_ht  = fig_ht,
+      fig_wth = fig_wth,
+      ...
+    )
+}
+
+#' Dynamically specify chunk options
+#' cleaned up version of this stackoverflow solution:
+#' https://stackoverflow.com/questions/61620768/rmarkdown-explicitly-specify-the-figure-size-of-a-plot-within-a-chunk
+subchunkify <- function(gg, ttl, fig_ht = 6, fig_wth = 10, dpi = 100) {
+  hdr_1 <- str_c("\n\n```{r ", ttl, ", fig.height = ", fig_ht)
+  hdr_2 <- str_c(", fig.width = ", fig_wth, ", dpi = ", dpi, ", echo = FALSE}\n\n")
+  ftr   <- str_c("gg\n\n```\n\n")
+  
+  chnk <- str_c(hdr_1, hdr_2, ftr)
+  chnk <- knitr::knit(text = chnk, quiet = TRUE)
+  
+  cat(chnk)
+}
+
+#' Create UMAP and boxplots summarizing FcRn expression
+#' 
+#' @param dat data.frame containing data to plot
+#' @param ttl Plot title
+#' @param gene Gene signal to plot
+#' @param ylab y-axis label
+#' @param plot_clrs Plot colors
+#' @param pt_size Point size for UMAP projections
+#' @param rel_h Relative heights of the UMAP (1st value) and boxplots
+#' (2nd value)
+#' @return ggplot2 object
+create_fcrn_umap_figs <- function(dat, ttl = NULL, gene, ylab = NULL,
+                                  plt_clrs = clrs, pt_size = 0.5,
+                                  rel_h = c(1, 1)) {
+  
+  # N labels
+  nlabs <- get_nlab_fun(dat, "cell_type")
+
+  # Create UMAP
+  umap <- dat %>%
+    ggplot(aes(UMAP_1, UMAP_2, color = cell_type)) +
+    geom_point(size = pt_size) +
+    scale_color_manual(values = plt_clrs) +
+    ggtitle(label = ttl) +
+    theme_nothing() +
+    theme(
+      aspect.ratio = 1,
+      plot.title   = element_text()
+    )
+  
+  # Set plot levels based on signal
+  plt_lvls <- dat %>%
+    group_by(cell_type) %>%
+    summarize(
+      stats = list(boxplot.stats(!!sym(gene))),
+      stats = map(stats, ~ .x[[1]]),
+      max   = max(!!sym(gene))
+    ) %>%
+    mutate(
+      med = map_dbl(stats, ~ .x[3]),
+      q3  = map_dbl(stats, ~ .x[4]),
+      q4  = map_dbl(stats, ~ .x[5])
+    ) %>%
+    select(-stats) %>%
+    arrange(desc(med), desc(q3), desc(q4), desc(max)) %>%
+    pull(cell_type)
+  
+  # Create boxplots
+  min_cells <- 20
+  
+  bx_dat <- dat %>%
+    mutate(cell_type = fct_relevel(cell_type, rev(plt_lvls))) %>%
+    group_by(cell_type) %>%
+    filter(n() > min_cells) %>%
+    ungroup()
+    
+  boxes <- bx_dat %>%
+    ggplot(aes(cell_type, !!sym(gene), fill = cell_type)) +
+    geom_boxplot(outlier.size = 0.3) +
+    labs(y = ylab) +
+    coord_flip() +
+    scale_fill_manual(values = plt_clrs) +
+    scale_x_discrete(labels = nlabs) +
+    theme(
+      aspect.ratio    = 1.4,
+      legend.position = "none",
+      axis.title.y    = element_blank(),
+      axis.text.y     = element_text(size = 12, hjust = 1)
+    )
+  
+  # Create final figure
+  res <- plot_grid(
+    umap, boxes,
+    ncol = 1,
+    rel_heights = rel_h
+  )
+  
+  res
+}
+
+```
+
+```{r "references"}
+# LEC reference
+ref_lec <- ref_immgen[, grepl("^Endothelial cells", colnames(ref_immgen))]
+ref_lec <- ref_lec[rownames(ref_lec) %in% rownames(ref_LEC_xiang), ]
+
+colnames(ref_lec) <- colnames(ref_lec) %>%
+  str_replace("Endothelial cells \\(BEC\\)", "BEC")
+
+ref_LEC_xiang <- ref_LEC_xiang[rownames(ref_lec), ]
+
+stopifnot(identical(rownames(ref_LEC_xiang), rownames(ref_lec)))
+
+ref_lec <- cbind(ref_LEC_xiang, ref_lec)
+ref_lec <- ref_lec[, !grepl("^Endothelial cells", colnames(ref_lec))]
+
+# Fibroblast/stromal cell reference
+ref_frc <- ref_immgen[, grepl("^Fibroblast", colnames(ref_immgen))]
+ref_frc <- ref_frc[rownames(ref_frc) %in% rownames(ref_lymphnodestromal), ]
+
+ref_lymphnodestromal <- ref_lymphnodestromal[rownames(ref_frc), ]
+
+stopifnot(identical(rownames(ref_lymphnodestromal), rownames(ref_frc)))
+
+ref_frc <- cbind(ref_lymphnodestromal, ref_frc)
+
+# Combined Immgen/DC reference
+rownames(ref_mousespleenDC) <- str_to_title(rownames(ref_mousespleenDC))
+
+shared_gns    <- intersect(rownames(ref_immgen), rownames(ref_mousespleenDC))
+ref_immgen_dc <- cbind(ref_immgen[shared_gns, ], ref_mousespleenDC[shared_gns, ])
+```
+
+```{r "load models"}
+# Load RF models
+ag_mods  <- qread(here(params$mod_dir, "ag-high_best_models.qs"))
+ag_feats <- qread(here(params$mod_dir, "ag-high_features.qs"))
+
+all_ag_feats <- ag_feats %>%
+  unlist(use.names = FALSE) %>%
+  unique()
+```
+
+```{r "load human/mouse homologs"}
+# Get human/mouse homologs
+# get server error when using default host
+# always run this code
+hfile  <- here(params$ref_dir, "hlogs.tsv.gz")
+host   <- "https://dec2021.archive.ensembl.org"
+biomrt <- "ensembl"
+
+h_mart <- useEnsembl(biomrt, dataset = "hsapiens_gene_ensembl",  host = host)
+m_mart <- useEnsembl(biomrt, dataset = "mmusculus_gene_ensembl", host = host)
+
+hlogs <- getLDS(
+  filters     = "external_gene_name",
+  values      = all_ag_feats,
+  attributes  = c("external_gene_name", "entrezgene_id"),
+  attributesL = c("external_gene_name", "entrezgene_id"),
+  mart        = h_mart,
+  martL       = m_mart
+)
+
+# Format columns
+# mouse columns end in '.1'
+hlogs <- hlogs %>%
+  rename_with(.cols = matches("[^1]$"),   ~ str_c(.x, "_hs")) %>%
+  rename_with(.cols = ends_with(".1"),       ~ str_replace(.x, ".1$", "_mm")) %>%
+  rename_with(.cols = matches("^Gene.name"), ~ str_replace(.x, "^[^_]+", "gene")) %>%
+  rename_with(.cols = matches("^NCBI"),      ~ str_replace(.x, "^[^_]+", "entrez")) %>%
+  as_tibble() %>%
+  mutate(across(everything(), ~ str_replace(.x, "^$", as.character(NA)))) %>%
+  distinct(gene_mm, gene_hs, entrez_hs)
+```
+
+```{r "load lei data"}
+# Process matrices
+so_file  <- here(params$so_dir, "lei.qs")
+data_dir <- here("data/lei")
+
+if (!file.exists(so_file)) {
+  sams <- dir(data_dir, pattern = "^GSM[A-Z0-9]+")
+
+  nms <- sams %>%
+    map_chr(~ {
+      here(data_dir, .x) %>%
+        dir(pattern = str_c("^", .x)) %>%
+        str_remove(str_c("^", .x, "[_\\.]")) %>%
+        str_remove("[_\\.][a-zA-Z]+.(tsv|mtx).gz$") %>%
+        unique()
+    })
+  
+  sams <- set_names(sams, nms)
+  
+  so <- sams %>%
+    imap(~ {
+      obj <- .x %>%
+        here(data_dir, .) %>%
+        Read10X() %>%
+        CreateSeuratObject(project = .y) %>%
+        mutate_meta(mutate, sample = .y)
+        
+      obj %>%
+        NormalizeData() %>%
+        run_m3drop(var_p = 0.05) %>%
+        ScaleData() %>%
+        RunPCA() %>%
+        RunUMAP(
+          dims = 1:40,
+          umap.method = "umap-learn"
+        ) %>%
+        cluster_RNA(
+          rerun_pca  = FALSE,
+          umap_meta  = FALSE,
+          resolution = c(0.6, 1, 3)
+        )
+    })
+  
+  # Merge objects
+  # recluster
+  so <- merge(
+    so[[1]], so[-1],
+    add.cell.ids = names(so)
+  )
+  
+  so <- so %>%
+    run_m3drop(var_p = 0.05) %>%
+    ScaleData() %>%
+    RunPCA() %>%
+    RunUMAP(
+      dims = 1:40,
+      umap.method = "umap-learn"
+    ) %>%
+    cluster_RNA(
+      rerun_pca  = FALSE,
+      umap_meta  = FALSE,
+      resolution = c(0.6, 1, 3, 5)
+    ) %>%
+    clustify(
+      ref_mat     = ref_immgen,
+      cluster_col = "RNA_snn_res.5"
+    )
+  
+  qsave(so, so_file)
+  
+  rm(so)
+}
+
+lei_so <- qread(so_file)
+
+# Format cell type labels
+lei_so <- lei_so %>%
+  mutate_meta(
+    mutate,
+    cell_type = if_else(
+      grepl("^Endothelial cells", type),
+      str_extract(type, "(?<=\\().+(?=\\))"),
+      str_remove(type, "\\(.+")
+    )
+  )
+```
+
+```{r "load xu data"}
+# Process matrices
+Sys.setenv("VROOM_CONNECTION_SIZE" = 1000000)
+
+so_file  <- here(params$so_dir, "xu.qs")
+data_dir <- here("data/xu")
+
+if (!file.exists(so_file)) {
+  sams <- dir(data_dir, pattern = "^GSM[A-Z0-9]+")
+
+  nms <- sams %>%
+    str_extract("(?<=GSM[0-9]{7}_).+(?=.expression_matrix.txt.gz)")
+    
+  sams <- set_names(sams, nms)
+  
+  so <- sams %>%
+    imap(~ {
+      obj <- .x %>%
+        here(data_dir, .) %>%
+        read_tsv(skip = 1, col_names = FALSE) %>%
+        column_to_rownames("X1") %>%
+        as.sparse()
+      
+      colnames(x) <- here(data_dir, sams[1]) %>%
+        read_tsv(n_max = 0) %>%
+        colnames()
+  
+      obj <- obj %>%
+        CreateSeuratObject(project = .y) %>%
+        mutate_meta(mutate, sample = .y)
+        
+      obj %>%
+        NormalizeData() %>%
+        run_m3drop(var_p = 0.05) %>%
+        ScaleData() %>%
+        RunPCA() %>%
+        RunUMAP(
+          dims = 1:40,
+          umap.method = "umap-learn"
+        ) %>%
+        cluster_RNA(
+          rerun_pca  = FALSE,
+          umap_meta  = FALSE,
+          resolution = c(0.6, 1, 3)
+        )
+    })
+  
+  # Merge objects
+  # recluster
+  so <- merge(so[[1]], so[-1], add.cell.ids = names(so))
+  
+  so <- so %>%
+    run_m3drop(var_p = 0.05) %>%
+    ScaleData() %>%
+    RunPCA() %>%
+    RunUMAP(
+      dims = 1:40,
+      umap.method = "umap-learn"
+    ) %>%
+    cluster_RNA(
+      rerun_pca  = FALSE,
+      umap_meta  = FALSE,
+      resolution = c(0.6, 1, 3, 5)
+    )
+  
+  so <- so %>%
+    clustify(
+      ref_mat     = ref_LEC,
+      cluster_col = "RNA_snn_res.5"
+    )
+  
+  # # Format cell type labels
+  # so <- so %>%
+  #   mutate_meta(
+  #     mutate,
+  #     cell_type = if_else(
+  #       grepl("^Endothelial cells", type),
+  #       str_extract(type, "(?<=\\().+(?=\\))"),
+  #       str_remove(type, "\\(.+")
+  #     )
+  #   )
+  
+  qsave(so, so_file)
+  
+  rm(so)
+}
+
+lei_so <- qread(so_file)
+```
+
+```{r "load takeda data"}
+# Data from Takeda et al. Immunity 2019
+# sample key
+sam_key <- c(
+  GSM3535276 = "Ax LN-1",
+  GSM3535277 = "Ax LN-2",
+  GSM3535278 = "Ax LN-3",
+  GSM3535279 = "Ax LN-4",
+  GSM3535280 = "HN LN-1",
+  GSM3535281 = "HN LN-2"
+)
+
+# Process matrices
+hu_file  <- here(params$so_dir, "takeda.qs")
+data_dir <- here("data/takeda")
+
+if (!file.exists(hu_file)) {
+  sams <- dir(data_dir, pattern = "^GSM[A-Z0-9]+")
+
+  takeda_so <- sams %>%
+    set_names() %>%
+    map(~ {
+      .x %>%
+        here("data", .) %>%
+        Read10X() %>%
+        CreateSeuratObject(project = .x) %>%
+        
+        NormalizeData() %>%
+        run_m3drop(var_p = 0.05) %>%
+        ScaleData() %>%
+        RunPCA() %>%
+        RunUMAP(dims = 1:40) %>%
+        cluster_RNA(rerun_pca = FALSE, umap_meta = FALSE) %>%
+        clustify(
+          ref_mat = ref_LEC,
+          cluster_col = "seurat_clusters"
+        )
+    })
+  
+  qsave(takeda_so, hu_file)
+}
+
+takeda_so <- qread(hu_file)
+
+# Merge objects
+# set orig.ident since this was not done when the objects were generated
+takeda_so <- merge(
+  takeda_so[[1]], takeda_so[-1],
+  add.cell.ids = names(takeda_so)
+)
+
+takeda_so <- takeda_so %>%
+  mutate_meta(~ {
+    .x %>%
+      mutate(
+        orig.ident = str_extract(.cell_id, "^[^_]+"),
+        sample     = sam_key[orig.ident]
+      )
+  })
+```
+
+```{r "theme"}
+# UMAP themes
+umap_theme <- theme(
+  aspect.ratio    = 0.9,
+  legend.position = "bottom",
+  axis.title      = element_blank(),
+  axis.ticks      = element_blank(),
+  axis.text       = element_blank(),
+  panel.border    = element_rect(color = NA, fill = NA)
+)
+
+umap_theme_2 <- umap_theme +
+  theme(panel.border = element_rect(color = "grey85"))
+
+# Ag colors
+ag_clrs <- c(
+  `Ag-low` = "lightblue",
+  `Ag-competent` = "#A40000"
+)
+```
+
+```{r "predict Ag-competent cLECs"}
+# Pull data for RF features
+# MISSING 28/122 FEATURES
+rf_feats <- unlist(ag_feats$cLEC, use.names = FALSE)
+
+hu_feats <- hlogs %>%
+  filter(
+    gene_mm %in% rf_feats,
+    gene_hs %in% rownames(hu_so)
+  ) %>%
+  distinct(gene_mm, gene_hs)
+
+hu_feats <- set_names(hu_feats$gene_mm, hu_feats$gene_hs)
+
+missing_feats <- rf_feats[!rf_feats %in% hu_feats]
+
+# Filter LEC subsets
+# LEC1 == cLECs
+# rename columns with mouse gene names
+# add zeros for missing genes
+# need to adjust gene names to remove "-" and add an "x" for genes starting with
+#   a number
+hu_dat <- hu_so %>%
+  FetchData(c("type", names(hu_feats))) %>%
+  # filter(type == "LEC1") %>%
+  dplyr::select(-type)
+
+colnames(hu_dat) <- hu_feats[colnames(hu_dat)]
+
+hu_dat[, missing_feats] <- 0
+
+nms      <- colnames(hu_dat)
+nms      <- str_replace(nms, "-", "_")
+idx      <- grepl("^[0-9]", nms)
+nms[idx] <- str_c("x", nms[idx])
+
+colnames(hu_dat) <- nms
+
+# Predict Ag-competent cLECs
+rf_mod <- ag_mods %>%
+  filter(subtype == "cLEC") %>%
+  pull(mod)
+
+rf_res <- rf_mod[[1]] %>%
+  predict(hu_dat)
+
+hu_pred <- hu_dat %>%
+  mutate(pred = rf_res$predictions) %>%
+  dplyr::select(pred)
+
+hu_so <- hu_so %>%
+  AddMetaData(hu_pred) %>%
+  mutate_meta(
+    mutate,
+    pred = recode(pred, low = "Ag-low", high = "Ag-competent")
+  )
+
+# Add module scores
+key <- set_names(names(hu_feats), unname(hu_feats))
+
+hu_modules <- ag_feats$cLEC %>%
+  map(~ na.omit(unname(key[.x])))
+
+module_nms <- set_names(
+  str_c(names(hu_modules), seq_along(hu_modules)),
+  names(hu_modules)
+)
+
+hu_so <- hu_so %>%
+  mutate_meta(dplyr::select, -any_of(c("low", "high"))) %>%
+  AddModuleScore(features = hu_modules, name = names(hu_modules)) %>%
+  mutate_meta(rename, !!!module_nms)
+```
+
+<br>
+
+## Lei
+
+Data from [Lei et al.](https://doi.org/10.1084/jem.20221847) were downloaded
+and processed.
+
+UMAP projections show cell type annotations, LECs and BECs are circled.
+
+```{r "cell types", fig.width = 8, fig.height = 6}
+# Plot colors
+clrs <- unique(lei_so$cell_type)
+
+clrs <- set_names(
+  as.character(met.brewer("Austria", n_distinct(clrs))),
+  clrs
+)
+
+clrs["unassigned"] <- "grey65"
+
+# Create UMAPs
+top <- list(Inf, c("LEC", "BEC"))
+
+circ_dat <- lei_so@meta.data %>%
+  filter(cell_type %in% c("LEC", "BEC")) %>%
+  summarize(across(starts_with("UMAP_"), mean), .groups = "drop")
+
+u <- lei_so %>%
+  plot_scatter(
+    "cell_type",
+    group_col   = "sample",
+    plot_colors = clrs,
+    size        = 0.2,
+    top         = Inf
+  ) +
+  geom_circle(
+    aes(x0 = UMAP_1, y0 = UMAP_2, r  = 2.5),
+    data     = circ_dat,
+    color    = "black",
+    linetype = 2
+  ) +
+  umap_theme_2 +
+  theme(legend.title = element_blank())
+
+u
+```
+
+<br>
+
+Expression of key cell type markers is shown below.
+
+```{r "type markers", fig.width = 11, fig.height = 8}
+gns <- c(
+  "Ptprc",
+  "Cd3d",  "Cd19",
+  "Pdpn",  "Pecam1",
+  "Prox1", "Lyve1"
+)
+
+marker_plt <- gns %>%
+  map(~ {
+    lei_so %>%
+      plot_violin(
+        .x,
+        cluster_col    = "cell_type",
+        plot_colors    = clrs,
+        scale          = "width",
+        draw_quantiles = c(0.25, 0.75)
+      )
+  }) %>%
+  plot_grid(
+    plotlist = .,
+    ncol     = 2,
+    align    = "vh",
+    axis     = "trbl"
+  )
+
+marker_plt
+```
+
+---
+
+<br>
+
+<br>
+
+## Takeda
+
+Data from [Takeda et al.](https://doi.org/10.1016/j.immuni.2019.06.027) were
+downloaded and processed.
+This study includes scRNA-seq data for 4 axillary lymph nodes (Ax LN) and 2
+head and neck lymph nodes (HN LN).
+Ag-competent cells were predicted for human cLECs (LEC1) using a random forest
+model trained using mouse day 14 cLECs.
+
+The fraction of predicted Ag-competent cells is shown below for each sample.
+
+```{r "takeda colors"}
+# Cell type colors
+typs <- unique(hu_so$type)
+
+pal  <- "Austria"
+clrs <- as.character(met.brewer(pal, length(typs)))
+clrs <- set_names(clrs, typs)
+```
+
+```{r "fraction Ag-competent cLECs", fig.width = 8, fig.height = 3}
+# Plot fraction Ag-competent cLECs
+hu_so@meta.data %>%
+  filter(type == "LEC1") %>%
+  group_by(type, sample) %>%
+  
+  summarize(
+    frac_high = sum(pred == names(ag_clrs)[[2]]) / n()
+  ) %>%
+  ggplot(aes(sample, frac_high)) +
+  geom_col(color = "black", fill = ag_clrs[[2]]) +
+  
+  # facet_wrap(~ type) +
+  
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(y = "fraction Ag-competent cLECs") +
+  djvdj_theme() +
+  theme(
+    aspect.ratio = 1,
+    axis.title.x = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1)
+  )
+
+# # Calculate mean expression of Ag-high module
+# # BECs also show similar proportion of Ag-high cells as LEC1
+# # while BECs show lower overall expression of the Ag-high cLEC module,
+# #   they also show lower overall expression of the Ag-low cLEC module
+# gns <- hu_modules$low
+# 
+# mean_expr <- hu_so %>%
+#   FetchData(c("sample", "type", "pred", gns)) %>%
+#   as_tibble(rownames = "cell_id") %>%
+#   
+#   pivot_longer(all_of(gns)) %>%
+#   group_by(cell_id) %>%
+#   summarize(mean_module_expression = mean(value), .groups = "drop") %>%
+#   column_to_rownames("cell_id")
+# 
+# hu_so <- hu_so %>%
+#   AddMetaData(mean_expr)
+# 
+# hu_so@meta.data %>%
+#   filter(type %in% c("BEC", "LEC1")) %>%
+#   ggplot(aes(sample, mean_module_expression, fill = pred)) +
+#   geom_boxplot() +
+#   facet_wrap(~ type) +
+#   djvdj_theme()
+```
+
+<br>
+
+The total number of predicted Ag-competent cells is shown below for each sample.
+
+```{r "total Ag-competent cells", fig.width = 8, fig.height = 3}
+# Plot total number of Ag-low/high cells per sample
+hu_so@meta.data %>%
+  filter(type == "LEC1") %>%
+  mutate(pred = fct_relevel(pred, names(ag_clrs))) %>%
+  ggplot(aes(sample, fill = pred)) +
+  geom_bar(color = "black") +
+  scale_fill_manual(values = ag_clrs) +
+  guides(fill = guide_legend(title = "predicted Ag class")) +
+  djvdj_theme() +
+  theme(
+    aspect.ratio = 1,
+    axis.text.x  = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_blank()
+  )
+```
+
+<br>
+
+The expression of Ag-low and Ag-high gene modules is shown for predicted Ag-low
+and Ag-competent cells.
+
+```{r "Ag modules", fig.width = 8, fig.height = 3}
+# Plot Ag-low/high gene modules
+hu_so@meta.data %>%
+  filter(type == "LEC1") %>%
+  mutate(pred = fct_relevel(pred, names(ag_clrs))) %>%
+  pivot_longer(all_of(names(module_nms))) %>%
+  ggplot(aes(sample, value, fill = pred)) +
+  geom_boxplot(outlier.size = 0.2, notch = TRUE) +
+  facet_wrap(
+    ~ name, nrow = 1,
+    labeller = as_labeller(~ str_c("Ag-", .x, " module"))
+  ) +
+  scale_fill_manual(values = ag_clrs) +
+  guides(fill = guide_legend(title = "predicted Ag class")) +
+  labs(y = "module expression") +
+  djvdj_theme() +
+  theme(
+    aspect.ratio = 0.7,
+    axis.title.x = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1)
+  )
+```
+
+<br>
+
+UMAP projections show predicted Ag-low and Ag-competent cLECs for each sample.
+
+```{r "UMAP projections", fig.width = 8, fig.height = 6.5}
+ag_clrs <- c(
+  `Ag-low` = "black",
+  `Ag-competent` = "#0072B2"
+)
+
+# Plot Ag classes for each sample
+hu_so %>%
+  mutate_meta(
+    mutate,
+    pred = ifelse(type != "LEC1", as.character(NA), as.character(pred))
+  ) %>%
+  plot_scatter(
+    "pred", group_col = "sample",
+    size        = 0.1,
+    plot_lvls   = c("Ag-low", "Ag-competent"),
+    plot_colors = ag_clrs,
+    n_label     = "corner"
+  ) +
+  guides(color = guide_legend(
+    title = "predicted cLEC\nAg class",
+    override.aes = list(size = 4))
+  ) +
+  umap_theme_2 +
+  theme(
+    aspect.ratio = 0.9,
+    legend.position = "bottom"
+  )
+```
+
+<br>
+
+ACKR4 expression is shown below for each cell type identified for each sample.
+
+```{r "ACKR4 expression", fig.width = 8, fig.height = 6}
+hu_so %>%
+  plot_violin(
+    "ACKR4", "type",
+    group_col    = "sample",
+    method       = "boxplot",
+    plot_colors  = clrs,
+    n_label      = "none",
+    outlier.size = 0.2,
+    color = "black",
+    alpha = 0.7
+  ) +
+  theme(aspect.ratio = 0.7)
+```
+
+<br>
+
+```{r}
+sessionInfo()
+```

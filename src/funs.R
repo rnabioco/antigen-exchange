@@ -806,6 +806,37 @@ cluster_RNA <- function(sobj_in, assay = "RNA", resolution = 0.6, dims = 1:40,
   res
 }
 
+#' Find variable features with M3Drop
+#' 
+#' @param sobj_in Seurat object.
+#' @param assay Name of assay in object.
+#' @param var_p p-value cutoff for variable features.
+#' @return Seurat object with variable features added
+#' @export
+run_m3drop <- function(sobj_in, assay = "RNA", var_p = 0.05) {
+  
+  # counts cannot be log-normalized
+  counts <- sobj_in %>%
+    GetAssayData(
+      slot  = "counts",
+      assay = assay
+    ) %>%
+    M3DropConvertData(
+      is.log    = FALSE,
+      is.counts = TRUE
+    )
+  
+  var_genes <- counts %>%
+    M3DropFeatureSelection(
+      mt_threshold  = var_p,
+      suppress.plot = TRUE
+    )
+  
+  VariableFeatures(sobj_in) <- rownames(var_genes)
+  
+  sobj_in
+}
+
 #' Subset Seurat objects based on cell type
 #' 
 #' @param sobj_in Seurat object.
@@ -827,23 +858,8 @@ subset_sobj <- function(sobj_in, ..., assay = "RNA", var_p = 0.05, rsln = 1,
   
   # Find variable features with M3Drop
   # counts cannot be log-normalized
-  counts <- res %>%
-    GetAssayData(
-      slot  = "counts",
-      assay = assay
-    ) %>%
-    M3DropConvertData(
-      is.log    = FALSE,
-      is.counts = TRUE
-    )
-  
-  var_genes <- counts %>%
-    M3DropFeatureSelection(
-      mt_threshold  = var_p,
-      suppress.plot = TRUE
-    )
-  
-  VariableFeatures(res) <- rownames(var_genes)
+  res <- res %>%
+    run_m3drop(assay = assay, var_p = var_p)
   
   # Cluster cells
   res <- res %>%
