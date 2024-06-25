@@ -26,7 +26,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
