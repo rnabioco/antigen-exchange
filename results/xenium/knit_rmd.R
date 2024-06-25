@@ -1,6 +1,8 @@
+renv::use(lockfile = "../../renv.lock")
+
+library(here)
 library(rmarkdown)
 library(tidyverse)
-library(here)
 
 slides <- c(
   "1" = "output-XETG00230__0022624__[A-Z]__",

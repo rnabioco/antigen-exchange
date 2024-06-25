@@ -16,10 +16,10 @@ params:
   so_dir:      "~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/2024-03-22/sobjs"
   ref_dir:     "ref"
   clst_rsln:   10
-  # slide_id:    1
-  # slide_regex: "output-XETG00230__0022624__[A-Z]__"
-  slide_id:    2
-  slide_regex: "output-XETG00230__0022841__[A-Z]__"
+  slide_id:    1
+  slide_regex: "output-XETG00230__0022624__[A-Z]__"
+  # slide_id:    2
+  # slide_regex: "output-XETG00230__0022841__[A-Z]__"
   samples:
     value:
       A: "6wk"
@@ -2612,6 +2612,23 @@ plot_grid(
   align    = "vh",
   axis     = "tl"
 )
+```
+
+```{r "ICAM EXPRESSION", eval = FALSE}
+interacting_lecs <- xen@meta.data %>%
+  filter(cell_type %in% dcs & lec_dist == 0) %>%
+  pull(lec_id) %>%
+  unique()
+
+dat <- xen %>%
+  mutate_meta(
+    mutate,
+    dc_interaction = .cell_id %in% interacting_lecs
+  ) %>%
+  subset(cell_type == "LEC" & Ag_class == "Ag-high")
+  
+dat %>%
+  plot_violin("Icam1", "dc_interaction", method = "boxplot")
 ```
 
 ---
