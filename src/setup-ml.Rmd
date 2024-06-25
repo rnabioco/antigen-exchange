@@ -232,8 +232,8 @@ train_rf <- function(df_in, data_clmn, param_lst,
     
     args$formula     <- as.formula(str_c(data_clmn, " ~ ."))
     args$data        <- rf_train
-    args$importance  <- args$importance %||% "impurity_corrected"
-    args$seed        <- args$seed %||% 42
+    args$importance  <- args$importance  %||% "impurity_corrected"
+    args$seed        <- args$seed        %||% 42
     args$num.threads <- args$num.threads %||% 12
     args$probability <- args$probability %||% FALSE
     
@@ -256,7 +256,8 @@ train_rf <- function(df_in, data_clmn, param_lst,
         max()
       
       feat_p    <- max(max_p, feat_p)
-      key_feats <- names(key_feats[key_feats < feat_p])
+      feats_p   <- key_feats[key_feats < feat_p]
+      key_feats <- names(feats_p)
       n_feats   <- length(key_feats)
       
       # Re-train model
@@ -324,6 +325,7 @@ train_rf <- function(df_in, data_clmn, param_lst,
         mutate(
           mod          = list(mod),
           feats        = list(key_feats),
+          feats_p      = list(feats_p),
           training_bcs = list(rownames(rf_train))
         )
     }
@@ -1570,31 +1572,62 @@ rf_stats <- rf_stats %>%
   slice_max(F1, n = 100, with_ties = FALSE) %>%
   ungroup()
 
+
+
+## !! TRY RE-RUNNING FROM HERE !! ##
 # Train top models
 rf_mods <- rf_stats %>%
-  imap_dfr(~ {
+  pmap_dfr(~ {
+    args <- list(...)
+    typ  <- args$subtype
+    
     feats <- degs %>%
-      filter(subtype == .y) %>%
+      filter(subtype == typ) %>%
       pull(feature) %>%
       unique()
 
     rf_dat <- lec_so %>%
-      subset(subtype == .y & mouse == rf_mouse) %>%
+      subset(subtype == typ & mouse == rf_mouse) %>%
+      FetchData(unique(c(rf_dat_clmn, feats)))
+    
+    stats <- c(
+      "mtry", "min.node.size",
+      "num.trees", "low", "high"
+    )
+    
+    rf_dat %>%
+      train_rf(
+        data_clmn       = rf_dat_clmn,
+        param_lst       = args[stats],
+        include_objects = TRUE
+      ) %>%
+      mutate(subtype = args$subtype)
+  })
+
+# Train top models
+rf_mods_best <- rf_mods_best %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    typ  <- args$subtype
+    
+    feats <- degs %>%
+      filter(subtype == typ) %>%
+      pull(feature) %>%
+      unique()
+
+    rf_dat <- lec_so %>%
+      subset(subtype == typ & mouse == rf_mouse) %>%
       FetchData(unique(c(rf_dat_clmn, feats)))
 
-    .x %>%
-      pmap_dfr(~ {
-        args  <- list(...)
-        stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
-
-        rf_dat %>%
-          train_rf(
-            data_clmn       = rf_dat_clmn,
-            param_lst       = args[stats],
-            include_objects = TRUE
-          ) %>%
-          mutate(subtype = args$subtype)
-      })
+    stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
+    
+    rf_dat %>%
+      train_rf(
+        data_clmn       = rf_dat_clmn,
+        param_lst       = args[stats],
+        include_objects = TRUE
+      ) %>%
+      mutate(subtype = args$subtype)
   })
 ```
 
@@ -1625,7 +1658,7 @@ chikv_dat <- chikv_dat %>%
   rename_with(~ str_c("x", .x), matches("^[0-9]"))
 ```
 
-```{r "assess performance using CHIKV data", eval = run_rf}
+```{r "RF performance using CHIKV data", eval = run_rf}
 # Format CHIKV RF data
 # need to add zeros for missing genes
 chikv_so <- qread(params$chikv_so) %>%
@@ -1751,8 +1784,10 @@ rf_mods_best <- rf_mods %>%
   group_by(subtype) %>%
   dplyr::slice(1) %>%
   ungroup()
+```
 
-# Save filtered models
+```{r "save RF models", eval = run_rf}
+# Save models
 rf_mods %>%
   qsave(here(params$mod_dir, "ag-high_models.qs"))
 
@@ -1772,8 +1807,8 @@ rf_feats <- rf_mods_best %>%
     
     fts <- args$feats %>%
       unlist(use.names = FALSE) %>%
-      str_replace_all("_", "-") %>%
-      str_remove("^x")
+      str_replace_all("_", "-") %>%  # names were adjusted when training models
+      str_remove("^x")               # fix names here
     
     degs %>%
       filter(feature %in% fts) %>%
@@ -1902,7 +1937,7 @@ chikv_preds %>%
   write_tsv(here(params$mod_dir, "ag-high_chikv_preds.tsv.gz"))
 ```
 
-```{r "load models"}
+```{r "load RF models"}
 # Load saved objects
 rf_mods_best <- qread(here(params$mod_dir, "ag-high_best_models.qs"))
 degs         <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))

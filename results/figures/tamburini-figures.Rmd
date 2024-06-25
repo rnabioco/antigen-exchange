@@ -1208,12 +1208,12 @@ go_res <- rf_grps %>%
 # Filter GO terms
 go_sig <- go_res %>%
   filter(p.adjust < 0.05) %>%
-  arrange(p.adjust) %>%
-  group_by(Cluster, pred_grp) %>%
-  slice(1:15)
+  arrange(p.adjust)
 
 # Plot top GO terms
 go_fig <- go_sig %>%
+  group_by(Cluster, pred_grp) %>%
+  slice(1:15) %>%
   split(.$pred_grp) %>%
   imap(~ {
     dat <- .x %>%
@@ -1347,6 +1347,98 @@ figS3 <- plot_grid(
 )
 
 figS3
+```
+
+<br>
+
+<br>
+
+### Table S1
+
+Stats are included for each random forest model.
+
+```{r}
+rf_clmns <- c(
+  "F1", "Balanced Accuracy",
+  "Precision", "Recall",
+  "mtry", "min.node.size", "num.trees"
+)
+
+tbl_s1 <- rf_mods_best %>%
+  filter(subtype %in% rf_typs) %>%
+  select(cell_type = subtype, all_of(rf_clmns)) %>%
+  mutate(cell_type = fct_relevel(cell_type, rf_typs)) %>%
+  arrange(cell_type)
+
+tbl_s1 %>%
+  write_tsv(here(params$table_dir, "table_s1.tsv"))
+
+tbl_s1
+```
+
+<br>
+
+<br>
+
+### Table S2
+
+Genes used to train random forest models are included along with p-values
+indicating overall feature importance.
+
+```{r}
+tbl_s2 <- rf_mods_best %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(subtype = fct_relevel(subtype, rf_typs)) %>%
+  arrange(subtype) %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    typ  <- as.character(args$subtype)
+    
+    gns <- args$feats_p %>%
+      names() %>%
+      str_replace_all("_", "-") %>%  # names were adjusted when training models
+      str_remove("^x")               # fix names here
+    
+    tibble(
+      cell_type = args$subtype,
+      gene      = gns,
+      p_value   = args$feats_p
+    ) %>%
+      mutate(
+        Ag_class = case_when(
+          gene %in% rf_feats[[typ]]$high ~ "Ag-high",
+          gene %in% rf_feats[[typ]]$low  ~ "Ag-low"
+        )
+      )
+  })
+
+tbl_s2 %>%
+  write_tsv(here(params$table_dir, "table_s2.tsv"))
+
+tbl_s2
+```
+
+<br>
+
+<br>
+
+### Table S3
+
+Biological function and cellular component gene ontology terms are shown for
+Ag-low and Ag-high cells.
+
+```{r}
+tbl_s3 <- go_sig %>%
+  rename(Ag_class = pred_grp, cell_type = Cluster) %>%
+  mutate(Ag_class = str_c("Ag-", Ag_class)) %>%
+  arrange(cell_type, Ag_class, p.adjust) %>%
+  select(-bgID) %>%
+  relocate(Ag_class, .after = cell_type)
+  
+tbl_s3 %>%
+  write_tsv(here(params$table_dir, "table_s3.tsv"))
+
+tbl_s3
 ```
 
 ---
