@@ -1,0 +1,1715 @@
+---
+title: "Antigen Tracking Figures"
+author: "Ryan Sheridan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc:            true
+    toc_float:      true
+    toc_depth:      4
+    df_print:       "paged"
+    code_folding:   "hide"
+    self_contained: true
+    highlight:      "kate"
+params:
+  template_dir:  "src"                                                     # template Rmarkdowns
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2023-11-01" # ML models
+  geomx_dir:     "results/geomx"
+  chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
+  ref_dir:       "ref"                                                     # clustifyr references
+  table_dir:     "results/tables"
+  sample_info:   "sample_info.xlsx"
+  res_dir:                                                
+    value:
+      exp-0: "~/Projects/antigen-tracking/results"
+      exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
+      exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r "setup", include = FALSE}
+# Default chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo    = FALSE,
+  dpi     = 300
+)
+
+options(java.parameters = "-Xmx12000m")
+
+knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
+knitr::knit(here::here(params$template_dir, "setup-ml.Rmd"), "")
+knitr::knit(here::here(params$template_dir, "setup-geomx.Rmd"), "")
+
+# Plot parameters
+min_cells <- 5
+rf_typs   <- c("cLEC", "fLEC", "Collecting")
+rf_tms    <- c(14, 21, 42)
+
+ag_modules <- rf_typs %>%
+  map(str_c, c("_high", "_low")) %>%
+  unlist()
+
+# Keys for naming labels
+ag_clmns <- c("Ag_3wk_score", "Ag_6wk_score")
+
+ag_labs <- set_names(
+  c("Ag-score (21 day)", "Ag-score (42 day)"),
+  ag_clmns
+)
+
+ag_labs_2 <- set_names(
+  c("Ag-score\n21 day", "Ag-score\n42 day"),
+  ag_clmns
+)
+
+# Mouse key
+m_key <- c(
+  d2        = "2 day",
+  d14       = "14 day",
+  `3wk`     = "21 day",
+  `6wk`     = "42 day",
+  `6wk-3wk` = "dual"
+)
+
+# Experiment to show in main figures
+ag_exps <- list(LEC = "exp-1", DC = "exp-2")
+
+# LEC/DC subset colors
+subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
+
+# Adjust theme
+txt_pt1  <- 10
+txt_pt2  <- 12
+ttl_pt1  <- 14
+ttl_pt2  <- 18
+ln_pt    <- 0.5
+ln_col   <- "grey85"
+ln_col_2 <- "grey75"
+cir_size <- 3.5
+sqr_size <- 4
+
+txt_theme_1 <- theme(
+  strip.text   = element_text(size = ttl_pt2),
+  legend.text  = element_text(size = ttl_pt1),
+  axis.title   = element_text(size = ttl_pt2),
+  axis.text    = element_text(size = txt_pt2, color = "black"),
+  legend.title = element_text(size = ttl_pt2),
+)
+
+base_theme <- djvdj_theme(line_color = ln_col_2) +
+  theme(
+    plot.title       = element_text(face = "plain", size = ttl_pt2),
+    strip.background = element_blank(),
+    strip.text       = element_text(face = "plain")
+  ) +
+  txt_theme_1
+
+umap_theme <- base_theme +
+  theme(
+    aspect.ratio = 0.9,
+    panel.border = element_rect(color = NA, fill = NA),
+    axis.title   = element_blank(),
+    axis.line.x  = element_blank(),
+    axis.line.y  = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text    = element_blank()
+  )
+
+umap_theme_2 <- umap_theme %+replace%
+  theme(panel.border = element_rect(colour = ln_col_2, linewidth = ln_pt, fill = NA))
+```
+
+```{r "load naive data", include = FALSE}
+# Load 24 hpi mock-infected data
+chikv_naive <- qread(here(params$chikv_dir, "so_lec.qs"))
+
+chikv_naive <- chikv_naive %>%
+  subset(tm == "24hpi" & treatment == "mock") %>%
+  mutate_meta(mutate, tm = 0)
+
+naive_so <- lec_so %>%
+  subset(mouse != "6wk-3wk") %>%
+  merge(chikv_naive)
+
+# Add module scores
+# need to recalculate
+rf_feats %>%
+  iwalk(~ {
+    clmn_nms <- str_c(.y, "_", names(.x))
+
+    clmn_nms <- set_names(
+      str_c(clmn_nms, seq_along(clmn_nms)),
+      clmn_nms
+    )
+
+    naive_so <<- naive_so %>%
+      mutate_meta(dplyr::select, -any_of(names(clmn_nms))) %>%
+      AddModuleScore(
+        features = .x,
+        name     = names(clmn_nms)
+      ) %>%
+      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
+  })
+
+naive_dat <- naive_so@meta.data %>%
+  as_tibble(rownames = ".cell_id")
+
+rm(chikv_naive, naive_so)
+gc()
+```
+
+```{r "format lec data"}
+# Objects to use for each cell type
+ag_objs <- list(LEC = lec_so, DC = dc_so)
+
+# Format prediction labels
+# * make sure the correct predictions and module scores are being used
+# * once the models are finalized, this information can be saved in the
+#   meta.data
+# * rf_pred will be NA if cell type was not used for training
+lec_so <- lec_so %>%
+  AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds)))
+
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    pred_grp = ifelse(
+      rf_pred == "high" & !rf_correct,
+      "Ag-competent", str_c("Ag-", !!sym(rf_dat_clmn))
+    ),
+    rf_pred = str_c("Ag-", rf_pred),
+    mouse   = fct_relevel(mouse, mice)
+  )
+
+# Add module scores
+rf_feats %>%
+  iwalk(~ {
+    clmn_nms <- str_c(.y, "_", names(.x))
+
+    clmn_nms <- set_names(
+      str_c(clmn_nms, seq_along(clmn_nms)),
+      clmn_nms
+    )
+
+    lec_so <<- lec_so %>%
+      mutate_meta(dplyr::select, -any_of(names(clmn_nms))) %>%
+      AddModuleScore(
+        features = .x,
+        name     = names(clmn_nms)
+      ) %>%
+      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
+  })
+```
+
+---
+
+<br>
+
+## Figure 1
+
+*Antigen persists in discrete cell populations within the lymph node*
+
+A.  Experimental design
+B.  UMAP projections show LEC and DC subsets
+C.  Antigen signal is shown for LEC subsets for each time point
+D.  Antigen signal is shown for DC subsets for each time point
+
+```{r "type Ag heat", fig.width = 16, fig.height = 5}
+# Format Ag data for broad cell types
+# exclude CD45+ cell types from CD45- datasets and vice versa
+cd45neg_typs <- c("LEC", "BEC", "Fibroblasts", "Epithelial cells")
+
+typ_ag_dat <- all_meta %>%
+  filter(
+    vaccination == "single",
+    cell_type != "unassigned"
+  ) %>%
+  group_by(cell_sort) %>%
+  mutate(
+    tm        = fct_relevel(as.character(tm), tms),
+    cell_type = fct_infreq(cell_type),
+    cell_type = fct_relevel(cell_type, c("LEC", "Fibroblasts", "DC"))
+  ) %>%
+  ungroup() %>%
+  filter(
+    (cell_sort == "CD45neg" & cell_type %in% cd45neg_typs) |
+      (cell_sort == "CD45pos" & !cell_type %in% cd45neg_typs)
+  )
+
+# Format data for heatmap
+# exclude unassigned cells since these likely include multiple cell types
+heat_dat <- typ_ag_dat %>%
+  group_by(tm, cell_type) %>%
+  summarize(
+    Ag_score = mean(Ag_score), .groups = "drop",
+    n        = n()
+  ) %>%
+  group_by(cell_type) %>%
+  mutate(cell_type = str_c(cell_type, "\nn = ", label_comma()(sum(n)))) %>%
+  ungroup() %>%
+  mutate(
+    tm      = fct_relevel(as.character(tm), rev(as.character(tms))),
+    cell_type = fct_reorder(cell_type, Ag_score, mean, .desc = TRUE)
+  )
+
+# Create heatmap summarizing Ag scores
+typ_heat <- heat_dat %>%
+  ggplot(aes(cell_type, tm, fill = Ag_score)) +
+  geom_tile() +
+  scale_fill_gradientn(colours = c("white", "#D55E00"), na.value = "black") +
+  guides(fill = guide_colorbar(
+    title.position = "top", ticks = FALSE, title = "Ag-score",
+    barwidth = unit(150, "pt"), barheight = unit(10, "pt")
+  )) +
+  labs(y = "days post vaccination") +
+  base_theme +
+  theme(
+    plot.margin  = margin(0, 15, 0, 15),
+    legend.position = "top",
+    legend.justification = 0,
+    legend.text  = element_text(size = txt_pt1),
+    aspect.ratio = n_distinct(heat_dat$tm) / n_distinct(heat_dat$cell_type) * 0.9,
+    axis.title.x = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1),
+  )
+```
+
+```{r "subtype Ag UMAPs"}
+# Data for UMAPs
+# show exp1 for LECs and exp2 for DCs
+fig1_dat <- ag_objs %>%
+  imap(~ {
+    .x@meta.data %>%
+      as_tibble(rownames = ".cell_id") %>%
+      filter(
+        exp %in% c("exp-0", ag_exps[[.y]]),
+        vaccination == "single"
+      ) %>%
+      mutate(tm_lab = factor(as.character(tm), tms))    
+  })
+
+# Subtype UMAPs
+fig1_typ_u <- fig1_dat %>%
+  imap(~ {
+    typ_lvls <- .x %>%
+      pull(subtype) %>%
+      unique() %>%
+      as.character()
+    
+    res <- .x %>%
+      plot_scatter(
+        "subtype", "hUMAP_1", "hUMAP_2",
+        size         = 0.1,
+        plot_colors  = c(lec_clrs, dc_clrs),
+        plot_lvls    = rev(typ_lvls),
+        label_params = list(size = ttl_pt1),
+        panel_nrow   = 2
+      ) +
+      guides(color = guide_legend(ncol = 1, override.aes = list(size = 4))) +
+      umap_theme_2 +
+      theme(
+        aspect.ratio = 0.9,
+        legend.position = "right",
+        legend.title = element_blank(),
+        legend.text  = element_text(size = txt_pt2)
+      )
+    
+    res
+  })
+
+# Ag-score UMAPs
+u_clrs <- list(
+  LEC = c("lightblue", "white", "#D7301F"),
+  DC  = c("lightblue", "white", "#6A51A3", "#6A51A3")
+  # DC  = c("white", "#6A51A3")
+)
+
+fig1_ag_u <- fig1_dat %>%
+  imap(~ {
+    .x %>%
+      filter(tm_lab %in% as.character(tms)) %>%
+      plot_scatter(
+        "Ag_score", "hUMAP_1", "hUMAP_2",
+        plot_colors  = u_clrs[[.y]],
+        label_params = list(size = ttl_pt1),
+        group_col    = "tm_lab",
+        panel_nrow   = 1,
+        outline      = TRUE,
+        size         = 0.2,
+        stroke       = 0.7
+      ) +
+      facet_wrap(
+        ~ tm_lab, nrow = 1,
+        labeller = as_labeller(function(x) str_c("day ", x))
+      ) +
+      guides(fill = guide_colorbar(
+        title.position = "right", ticks = FALSE, title = "Ag-score",
+        barheight = unit(120, "pt"), barwidth = unit(10, "pt")
+      )) +
+      umap_theme +
+      theme(
+        aspect.ratio         = 0.9,
+        panel.border         = element_rect(color = ln_col, linewidth = ln_pt, fill = NA),
+        legend.position      = "right",
+        legend.justification = 0,
+        legend.title         = element_text(angle = 270, hjust = 0.5),
+        strip.text.y         = element_blank()
+      )
+  })
+```
+
+```{r "subtype Ag boxplots", fig.width = 8, fig.height = 2}
+# Format data for boxplots
+ag_bx_dat <- fig1_dat %>%
+  map(~ {
+    .x %>%
+      filter(subtype != "unassigned") %>%
+      mutate(mouse = as.character(mouse)) %>%
+      group_by(subtype) %>%
+      filter(all(table(mouse) >= min_cells)) %>%
+      ungroup() %>%
+      mutate(subtype = fct_reorder(subtype, Ag_score, mean, .desc = TRUE))
+  })
+  
+# Create boxplots
+ag_bxs <- ag_bx_dat %>%
+  imap(~ create_ag_boxes(.x, clrs = subtype_clrs[[.y]]))
+
+# Pull subsets used for main figures
+ag_plt_typs <- ag_bx_dat %>%
+  map(~ levels(.x$subtype))
+```
+
+```{r "subtype Ag heat"}
+# Create heatmaps
+heat_clrs <- c(LEC = "#D7301F", DC = "#6A51A3")
+
+ag_heats <- ag_bx_dat %>%
+  imap(~ {
+    dat <- .x %>%
+      group_by(mouse, tm, subtype) %>%
+      summarize(Ag_score = mean(Ag_score), .groups = "drop") %>%
+      mutate(
+        subtype = fct_reorder(subtype, Ag_score, mean),
+        tm      = fct_relevel(as.character(tm), as.character(tms)),
+        ttl     = "Ag-score"
+      )
+
+    rat <- n_distinct(dat$subtype) / n_distinct(dat$tm)
+
+    dat %>%
+      ggplot(aes(tm, subtype, fill = Ag_score)) +
+      geom_tile() +
+      facet_wrap(~ ttl) +
+      labs(x = "days post vaccination") +
+      scale_fill_gradientn(colours = c("lightblue", "white", heat_clrs[[.y]])) +
+      guides(fill = guide_colorbar(
+        ticks = FALSE, title = "Ag-score",
+        barheight = unit(105, "pt"), barwidth = unit(10, "pt")
+      )) +
+      base_theme +
+      theme(
+        legend.title = element_blank(),
+        aspect.ratio = rat,
+        axis.title.y = element_blank(),
+        plot.margin  = margin(0, 15, 0, 15),
+        plot.title   = element_text(hjust = 0.5, size = ttl_pt2)
+      )
+  })
+```
+
+```{r "Fig 1 diagram"}
+img <- readPNG(here("results/figures/fig1_exp_design_landscape_2.png"))
+img <- rasterGrob(img, interpolate = TRUE)
+
+# Adjust plot limits if necessary
+img_lims <- tibble(x = c(0, 1), y = c(0, 1))
+
+# Create an empty plot for placing the image, adjusted to fill the area
+fig1_dsgn <- ggplot(img_lims, aes(x, y)) + 
+  annotation_custom(
+    grob = img,
+    xmin = -Inf, xmax = Inf,
+    ymin = -Inf, ymax = Inf
+  ) +
+  xlim(c(-Inf, Inf)) +
+  ylim(c(-Inf, Inf)) +
+  theme_void()
+```
+
+```{r "FIG 1 CSHL POSTER", fig.width = 12, fig.height = 11}
+top <- fig1_dsgn +
+  labs(tag = "A") +
+  theme(
+    plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
+    plot.tag.position = c(0.035, 0.85)
+  )
+
+mid <- fig1_typ_u %>%
+  imap(~ {
+    plt <- .x +
+      ggtitle(str_c(.y, " subsets")) +
+      theme(
+        plot.title = element_text(size = ttl_pt2 * 1.2, vjust = 1.5),
+        plot.tag   = element_text(size = ttl_pt2 * 1.5, face = "bold"),
+        plot.tag.position = c(-0.1, 0.85)
+      )
+    
+    if (.y == first(names(fig1_typ_u))) plt <- plt + labs(tag = "B")
+    
+    plt
+  }) %>%
+  reduce(`+`)
+
+ag_heats <- map2(ag_heats, c("C", "D"), ~ {
+  .x +
+    labs(tag = .y) +
+    theme(plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"))
+})
+
+bot <- wrap_plots(
+  ag_heats$LEC, ag_bxs$LEC,
+  ag_heats$DC, ag_bxs$DC,
+  nrow = 2,
+  widths = c(0.15, 1)
+)
+
+plot_grid(
+  top, mid, bot,
+  ncol = 1,
+  rel_heights = c(0.55, 0.8, 1)
+)
+```
+
+---
+
+<br>
+
+<br>
+
+## Figure 2
+
+*Identification of an antigen archiving gene signature*
+
+A.  Ag-scores are shown for dat 14 Ag-high and Ag-low cells
+B.  The top 3 gene ontology terms are shown for Ag-high gene modules
+C.  The expression of each Ag-high gene module is shown for naive LECs (day 0)
+    along with each immunization time point.
+
+```{r "RF Ag signal", fig.width = 12, fig.height = 3.25}
+# Format plotting data
+plt_dat <- lec_so@meta.data %>%
+  filter(
+    subtype %in% rf_typs,
+    mouse %in% rf_mouse
+  ) %>%
+  mutate(
+    mouse = as.character(mouse),  # to remove factor
+    !!sym(rf_dat_clmn) := fct_relevel(!!sym(rf_dat_clmn), c("low", "high"))
+  ) %>%
+  arrange(!!sym(rf_dat_clmn))
+
+# Format plot labels
+plt_labs <- plt_dat %>%
+  group_by(subtype, mouse, tm, !!sym(rf_dat_clmn)) %>%
+  summarize(
+    n = label_comma()(n()),
+    .groups = "drop"
+  ) %>%
+  mutate(n = str_c(!!sym(rf_dat_clmn), ": ", n, " cells")) %>%
+  group_by(subtype, mouse, tm) %>%
+  arrange(!!sym(rf_dat_clmn)) %>%
+  mutate(n = str_c(n, collapse = "\n"))
+
+plt_clrs <- lec_clrs
+
+# Create bargraphs
+brs <- rf_typs %>%
+  imap(~ {
+    dat <- plt_dat %>%
+      filter(subtype == .x) %>%
+      mutate(!!sym(rf_dat_clmn) := fct_rev(!!sym(rf_dat_clmn)))
+    
+    dat %>%
+      ggplot(aes(y = mouse, fill = subtype, alpha = !!sym(rf_dat_clmn))) +
+      geom_bar() +
+      facet_wrap(~ subtype, nrow = 1, scales = "free") +
+      scale_alpha_manual(values = c(low = 0.35, high = 1)) +
+      scale_fill_manual(values = plt_clrs) +
+      scale_y_discrete(expand = expansion(c(0, 0))) +
+      scale_x_continuous(expand = expansion(c(0, 0))) +
+      theme_void() +
+      theme(
+        legend.position = "none",
+        plot.margin     = margin(t = 5),
+        strip.text      = element_text(size = ttl_pt2)
+      )
+  })
+
+hsts <- rf_typs %>%
+  imap(~ {
+    dat <- plt_dat %>%
+      filter(subtype == .x)
+    
+    fst <- .y == 1
+    lst <- .y == length(rf_typs)
+    
+    # Create histograms
+    hst <- dat %>%
+      ggplot(aes(Ag_score, fill = subtype, alpha = !!sym(rf_dat_clmn))) +
+      geom_histogram(bins = 30, key_glyph = draw_key_point) +
+      geom_text(
+        aes(-Inf, Inf, label = n),
+        data = filter(plt_labs, subtype == .x),
+        check_overlap = TRUE,
+        alpha = 1,
+        hjust = -0.25,
+        vjust = 1.1,
+        size  = txt_pt2 / .pt
+      ) +
+      facet_wrap(~ subtype, scales = "free", nrow = 1) +
+      guides(fill = "none") +
+      scale_alpha_manual(
+        values = c(low = 0.35, high = 1),
+        labels = function(x) str_c("Ag-", x)
+      ) +
+      scale_fill_manual(values = plt_clrs) +
+      scale_y_continuous(expand = expansion(c(0.05, 0.25))) +
+      guides(alpha = guide_legend(override.aes = list(shape = 22, size = 5))) +
+      labs(x = "Ag-score", y = "number of cells") +
+      base_theme +
+      theme(
+        aspect.ratio    = 0.5,
+        strip.text      = element_blank(),
+        legend.position = "none",
+        legend.title    = element_blank(),
+        plot.margin     = margin(t = 0, r = 5, b = 0, l = 5)
+      )
+    
+    if (fst) {
+      hst <- hst +
+        theme(legend.position = c(0.2, 0.5))
+    }
+    
+    if (!fst) {
+      hst <- hst +
+        theme(axis.title.y = element_blank())
+    }
+    
+    if (fst || lst) {
+      hst <- hst +
+        theme(axis.title.x = element_blank())
+    }
+    
+    hst
+  })
+
+# Create final figure
+hsts <- wrap_plots(
+  append(brs, hsts),
+  ncol = length(rf_tms),
+  heights = c(0.05, 1)
+)
+```
+
+```{r "RF GO"}
+# Term similarity for simplifying terms
+dbs <- set_names(c("BP", "CC"))
+
+go_sim_data <- dbs %>%
+  map(~ {
+    godata(
+      OrgDb   = org.Mm.eg.db,
+      keytype = "SYMBOL",
+      ont     = .x
+    )
+  })
+
+# Get enriched GO terms
+rf_grps <- rf_feats %>%
+  map(names) %>%
+  reduce(unique)
+
+go_res <- rf_grps %>%
+  map_dfr(~ {
+    grp <- .x
+    
+    go_feats <- rf_feats[rf_typs] %>%
+      map(pluck, grp)
+    
+    go_sim_data %>%
+      imap_dfr(~ {
+        file <- str_c("ag-", grp, "_", .y, "_go")
+        file <- here(params$table_dir, file)
+        
+        res <- go_feats %>%
+          get_go(
+            lec_so,
+            type_clmn      = "subtype",
+            max_term_size  = 500,
+            min_term_size  = 10,
+            db             = .y,
+            simplify_terms = TRUE,
+            sim_data       = .x,
+            file           = file
+          )
+        
+        res@compareClusterResult %>%
+          as_tibble() %>%
+          mutate(db = .y, pred_grp = grp)
+      })
+  })
+
+# Filter GO terms
+go_sig <- go_res %>%
+  filter(p.adjust < 0.05) %>%
+  arrange(p.adjust) %>%
+  group_by(Cluster, pred_grp) %>%
+  slice(1:3)
+
+# Plot top GO terms
+go_fig <- go_sig %>%
+  split(.$pred_grp) %>%
+  imap(~ {
+    dat <- .x %>%
+      mutate(
+        y_var = str_c(Cluster, "-", Description),
+        y_var = fct_reorder(y_var, p.adjust, min, .desc = TRUE),
+      )
+      
+    y_labs <- dat %>%
+      distinct(Description, y_var)
+    
+    y_labs <- set_names(y_labs$Description, y_labs$y_var)
+    
+    dat %>%
+      ggplot(aes(-log10(p.adjust), y_var, fill = Cluster)) +
+      geom_col() +
+      geom_vline(xintercept = -log10(0.05), color = "black", linetype = 2) +
+      facet_grid(space = "free", scales = "free_y", rows = vars(Cluster)) +
+      labs(x = "-log10(p-value)") +
+      scale_y_discrete(labels = y_labs) +
+      scale_x_continuous(expand = expansion(c(0.01, 0.05))) +
+      scale_fill_manual(values = lec_clrs) +
+      base_theme +
+      theme(
+        legend.position = "none",
+        plot.title      = element_text(size = ttl_pt2 * 1.5, hjust = 0.25),
+        axis.title.y    = element_blank(),
+        axis.text.y     = element_text(size = ttl_pt1),
+        strip.clip      = "off"
+      )
+  })
+```
+
+```{r "RF naive expression"}
+fig_dat <- naive_dat %>%
+  filter(subtype %in% rf_typs) %>%
+  
+  # mutate(tm = ifelse(mouse == "6wk-3wk", "dual", as.character(tm))) %>%
+  
+  pivot_longer(all_of(ag_modules), names_to = "module_type") %>%
+  separate(module_type, sep = "_", into = c("module_type", "module_ag")) %>%
+  
+  filter(subtype == module_type) %>%
+  
+  mutate(
+    tm          = fct_relevel(as.character(tm), c("0", tms)),
+    subtype     = fct_relevel(subtype, rf_typs),
+    module_type = fct_relevel(module_type, rf_typs)
+  )
+
+med_dat <- fig_dat %>%
+  group_by(mouse, tm, subtype, module_ag) %>%
+  summarize(
+    n       = n_distinct(.cell_id),
+    med     = median(value),
+    q1      = quantile(value, 0.25),
+    q3      = quantile(value, 0.75),
+    .groups = "drop"
+  )
+
+# Create boxplots
+naive_fig <- fig_dat %>%
+  split(.$module_ag) %>%
+  imap(~ {
+    pt_dat <- fig_dat %>%
+      filter(module_ag == .y)
+    
+    plt <- pt_dat %>%
+      ggplot(aes(tm, value, color = subtype)) +
+      geom_boxplot(
+        color         = ln_col,
+        fill          = ln_col,
+        width         = 0.25,
+        linewidth     = 0.75,
+        outlier.color = ln_col,
+        outlier.size  = 0.001
+      ) +
+      stat_summary(geom = "point", fun = median, size = 3.2)
+      # geom_point(
+      #   aes(tm, value, group = subtype, color = NULL),
+      #   data = pt_dat,
+      #   size = 0.001,
+      #   color = ln_col
+      # ) +
+      # geom_segment(
+      #   aes(x = tm, xend = tm, y = q1, yend = q3),
+      #   linewidth = 3.2, color = ln_col_2
+      # ) +
+      # geom_point(size = 3.2)
+    
+    plt +
+      facet_grid(subtype ~ ., scales = "free_y") +
+      scale_color_manual(values = lec_clrs) +
+      scale_y_continuous(breaks = seq(-5, 5, 1)) +
+      expand_limits(y = 0) +
+      labs(x = "days post vaccination", y = "Ag-high module score") +
+      base_theme +
+      theme(
+        aspect.ratio    = 0.45,
+        plot.margin     = margin(),
+        legend.position = "none",
+        panel.border    = element_rect(color = ln_col_2),
+        strip.clip      = "off"
+      )
+  })
+```
+
+```{r "FIG 2 CSHL POSTER", fig.width = 12, fig.height = 6.5}
+bot <- plot_grid(
+  go_fig$high, naive_fig$high,
+  nrow       = 1,
+  rel_widths = c(1, 0.5),
+  align      = "h",
+  axis       = "tb",
+  labels     = c("B", "C"),
+  label_size = ttl_pt2 * 1.5
+)
+
+plot_grid(
+  hsts, bot,
+  ncol = 1,
+  rel_heights = c(0.8, 1),
+  labels = c("A", ""),
+  label_size = ttl_pt2 * 1.5
+)
+```
+
+---
+
+<br>
+
+<br>
+
+## Figure 3
+
+*Predicting antigen archiving ability*
+
+A.  The fraction of cells predicted to be Ag-competent is shown for LECs 
+B.  F1 scores are shown for random forest models trained using day 14 LECs
+C.  Ag-high module scores are shown for predicted Ag-competent LECs
+D.  Select example genes from the cLEC Ag-high gene module are shown, triangles
+    indicate the gene is upregulated when compared to Ag-low
+
+```{r "RF Ag-competent bars", fig.width = 8, fig.height = 5}
+# Format data for bargraphs
+rf_bar_dat <- lec_so@meta.data %>%
+  filter(
+    tm %in% rf_tms,
+    subtype %in% rf_typs
+  ) %>%
+  mutate(
+    subtype    = fct_relevel(subtype, rf_typs),
+    rf_correct = fct_relevel(as.character(rf_correct), c("TRUE", "FALSE")),
+    pred_grp   = fct_relevel(pred_grp, rev(names(pred_clrs))),
+    tm         = as.character(tm)
+  )
+
+bar_thm <- base_theme +
+  theme(aspect.ratio = 1.4)
+
+rf_bar_1 <- rf_bar_dat %>%
+  ggplot(aes(tm, fill = pred_grp)) +
+  geom_bar(position = "fill", alpha = 0.85, key_glyph = draw_key_point) +
+  facet_grid(~ subtype) +
+  scale_fill_manual(values = pred_clrs) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  guides(fill = guide_legend(override.aes = list(shape = 22, size = 5))) +
+  labs(y = "fraction of cells", x = "days post vaccination") +
+  bar_thm +
+  theme(
+    legend.title = element_blank(),
+    legend.position = "none"
+  )
+```
+
+```{r "RF F1 scores"}
+f1_bars <- rf_mods_best %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(subtype = fct_relevel(subtype, rf_typs)) %>%
+  ggplot(aes(subtype, F1, fill = subtype)) +
+  geom_col(width = 0.75) +
+  geom_text(aes(label = round(F1, 2)), vjust = -1, size = txt_pt2 / .pt) +
+  scale_y_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
+  scale_fill_manual(values = lec_clrs) +
+  labs(title = "F1 score") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1,
+    plot.title      = element_text(size = ttl_pt2, hjust = 0.5),
+    legend.position = "none",
+    axis.title      = element_blank(),
+    axis.text.x     = element_text(size = ttl_pt2, hjust = c(0.75, 0.5, 0.25))
+  )
+```
+
+```{r "RF module boxplots", fig.width = 10, fig.height = 4}
+# Format plot data
+# exclude dual vaccination data
+clmns <- c(
+  "tm", "subtype", "pred_grp", "training_data",
+  "Ag_score", ag_modules
+)
+
+rf_bx_dat <- lec_so %>%
+  FetchData(clmns) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(tm %in% rf_tms)
+
+rf_mod_args <- list(
+  mod_typ = c("high", "low"),
+  p_alt   = c("greater", "less"),
+  p_hjust = c(0.7, 0.55)
+)
+
+mod_bxs <- rf_mod_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    module_clmns <- str_c(rf_typs, "_", args$mod_typ)
+    module_title <- str_c("Ag-", args$mod_typ, " module score")
+    
+    rf_bx_dat %>%
+      create_rf_module_boxes(
+        module_clmns = module_clmns,
+        module_title = module_title,
+        p_alt        = args$p_alt,
+        p_hjust      = c(args$p_hjust, 0.5),
+        p_vjust      = c(1.2, 2),
+        clrs         = pred_clrs
+      ) +
+      guides(fill = guide_legend(override.aes = list(shape = 22, size = 6, color = NA))) +
+      theme(
+        plot.margin = margin(),
+        legend.position = "top"
+      )
+  })
+```
+
+```{r "RF top features examples", fig.height = 8, fig.width = 8}
+# Calculate p-values
+p_vals <- rf_feats[rf_typs] %>%
+  imap_dfr(~ {
+    p_alt <- c(high = "greater", low = "less")
+    
+    typ <- .y
+    
+    gns <- .x %>%
+      imap(~ set_names(rep(.y, length(.x)), .x)) %>%
+      reduce(c)
+    
+    dat <- lec_so %>%
+      subset(subtype == typ & tm %in% rf_tms) %>%
+      FetchData(c("pred_grp", "tm", names(gns))) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(all_of(names(gns)), names_to = "gene") %>%
+      mutate(
+        class = gns[gene],
+        p_alt = p_alt[class]
+      ) %>%
+      split(.$gene)
+      
+    dat %>%
+      map_dfr(~ {
+        p_grps <- names(pred_clrs)[-1]
+        p_con  <- names(pred_clrs)[1]
+        
+        dat <- .x
+        
+        p_grps %>%
+          map_dfr(~ {
+            dat %>%
+              filter(pred_grp %in% c(p_con, .x)) %>%
+              group_by(tm) %>%
+              summarize(
+                p = wilcox.test(
+                  value[pred_grp == .x], value[pred_grp == p_con],
+                  alternative = unique(p_alt),
+                  exact       = FALSE
+                )$p.value,
+                med_diff = abs(median(value[pred_grp == .x]) - median(value[pred_grp == p_con])),
+                n        = length(value[pred_grp == .x]),
+                gene     = unique(gene),
+                class    = unique(class),
+                p_alt    = unique(p_alt),
+                pred_grp = .x,
+                .groups  = "drop"
+              )
+          })
+      }) %>%
+      mutate(subtype = typ)
+  })
+
+# Adjust p-values for multiple testing
+# adjust each tm and pred_grp separately
+p_vals <- p_vals %>%
+  group_by(tm, pred_grp, subtype) %>%
+  mutate(
+    p_adj   = p.adjust(p, method = "BH"),
+    n_genes = n()
+  ) %>%
+  ungroup()
+
+p_dat <- p_vals %>%
+  filter(
+    subtype == rf_cell_type,
+    p_adj < 0.05,
+    gene %in% rf_feats$cLEC$high
+  ) %>%
+  group_by(gene) %>%
+  filter(any(med_diff > 0)) %>%
+  mutate(n_sig = n()) %>%
+  ungroup() %>%
+  arrange(desc(n_sig))
+
+# Plot example genes
+gns <- list(c("Psap", "Grn"), c("Ctsd", "Lgmn"), c("Tgfa", "Gdf10"))
+
+gene_examples <- gns %>%
+  map(~ {
+    lec_so %>%
+      subset(subtype == rf_cell_type) %>%
+      subset(tm %in% rf_tms) %>%
+      create_gn_plots(
+        p_data    = p_dat,
+        top_gns   = .x,
+        n_gns     = 2,
+        plt_clrs  = pred_clrs,
+        x_lvls    = names(pred_clrs),
+        draw_line = FALSE,
+        pt_size   = 3.2
+      ) %>%
+      pluck("high") +
+      guides(color = guide_legend(override.aes = list(size = 4))) +
+      theme(
+        plot.margin        = margin(),
+        legend.position    = "none",
+        axis.title.y.right = element_blank()
+      )
+  }) %>%
+  wrap_plots(
+    plotlist = .,
+    nrow  = 1
+  )
+```
+
+```{r "FIG 3 CSHL POSTER", fig.width = 11, fig.height = 10}
+top <- plot_grid(
+  rf_bar_1, f1_bars,
+  nrow  = 1,
+  align = "h",
+  axis  = "tb",
+  rel_widths = c(1, 0.5),
+  labels     = c("A", "B"),
+  label_size = ttl_pt2 * 1.5,
+  hjust      = c(-0.5, 1)
+)
+
+plot_grid(
+  top, mod_bxs[[1]], gene_examples,
+  ncol        = 1,
+  rel_heights = c(0.8, 1, 0.8),
+  labels      = c("", "C", "D"),
+  label_size  = ttl_pt2 * 1.5
+)
+```
+
+---
+
+<br>
+
+<br>
+
+## Figure 4
+
+*Antigen archiving is enhanced by sequential vaccinations*
+
+A.  Experimental design
+B.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
+    for each LEC subset. Other timepoints are shown in grey. P values
+    were calculated using a one-sided Wilcoxon rank sum test with
+    Benjamini-Hochberg correction.
+C.  Successive vaccinations enhances retention of previously archived antigen.
+    Ag-score is shown for the 42 day timepoint as described in C.
+D.  Ag-high module scores described in Figure 2 are shown for LECs that archived
+    antigens from both vaccinations (double-high), from only one vaccination
+    (single-high), or have low levels of both antigens (Ag-low). Module scores
+    are shown for the corresponding LEC subset. P values were calculated using
+    a one-sided Wilcoxon rank sum test with Benjamini-Hochberg correction.
+
+```{r "exchange boxes"}
+# Format Ag exchange plot data
+# use experiment 1 since, experiment 2 is missing 3wk LECs
+ex_dat <- lec_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(exp %in% c("exp-0", ag_exps$LEC)) %>%
+  mutate(
+    mouse = m_key[as.character(mouse)],
+    mouse = fct_relevel(mouse, unname(m_key))
+  )
+
+# Effect of successive vaccinations on antigen uptake/retention
+# use LEC subsets shown in Fig 1
+ex_bx_args <- list(
+  tm      = c("21", "42"),
+  tm_clmn = c("tm_3", "tm_6"),
+  ag_clmn = c("Ag_score_3", "Ag_score_6"),
+  p_hjust = c(0.5, 0.8),
+  tag     = c("B", "C")
+)
+
+ex_typs <- ag_plt_typs$LEC
+ex_typs <- ex_typs[ex_typs != "BEC"]
+
+ex_bxs <- ex_bx_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    ex_dat %>%
+      create_exchange_boxes(
+        tm        = args$tm,
+        tm_clmn   = args$tm_clmn,
+        ag_clmn   = args$ag_clmn,
+        typs      = ex_typs,
+        clrs      = tm_clrs,
+        p_cutoff = Inf,
+        p_hjust   = args$p_hjust,
+        p_vjust   = 0.7
+      ) +
+      labs(tag = args$tag, y = str_c("Ag-score (", args$tm, " day)")) +
+      guides(alpha = guide_legend(
+        override.aes = list(fill = "black", size = 4, shape = 15)
+      )) +
+      theme(
+        plot.margin = margin(),
+        plot.tag    = element_text(size = ttl_pt2 * 1.5, face = "bold")
+      )
+  }) %>%
+  wrap_plots(
+    ncol = 1,
+    guides = "collect"
+  ) &
+  theme(legend.position = "top")
+```
+
+```{r "exchange Ag-high module scores", fig.width = 9, fig.height = 5.5}
+# Format plot data
+# module scores for biological replicates are similar
+# pool all cells together to increase power
+clmns <- c(
+  "exp", "subtype", "mouse", "vaccination",
+  "rf_pred", "Ag_class_dual", ag_modules
+)
+
+ex_mod_bx_dat <- lec_so %>%
+  FetchData(clmns) %>%
+  filter(vaccination == "dual") %>%
+  mutate(Ag_class_dual = recode(Ag_class_dual, low = "Ag-low")) %>%
+  
+  mutate(Ag_class_dual = ifelse(
+    Ag_class_dual == "Ag-low" & rf_pred == "Ag-high",
+    "Ag-competent",
+    Ag_class_dual)
+  )
+
+# Create boxplots
+bx_lvls <- c("Ag-low", "Ag-competent", "single-high", "double-high")
+
+rf_mod_args$p_x <- c(1, 4)
+rf_mod_args$p_hjust <- c(0.2, 0.8)
+
+ex_mod_bxs <- rf_mod_args %>%
+  pmap(~ {
+    args <- list(...)
+
+    module_clmns <- str_c(rf_typs, "_", args$mod_typ)
+    module_title <- str_c("Ag-", args$mod_typ, " module score")
+
+    ex_mod_bx_dat %>%
+      create_module_boxes(
+        module_clmns = module_clmns,
+        module_title = module_title,
+        lvls         = bx_lvls,
+        p_alt        = args$p_alt,
+        p_x          = args$p_x,
+        p_hjust      = args$p_hjust
+      ) +
+      theme(plot.margin = margin(0, 15, 5, 15))
+  }) %>%
+  wrap_plots(nrow = 1)
+```
+
+```{r "Fig 3 diagram"}
+img <- readPNG(here("results/figures/fig3_exp_design_landscape.png"))
+img <- rasterGrob(img, interpolate = TRUE)
+
+# Adjust plot limits if necessary
+img_lims <- tibble(x = c(0, 1), y = c(0, 1))
+
+# Create an empty plot for placing the image, adjusted to fill the area
+fig3_dsgn <- ggplot(img_lims, aes(x, y)) + 
+  annotation_custom(
+    grob = img,
+    xmin = -Inf, xmax = Inf,
+    ymin = -Inf, ymax = Inf
+  ) +
+  xlim(c(-Inf, Inf)) +
+  ylim(c(-Inf, Inf)) +
+  theme_void() +
+  theme(plot.margin = margin())
+```
+
+```{r "FIG 4 CSHL POSTER", fig.width = 12, fig.height = 14}
+plot_grid(
+  fig3_dsgn, ex_bxs, ex_mod_bxs,
+  ncol        = 1,
+  rel_heights = c(1.5, 3, 2),
+  labels      = c("A", "", "D"),
+  label_size  = ttl_pt2 * 1.5
+)
+```
+
+---
+
+<br>
+
+<br>
+
+## Figure 5
+
+*Antigen exchange with DCs correlates with levels of antigen archiving*
+
+A.  Annotated regions, segment types, and antigen signal is shown for a
+    representative lymph node analyzed using the GeoMx DSP platform
+B.  Relative antigen signal is shown for each region segmented based on
+    Lyve1 (LECs) and CD11C (DCs)
+C.  Antigen signal is shown for regions that included both Lyve1+
+    and CD11C+ segments
+
+```{r "geomx cropped images", fig.width = 14, fig.height = 7}
+plot_geomx_image <- function(obj_in, color, clrs = NULL, labs = NULL,
+                             legend_values = names(labs) %||% names(clrs),
+                             ttl = NULL, line_size = 0.5, scale_size = 8,
+                             scale_dist = 1.5, ...) {
+  
+  labs <- labs %||% waiver()
+  ttl  <- ttl %||% color
+  
+  res <- obj_in %>%
+    plotSpatialOverlay(
+      colorBy          = color,
+      scaleBar         = TRUE,
+      corner           = "bottomleft",
+      textDistance     = scale_dist,
+      scaleBarLineSize = line_size,
+      scaleBarFontSize = scale_size / .pt,
+      ...
+    ) +
+    ggtitle(ttl) +
+    theme(
+      plot.margin  = margin(r = 15, l = 15),
+      plot.title   = element_text(hjust = 0.5, size = ttl_pt2 * 1.5),
+      legend.title = element_blank()
+    )
+  
+  if (!is.null(legend_values)) {
+    all_sams_df <- tibble(x = 1, y = 1, colorBy = legend_values)
+    
+    res <- res +
+      geom_blank(aes(x, y, fill = colorBy), data = all_sams_df)
+  }
+  
+  if (!is.null(clrs)) {
+    if (is.numeric(obj_in@plottingFactors[[color]])) {
+      res <- res +
+        scale_fill_gradientn(colours = clrs) +
+        guides(fill = guide_colorbar(ticks = FALSE)) +
+        theme(
+          legend.position   = "bottom",
+          legend.key.width  = unit(50, "pt"),
+          legend.key.height = unit(7, "pt"),
+          legend.text       = element_text(size = txt_pt2)
+        )
+    } else {
+      res <- res +
+        scale_fill_manual(values = clrs, labels = labs) +
+        theme(legend.text = element_text(size = ttl_pt2))
+    }
+  }
+  
+  res
+}
+
+# Select LN to plot
+sams <- geomx_dat %>%
+  filter(
+    LN == "ova-GeoMX+VV 6week and 3week LN1",
+    Segment %in% c("Lyve1", "CD11C")
+  ) %>%
+  pull(Sample_ID)
+
+img_cropped <- geomx_imgs$`Slide 1` %>%
+  cropSamples(sampleIDs = sams, sampsOnly = TRUE)
+
+img_args <- list(
+  color = c("Sample", "Region", "Segment", "Ag-score"),
+  clrs  = list(m_clrs, reg_clrs, seg_clrs, c("white", "#D7301F")),
+  labs  = list(geo_m_key, NULL, geo_seg_key, NULL),
+  ttl   = list(NULL, NULL, "Segment type", "Ag signal")
+)
+
+# Plot cropped image
+img_fig <- img_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    img_cropped %>%
+      plot_geomx_image(
+        color = args$color,
+        clrs  = args$clrs,
+        ttl   = args$ttl,
+        labs  = args$labs,
+        scale_size = ttl_pt1,
+        scale_dist = 3,
+        legend_values = NULL,
+      ) +
+      theme(legend.position = "bottom")
+  })
+
+img_fig <- plot_grid(
+  plotlist = img_fig[-1],
+  nrow  = 1,
+  align = "h",
+  axis  = "tb",
+  hjust = 0.05,
+  labels     = c("A", "", ""),
+  label_size = ttl_pt2 * 1.5
+)
+```
+
+```{r "geomx Ag boxplots", fig.height = 4}
+# Signals to plot
+geo_clmns <- c(
+  Ag_3wk_score = "Ag signal (21 day)",
+  Ag_6wk_score = "Ag signal (42 day)"
+)
+
+# Function for strip labels
+geo_lab_fn <- function(x) {
+  keys <- list(geo_m_key, geo_seg_key)
+  
+  keys %>%
+    walk(~ {
+      idx    <- x %in% names(.x)
+      x[idx] <- .x[x[idx]]
+      x      <<- x
+    })
+  
+  x
+}
+
+# Calculate relative Ag signal
+# want to plot both Ag tags on same plot
+# this is not useful without scaling values since Ag-3wk signal is much higher
+# than Ag-6wk signal
+bx_dat <- geo_clmns %>%
+  imap_dfr(~ {
+    sam <- str_extract(.y, "(?<=Ag_)[0-9]+wk")
+    
+    geomx_dat %>%
+      filter(
+        sample %in% c(sam, "6wk-3wk"),
+        Segment %in% c("Lyve1", "CD11C")
+      ) %>%
+      mutate(
+        key = .y,
+        Ag_rel = as.numeric(scale(!!sym(.y))),
+        Segment = fct_relevel(Segment, names(seg_clrs))
+      )
+  })
+
+# Calculate p-values
+p_dat <- bx_dat %>%
+  split(.$Segment) %>%
+  imap_dfr(~ {
+    pairwise.wilcox.test(
+      .x$Ag_rel, .x$region_3,
+      p.adjust.method = "none"
+    ) %>%
+      tidy() %>%
+      mutate(Segment = .y)
+  }) %>%
+  mutate(p_adj = p.adjust(p.value, method = "BH"))
+
+# Calculate n values
+n_dat <- bx_dat %>%
+  group_by(region_3, Segment) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  mutate(n = str_c("n = ", n))
+
+# Create boxplots
+geo_bxs <- bx_dat %>%  
+  ggplot(aes(region_3, Ag_rel, fill = region_3)) +
+  geom_boxplot(
+    linewidth = ln_pt * 1.5, alpha = 1, outlier.color = NA, width = 0.65,
+    key_glyph = draw_key_point
+  ) +
+  geom_jitter(size = 1.5, width = 0.1) +
+  geom_text(
+    aes(region_3, Inf, label = n, fill = NULL),
+    data  = n_dat,
+    vjust = 1.4,
+    size  = txt_pt2 / .pt
+  ) +
+  
+  facet_grid(~ Segment, scales = "free_y", labeller = as_labeller(geo_lab_fn)) +
+  scale_fill_manual(values = reg_clrs) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
+  labs(y = "Relative Ag signal") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.4,
+    legend.position = "none",
+    axis.text.x     = element_text(size = ttl_pt2, angle = 45, hjust = 1),
+    axis.title.y    = element_text(size = ttl_pt2),
+    axis.title.x    = element_blank()
+  )
+```
+
+```{r "geomx Ag scatter"}
+# Format data
+# want to plot both Ag tags on same plot
+sct_dat <- geo_clmns %>%
+  imap_dfr(~ {
+    sam <- str_extract(.y, "(?<=Ag_)[0-9]+wk")
+    
+    geomx_dat %>%
+      filter(
+        sample %in% c(sam, "6wk-3wk"),
+        Segment %in% c("Lyve1", "CD11C")
+      ) %>%
+      mutate(
+        key      = .y,
+        Ag_score = !!sym(.y)
+      )
+  })
+
+sct_dat <- sct_dat %>%
+  dplyr::select(
+    `ROI Coordinate X`, `ROI Coordinate Y`,
+    region_3, Segment, sample, key,
+    Ag_score
+  ) %>%
+  group_by(key, `ROI Coordinate X`, `ROI Coordinate Y`) %>%
+  filter(all(c("Lyve1", "CD11C") %in% Segment)) %>%
+  ungroup() %>%
+  mutate(Segment = str_c(Segment, "+ Ag signal")) %>%
+  pivot_wider(names_from = Segment, values_from = Ag_score) %>%
+  mutate(
+    tm = str_extract(key, "[0-9+]wk"),
+    tm = as.character(tm_key[tm])
+  )
+
+# Legend labels
+sct_labs <- sct_dat %>%
+  group_by(key, tm) %>%
+  summarize(n = str_c("n = ", n()), .groups = "drop") %>%
+  mutate(n = str_c(geo_clmns[key], "\n", n))
+
+sct_labs <- set_names(sct_labs$n, sct_labs$tm)
+
+# Calculate correlation
+cor <- cor(
+  sct_dat$`CD11C+ Ag signal`,
+  sct_dat$`Lyve1+ Ag signal`,
+  method = "spearman"
+)
+cor <- round(cor, digits = 2)
+cor = str_c("italic(r[s]) == ", cor)
+
+geo_sct <- sct_dat %>%
+  ggplot(aes(`CD11C+ Ag signal`, `Lyve1+ Ag signal`)) +
+  geom_smooth(method = "lm", color = "black", alpha = 0.1, linewidth = 0.5, linetype = 2) +
+  geom_point(size = 3, color = "#6A51A3") +
+  geom_text(
+    aes(x = 0, y = max(`Lyve1+ Ag signal`), label = cor),
+    parse = TRUE,
+    hjust = -0.3,
+    vjust = 0.5,
+    color = "black",
+    size  = ttl_pt1 / .pt,
+    check_overlap = TRUE
+  ) +
+  scale_x_continuous(trans = "log10") +
+  scale_y_continuous(trans = "log10") +
+  guides(color = guide_legend(override.aes = list(size = 4))) +
+  base_theme +
+  theme(
+    aspect.ratio = 1,
+    legend.title = element_blank(),
+    legend.text  = element_text(size = ttl_pt2),
+    axis.title   = element_text(size = ttl_pt2)
+  )
+```
+
+```{r "FIG 5 CSHL POSTER", fig.width = 12, fig.height = 8.5}
+bot <- plot_grid(
+  geo_bxs, geo_sct,
+  nrow   = 1,
+  align  = "h",
+  axis   = "tb",
+  labels = c("B", "C"),
+  label_size = ttl_pt2 * 1.5
+)
+
+plot_grid(
+  img_fig, bot,
+  ncol = 1,
+  rel_heights = c(1, 0.75)
+)
+```
+
+---
+
+<br>
+
+<br>
+
+## Figure 6
+
+*Antigen archiving is impaired during CHIKV infection*
+
+A.  The fraction of predicted Ag-competent cLECs is shown for mock and
+    CHIKV-infected mice
+B.  cLEC Ag-high module scores are shown for mock and CHIKV-infected mice
+C.  The percentage of ova+ LECs for mice infected with WT CHIKV or an
+    attenuated strain (CHIKV 181/25)
+
+```{r "CHIKV data"}
+# CHIKV theme
+chikv_clrs <- c(
+  `Ag-low`       = "#56B4E9",
+  `Ag-competent` = "#D7301F",
+  other          = "white"
+)
+
+treat_clrs <- set_names(chikv_clrs[1:2], c("mock", "CHIKV"))
+
+chikv_u_theme <- umap_theme_2 +
+  theme(aspect.ratio = 0.7)
+
+# Load CHIKV data
+rm(lec_so, dc_so)
+
+chikv_so <- qread(here(params$chikv_dir, "so_lec.qs"))
+
+chikv_so <- chikv_so %>%
+  subset(tm == "24hpi") %>%
+  AddMetaData(chikv_preds, col.name = str_c("rf_", colnames(chikv_preds)))
+
+chikv_so <- chikv_so %>%
+  mutate_meta(
+    mutate,
+    pred_grp  = dplyr::recode(rf_pred, high = "Ag-competent", low = "Ag-low"),
+    pred_grp  = fct_relevel(pred_grp, rev(names(chikv_clrs))),
+    treatment = fct_relevel(treatment, c("mock", "CHIKV")),
+    subtype   = lec_subtype  # add subtype column to keep consistent with other
+  )                          # objects
+
+chikv_so <- chikv_so %>%
+  AddMetaData(FetchData(., c("hUMAP_1", "hUMAP_2")))
+
+# Add module scores
+rf_feats %>%
+  iwalk(~ {
+    clmn_nms <- str_c(.y, "_", names(.x))
+
+    clmn_nms <- set_names(
+      str_c(clmn_nms, seq_along(clmn_nms)),
+      clmn_nms
+    )
+
+    chikv_so <<- chikv_so %>%
+      AddModuleScore(
+        features = .x,
+        name     = names(clmn_nms)
+      ) %>%
+      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
+  })
+
+# Data for plotting
+chikv_dat <- chikv_so@meta.data %>%
+  as_tibble(rownames = ".cell_id")
+```
+
+```{r "CHIKV Ag class bargraphs"}
+# Format data for bargraphs
+chikv_bar_dat <- chikv_dat %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(subtype = fct_relevel(subtype, rf_typs))
+
+# Create Ag class bargraphs
+chikv_ag_bars <- chikv_bar_dat %>%
+  filter(subtype == rf_cell_type) %>%
+  create_chikv_class_bars(
+    x   = "treatment",
+    n_p = n_distinct(chikv_bar_dat$subtype),
+    ttl = str_c("fraction Ag-competent ", rf_cell_type, "s")
+  ) +
+  theme(
+    aspect.ratio = 1.3,
+    strip.text = element_blank()
+  )
+```
+
+```{r "CHIKV Ag module score boxplots"}
+# Format data for plotting
+chikv_bx_dat <- chikv_dat %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(subtype = fct_relevel(subtype, rf_typs))
+
+# Plot Ag module scores
+chikv_ag_bxs <- chikv_bx_dat %>%
+  filter(subtype == rf_cell_type) %>%
+  create_chikv_module_boxes(
+    module_clmns = "cLEC_high",
+    ttl          = "cLEC Ag-high module",
+    n_p          = length(ag_modules),
+    size         = 0.75
+  ) +
+  theme(
+    aspect.ratio = 1.3,
+    strip.text   = element_blank()
+  )
+```
+
+```{r "Cormac's data"}
+# Format data for plot
+tbl_nm <- "ova+ LECs (%)"
+
+pzfx_dat <- read_pzfx(
+  here("results/figures/TEM2306 results.pzfx"),
+  table = tbl_nm
+)
+
+pzfx_lvls <- colnames(pzfx_dat)
+
+pzfx_clrs <- set_names(
+  c("#56B4E9", "#E69F00", "#D7301F"),
+  pzfx_lvls
+)
+
+pzfx_dat <- pzfx_dat %>%
+  as_tibble() %>%
+  filter(if_any(everything(), ~ !is.na(.x))) %>%
+  mutate(mouse = row_number()) %>%
+  pivot_longer(-mouse) %>%
+  filter(!is.na(value)) %>%
+  mutate(name = fct_relevel(name, pzfx_lvls))
+
+# Add significance labels based on Cormac's original plot
+pzfx_sig <- list(
+  `CHIKV 181/25` = "*",
+  `polyI:C/ova`  = "**"
+)
+
+p_dat <- pzfx_dat %>%
+  pull(name) %>%
+  unique() %>%
+  expand.grid(., .) %>%
+  filter(
+    Var1 != Var2,
+    Var1 == last(pzfx_lvls),
+  ) %>%
+  mutate(Var2 = fct_relevel(Var2, pzfx_lvls)) %>%
+  arrange(desc(Var2)) %>%
+  mutate(
+    sig  = pzfx_sig[as.character(Var2)],
+    y    = 110 + (10 * (row_number() - 1)),
+    x    = match(Var2, pzfx_lvls),
+    x    = x + ((length(pzfx_lvls) - x) / 2)
+  )
+
+# Format data for bargraphs
+bar_dat <- pzfx_dat %>%
+  group_by(name) %>%
+  summarize(value = median(value), .groups = "drop")
+
+# Create bargraphs
+pzfx_plt <- pzfx_dat %>%
+  ggplot(aes(name, value, fill = name)) +
+  geom_col(data = bar_dat, width = 0.75) +
+  geom_point(size = 3, show.legend = FALSE) +
+  
+  geom_segment(
+    aes(x = Var1, xend = Var2, y = y, yend = y, fill = NULL),
+    data = p_dat
+  ) +
+  geom_text(
+    aes(x = x, y = y, label = sig, fill = NULL),
+    data = p_dat,
+    size = ttl_pt2 * 1.5 / .pt
+  ) +
+  
+  scale_fill_manual(values = pzfx_clrs) +
+  scale_y_continuous(expand = expansion(c(0.01, 0.05))) +
+  labs(y = tbl_nm) +
+  base_theme +
+  theme(
+    plot.margin     = margin(20, 0, 0, 0),
+    aspect.ratio    = 1.3,
+    legend.position = "none",
+    axis.title.x    = element_blank(),
+    axis.text.x     = element_text(size = ttl_pt2, angle = 30, hjust = 1)
+  )
+```
+
+```{r "FIG 6 CSHL POSTER", fig.width = 12, fig.height = 5}
+plot_grid(
+  chikv_ag_bars, chikv_ag_bxs, pzfx_plt,
+  nrow   = 1,
+  align  = "h",
+  axis   = "tb",
+  labels = c("A", "B", "C"),
+  label_size = ttl_pt2 * 1.5,
+  vjust  = 1
+)
+```
+
+---
+
+<br>
+
+<br>
+
+## Session info
+
+```{r "session info"}
+sessionInfo()
+```
