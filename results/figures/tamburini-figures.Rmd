@@ -14,7 +14,7 @@ output:
 params:
   template_dir:  "src"                                                     # template Rmarkdowns
   so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
-  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models" # ML models
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models" # RF models
   geomx_dir:     "results/geomx"
   chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
   ref_dir:       "ref"                                                     # clustifyr references
@@ -25,7 +25,7 @@ params:
       exp-0: "~/Projects/antigen-tracking/results"
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
-editor_options: 
+editor_options:
   chunk_output_type: console
 ---
 
@@ -400,7 +400,7 @@ ag_heats <- ag_bx_dat %>%
 ```
 
 ```{r "Fig 1 diagram"}
-img <- readPNG(here("results/figures/fig1_exp_design.png"))
+img <- readPNG(here("results/figures/experiment_design/fig1_exp_design.png"))
 img <- rasterGrob(img, interpolate = TRUE)
 
 # Adjust plot limits if necessary
@@ -1636,7 +1636,7 @@ ex_mod_bxs <- rf_mod_args %>%
 ```
 
 ```{r "Fig 3 diagram"}
-img <- readPNG(here("results/figures/fig3_exp_design.png"))
+img <- readPNG(here("results/figures/experiment_design/fig3_exp_design.png"))
 img <- rasterGrob(img, interpolate = TRUE)
 
 # Adjust plot limits if necessary
@@ -2513,8 +2513,8 @@ heat <- heat_dat %>%
 ```
 
 ```{r "Cormac's figure"}
-img_g <- readPNG(here("results/figures/fig5g.png"))
-img_h <- readPNG(here("results/figures/fig5h.png"))
+img_g <- readPNG(here("results/figures/morrison_chikv/fig5g.png"))
+img_h <- readPNG(here("results/figures/morrison_chikv/fig5h.png"))
 
 fig5gh <- list(img_g, img_h) %>%
   map(~ {

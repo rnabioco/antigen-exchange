@@ -85,7 +85,6 @@ rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
 #' @param feat_p p-value cutoff for selecting best features
 #' @param min_feats minimum number of features to allow after feature selection
 #' @param min_cells minimum number of cells required for each group in data_clmn
-#' @param scale_data Should independent variables be scaled
 #' @param select_feats should features be filtered based on p-value
 #' @param df_list list of data.frames containing data for each mouse to use for
 #' comparing the fraction of predicted Ag-high cells. Want a model where the
@@ -100,7 +99,7 @@ rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
 #' @param ... additional parameters to pass to ranger::ranger()
 train_rf <- function(df_in, data_clmn, param_lst,
                      feat_p = 0.05, min_feats = 20, min_cells = 30,
-                     scale_data = FALSE, select_feats = TRUE, df_list = NULL,
+                     select_feats = TRUE, df_list = NULL,
                      frac_grp = "high", balance_groups = FALSE,
                      degs = NULL, include_objects = FALSE, ...) {
   
@@ -117,14 +116,6 @@ train_rf <- function(df_in, data_clmn, param_lst,
   
   classes     <- as.character(unique(rf_dat[[data_clmn]]))
   class_sizes <- table(rf_dat[[rf_dat_clmn]])
-  
-  # Scale data
-  if (scale_data) {
-    rf_dat <- rf_dat %>%
-      mutate(
-        across(-all_of(data_clmn), ~ as.numeric(scale(.x)))
-      )
-  }
   
   # Adjust groups so they are balanced
   # split into train/test data
@@ -1437,7 +1428,7 @@ lec_so %>%
   qsave(here(params$so_dir, "lec_so.qs"))
 ```
 
-```{r "identify Ag DEGs", eval = run_rf}
+```{r "RF identify Ag DEGs", eval = run_rf}
 # Identify Ag markers for all LECs for each mouse
 fc <- 0
 
@@ -1505,7 +1496,7 @@ degs %>%
   write_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
 ```
 
-```{r "train RF models", eval = run_rf}
+```{r "RF train models", eval = run_rf}
 # Test parameters and calculate stats for each LEC subtype
 rf_stats <- rf_typs %>%
   map_dfr(~ {
@@ -1524,7 +1515,6 @@ rf_stats <- rf_typs %>%
       rename_with(~ str_replace_all(.x, "-", "_")) %>%
       rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
       rename_with(~ str_c("x", .x), matches("^[0-9]")) %>%
-      column_to_rownames(".cell_id") %>%
       split(.$mouse)
     
     # Set RF params to test every combination
@@ -1544,7 +1534,6 @@ rf_stats <- rf_typs %>%
         data_clmn       = rf_dat_clmn,
         param_lst       = param_lst,
         df_list         = all_dat[names(all_dat) != rf_mouse],
-        scale_data      = FALSE,
         include_objects = FALSE
       )
     
@@ -1564,19 +1553,14 @@ rf_stats <- rf_typs %>%
     res
   })
 
-# Identify top models for each cell type
-rf_stats <- rf_stats %>%
+# Train top models for each cell type
+# filter based on Balanced Accuracy and F1
+rf_mods_best <- rf_stats %>%
   distinct(high / low, F1, `Balanced Accuracy`, .keep_all = TRUE) %>%
   group_by(subtype) %>%
   slice_max(`Balanced Accuracy`, prop = 0.2) %>%
-  slice_max(F1, n = 100, with_ties = FALSE) %>%
-  ungroup()
-
-
-
-## !! TRY RE-RUNNING FROM HERE !! ##
-# Train top models
-rf_mods <- rf_stats %>%
+  slice_max(F1, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
   pmap_dfr(~ {
     args <- list(...)
     typ  <- args$subtype
@@ -1595,90 +1579,18 @@ rf_mods <- rf_stats %>%
       "num.trees", "low", "high"
     )
     
-    rf_dat %>%
+    mods <- rf_dat %>%
       train_rf(
         data_clmn       = rf_dat_clmn,
         param_lst       = args[stats],
         include_objects = TRUE
-      ) %>%
-      mutate(subtype = args$subtype)
-  })
-
-# Train top models
-rf_mods_best <- rf_mods_best %>%
-  pmap_dfr(~ {
-    args <- list(...)
-    typ  <- args$subtype
+      )
     
-    feats <- degs %>%
-      filter(subtype == typ) %>%
-      pull(feature) %>%
-      unique()
-
-    rf_dat <- lec_so %>%
-      subset(subtype == typ & mouse == rf_mouse) %>%
-      FetchData(unique(c(rf_dat_clmn, feats)))
-
-    stats <- c("mtry", "min.node.size", "num.trees", "low", "high")
-    
-    rf_dat %>%
-      train_rf(
-        data_clmn       = rf_dat_clmn,
-        param_lst       = args[stats],
-        include_objects = TRUE
-      ) %>%
-      mutate(subtype = args$subtype)
+    mods
   })
 ```
 
-```{r "load CHIKV data", eval = run_rf}
-# Load CHIKV data
-chikv_so <- qread(here(params$chikv_dir, "so_lec.qs"))
-
-chikv_feats <- degs %>%
-  pull(feature) %>%
-  unique()
-
-chikv_clmns <- c(
-  "orig.ident", "rep", "treatment", "tm",
-  chikv_type_clmn,
-  "UMAP_1", "UMAP_2"
-)
-
-chikv_dat <- chikv_so %>%
-  FetchData(c(chikv_clmns, chikv_feats))
-
-# Add zeros for missing genes
-missing_gns <- chikv_feats[!chikv_feats %in% colnames(chikv_dat)]
-
-chikv_dat[, missing_gns] <- 0
-
-chikv_dat <- chikv_dat %>%
-  rename_with(~ str_replace_all(.x, "-", "_")) %>%
-  rename_with(~ str_c("x", .x), matches("^[0-9]"))
-```
-
-```{r "RF performance using CHIKV data", eval = run_rf}
-# Format CHIKV RF data
-# need to add zeros for missing genes
-chikv_so <- qread(params$chikv_so) %>%
-  subset(treatment == "mock" & tm == "24hpi" & rep == 1)
-
-chikv_feats <- degs %>%
-  pull(feature) %>%
-  unique()
-
-chikv_dat <- chikv_so %>%
-  FetchData(c("lec_type", chikv_feats))
-
-missing_gns <- chikv_feats[!chikv_feats %in% colnames(chikv_dat)]
-
-chikv_dat[, missing_gns] <- 0
-
-chikv_dat <- chikv_dat %>%
-  rename_with(~ str_replace_all(.x, "-", "_")) %>%
-  rename_with(~ str_c("x", .x), matches("^[0-9]"))
-
+```{r "RF PERFORMANCE USING CHIKV DATA", eval = FALSE}
 # Check model performance using some CHIKV data
 # assess fold change in module score for one mock CHIKV replicate
 rf_mods <- rf_mods %>%
@@ -1696,7 +1608,7 @@ rf_mods <- rf_mods %>%
       FetchData(unique(c(rf_dat_clmn, feats)))
     
     # Pull top features
-    mod_feats <- args$feats[[1]] %>%
+    mod_feats <- args$feats %>%
       unlist(use.names = FALSE) %>%
       str_replace_all("_", "-") %>%
       str_remove("^x")
@@ -1717,10 +1629,10 @@ rf_mods <- rf_mods %>%
     
     # Predict using models for each LEC subset
     chikv_dat <- chikv_dat %>%
-      filter(lec_type == args$subtype) %>%
-      dplyr::select(-lec_type)
+      filter(!!sym(chikv_type_clmn) == args$subtype) %>%
+      dplyr::select(-all_of(chikv_type_clmn))
     
-    chikv_preds <- args$mod[[1]] %>%
+    chikv_preds <- args$mod %>%
       rf_predict(
         dat = chikv_dat,
         return_stats = FALSE
@@ -1729,7 +1641,7 @@ rf_mods <- rf_mods %>%
       column_to_rownames(".cell_id")
     
     chikv_so <- chikv_so %>%
-      subset(lec_type == args$subtype) %>%
+      subset(!!sym(chikv_type_clmn) == args$subtype) %>%
       AddMetaData(chikv_preds)
     
     # Add module scores
@@ -1772,6 +1684,8 @@ rf_mods <- rf_mods %>%
     
     # Return stats
     res <- args %>%
+      modify_if(~ length(.x) > 1, ~ list(.x)) %>%
+      as_tibble() %>%
       bind_cols(chikv_stats)
     
     res
@@ -1779,20 +1693,14 @@ rf_mods <- rf_mods %>%
 
 # Select best model
 rf_mods_best <- rf_mods %>%
-  filter(high_mod_fc >= 1.2, low_mod_fc < 0.9) %>%
-  arrange(desc(F1), desc(high_mod_fc), low_mod_fc) %>%
   group_by(subtype) %>%
-  dplyr::slice(1) %>%
+  slice_max(F1, n = 1) %>%
   ungroup()
 ```
 
-```{r "save RF models", eval = run_rf}
+```{r "RF save models", eval = run_rf}
 # Save models
-rf_mods %>%
-  qsave(here(params$mod_dir, "ag-high_models.qs"))
-
-rf_mods %>%
-  dplyr::select_if(~ !is.list(.x)) %>%
+rf_stats %>%
   write_tsv(here(params$mod_dir, "ag-high_stats.tsv.gz"))
 
 rf_mods_best %>%
@@ -1836,7 +1744,7 @@ rf_feats %>%
   qsave(here(params$mod_dir, "ag-high_features.qs"))
 ```
 
-```{r "predict Ag class", eval = run_rf}
+```{r "RF predict Ag class", eval = run_rf}
 # Predict Ag class
 # predictions are made separately for each mouse IS THIS NECESSARY??
 info_clmns <- c("subtype", "mouse")
@@ -1909,7 +1817,34 @@ rf_preds_2 %>%
   write_tsv(here(params$mod_dir, str_c("ag-high_", rf_cell_type, "_preds.tsv.gz")))
 ```
 
-```{r "predict CHIKV", eval = run_rf}
+```{r "RF load CHIKV data", eval = run_rf}
+# Load CHIKV data
+chikv_so <- qread(here(params$chikv_dir, "so_lec.qs"))
+
+chikv_feats <- degs %>%
+  pull(feature) %>%
+  unique()
+
+chikv_clmns <- c(
+  "orig.ident", "rep", "treatment", "tm",
+  chikv_type_clmn,
+  "UMAP_1", "UMAP_2"
+)
+
+chikv_dat <- chikv_so %>%
+  FetchData(c(chikv_clmns, chikv_feats))
+
+# Add zeros for missing genes
+missing_gns <- chikv_feats[!chikv_feats %in% colnames(chikv_dat)]
+
+chikv_dat[, missing_gns] <- 0
+
+chikv_dat <- chikv_dat %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+```
+
+```{r "RF predict CHIKV", eval = run_rf}
 # Predict using models for each LEC subset
 chikv_preds <- rf_mods_best %>%
   pmap_dfr(~ {
@@ -1937,10 +1872,11 @@ chikv_preds %>%
   write_tsv(here(params$mod_dir, "ag-high_chikv_preds.tsv.gz"))
 ```
 
-```{r "load RF models"}
+```{r "RF load models"}
 # Load saved objects
 rf_mods_best <- qread(here(params$mod_dir, "ag-high_best_models.qs"))
-degs         <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
+
+degs <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
 
 rf_preds <- read_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz")) %>%
   column_to_rownames(".cell_id")
@@ -2051,54 +1987,6 @@ rf_params %>%
       base_theme
   }) %>%
   plot_grid(plotlist = .)
-
-```
-
-```{r "OLD MODELS TEST", eval = FALSE}
-rf_stats <- read_tsv(here(params$mod_dir, "ag-high_stats.tsv.gz"))
-x <- qread(here(params$mod_dir, "ag-high_models_new.qs"))
-
-# rf_stats <- rf_stats %>%
-#   distinct(high / low, F1, `Balanced Accuracy`, .keep_all = TRUE) %>%
-#   group_by(subtype) %>%
-#   slice_max(`Balanced Accuracy`, prop = 0.2) %>%
-#   slice_max(F1, n = 100, with_ties = FALSE) %>%
-#   ungroup()
-
-rf_mods_best %>%
-  pmap_dfr(~ {
-    args <- list(...)
-    
-    rf_stats %>%
-      filter(
-        mtry          == args$mtry &
-        min.node.size == args$min.node.size &
-        num.trees     == args$num.trees &
-        subtype       == args$subtype &
-        low           == args$low &
-        high          == args$high
-      )
-    
-    # rf_stats <<- rf_stats %>%
-    #   mutate(
-    #     best = best |
-    #     mtry          == args$mtry &
-    #     min.node.size == args$min.node.size &
-    #     num.trees     == args$num.trees &
-    #     subtype       == args$subtype &
-    #     low           == args$low &
-    #     high          == args$high
-    #   )
-  }) %>%
-  select(F1)
-
-# First filtering
-rf_stats %>%
-  distinct(high / low, F1, `Balanced Accuracy`, .keep_all = TRUE) %>%
-  group_by(subtype) %>%
-  # slice_max(`Balanced Accuracy`, prop = 0.2) %>%
-  slice_max(F1, n = 100, with_ties = FALSE) %>%
-  ungroup()
 
 ```
 
@@ -2261,6 +2149,156 @@ rf_mods <- OLD_RES %>%
   ungroup()
 ```
 
+```{r "OLD MODELS TEST", eval = FALSE}
+rf_stats <- read_tsv(here(params$mod_dir, "ag-high_stats.tsv.gz"))
+x <- qread(here(params$mod_dir, "ag-high_models_new.qs"))
+
+# rf_stats <- rf_stats %>%
+#   distinct(high / low, F1, `Balanced Accuracy`, .keep_all = TRUE) %>%
+#   group_by(subtype) %>%
+#   slice_max(`Balanced Accuracy`, prop = 0.2) %>%
+#   slice_max(F1, n = 100, with_ties = FALSE) %>%
+#   ungroup()
+
+rf_mods_best %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    
+    rf_mods %>%
+      filter(
+        mtry          == args$mtry &
+        min.node.size == args$min.node.size &
+        num.trees     == args$num.trees &
+        subtype       == args$subtype &
+        low           == args$low &
+        high          == args$high
+      )
+    
+    # rf_stats <<- rf_stats %>%
+    #   mutate(
+    #     best = best |
+    #     mtry          == args$mtry &
+    #     min.node.size == args$min.node.size &
+    #     num.trees     == args$num.trees &
+    #     subtype       == args$subtype &
+    #     low           == args$low &
+    #     high          == args$high
+    #   )
+  })
+
+# First filtering
+rf_stats %>%
+  distinct(high / low, F1, `Balanced Accuracy`, .keep_all = TRUE) %>%
+  group_by(subtype) %>%
+  # slice_max(`Balanced Accuracy`, prop = 0.2) %>%
+  slice_max(F1, n = 100, with_ties = FALSE) %>%
+  ungroup()
+
+```
+
+```{r "OLD MODELS TEST 2", eval = FALSE}
+# Train top models
+x <- rf_mods_best %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    typ  <- args$subtype
+    
+    feats <- degs %>%
+      filter(subtype == typ) %>%
+      pull(feature) %>%
+      unique()
+
+    rf_dat <- lec_so %>%
+      subset(subtype == typ & mouse == rf_mouse) %>%
+      FetchData(unique(c(rf_dat_clmn, feats)))
+    
+    stats <- c(
+      "mtry", "min.node.size",
+      "num.trees", "low", "high"
+    )
+    
+    mods <- rf_dat %>%
+      train_rf(
+        data_clmn       = rf_dat_clmn,
+        param_lst       = args[stats],
+        include_objects = TRUE
+      )
+    
+    if (!is.null(mods)) {
+      mods <- mods %>%
+        mutate(subtype = args$subtype)
+    }
+    
+    mods
+  })
+
+new <- rf_mods_best %>%
+  split(.$subtype) %>%
+  imap_dfr(~ {
+    feats <- degs %>%
+      filter(subtype == .y) %>%
+      pull(feature) %>%
+      unique()
+
+    rf_dat <- lec_so %>%
+      subset(subtype == .y & mouse == rf_mouse) %>%
+      FetchData(unique(c(rf_dat_clmn, feats)))
+    
+    .x %>%
+      pmap_dfr(~ {
+        args <- list(...)
+        
+        stats <- c(
+          "mtry", "min.node.size", "num.trees",
+          "splitrule", "low", "high"
+        )
+        
+        stats <- stats[stats %in% names(args)]
+
+        rf_dat %>%
+          train_rf(
+            data_clmn       = rf_dat_clmn,
+            param_lst       = append(args[stats], list(splitrule = "gini")),
+            include_objects = TRUE
+          ) %>%
+          mutate(subtype = args$subtype)
+      })
+  })
+
+
+
+new <- rf_mods_best %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    
+    # Train model
+    feats <- old_degs %>%
+      filter(subtype == args$subtype) %>%
+      pull(feature) %>%
+      unique()
+    
+    rf_dat <- lec_so %>%
+      subset(subtype == args$subtype & mouse == rf_mouse) %>%
+      FetchData(unique(c(rf_dat_clmn, feats)))
+    
+    stats <- c(
+      "mtry", "min.node.size", "num.trees",
+      "low", "high"
+    )
+    
+    mod <- rf_dat %>%
+      train_rf(
+        data_clmn       = rf_dat_clmn,
+        param_lst       = args[stats],
+        include_objects = TRUE
+      ) %>%
+      mutate(subtype = args$subtype)
+    
+    mod
+  })
+
+```
+
 ```{r "UNUSED RF FUNCTIONS", eval = FALSE}
 # These are updated functions that were not used for final models
 
@@ -2269,7 +2307,10 @@ rf_mods <- OLD_RES %>%
 #' @param df_in data.frame containing features as columns and observations as
 #' rows
 #' @param data_clmn column in df_in containing response variable
-#' @param param_lst list of RF parameters to expand and test
+#' @param param_lst named list of RF parameters to expand and test,
+#' classes present in data_clmn can be downsampled at different ratios by
+#' including the class names and weights (an integer) in param_lst,
+#' specify NA for one of the classes to skip downsampling and use the data as is
 #' @param feat_p p-value cutoff for selecting best features
 #' @param min_feats minimum number of features to allow after feature selection
 #' @param min_cells minimum number of cells required for each group in data_clmn
@@ -2398,7 +2439,7 @@ train_rf <- function(df_in, data_clmn, param_lst,
     # mtry cannot be greater than the number of features
     # For shorter run time do not use cv for initial model
     if (args$mtry > (ncol(rf_train) - 1)) {
-      cli::cli_warn("mtry ({args$mtry}) is greater than the number of features")
+      cli_warn("mtry ({args$mtry}) is greater than the number of features")
       
       return(NULL)
     }
@@ -2543,7 +2584,6 @@ train_rf <- function(df_in, data_clmn, param_lst,
   
   res
 }
-
 ```
 
 ```{r "UNUSED TRAIN MODELS", eval = FALSE}
@@ -2808,5 +2848,39 @@ rf_mods_best %>%
 rm(chikv_so, chikv_rf_so, chikv_rf_dat)
 ```
 
+```{r "DEGS TEST", eval = FALSE}
+
+new_degs_2 <- degs %>%
+  filter(padj < 0.05, logFC > fc, subtype == "cLEC", mouse == "d14") %>%
+  as_tibble()
+
+old_degs_2 <- old_degs %>%
+  filter(padj < 0.05, logFC > fc, subtype == "cLEC", mouse == "d14") %>%
+  as_tibble()
+
+x <- degs %>%
+  filter(subtype != "all") %>%
+  split(.$subtype) %>%
+  .[2] %>%
+  imap_dfr(~ {
+    fts <- unlist(rf_feats[[.y]])
+    
+    .x %>%
+      filter(
+        # feature %in% fts,
+        logFC > fc,
+        mouse == rf_mouse
+      ) %>%
+      group_by(feature) %>%
+      mutate(
+        REMOVED = !any(padj < 0.05)
+      ) %>%
+      ungroup()
+  })
+
+x %>%
+  filter(REMOVED)
+
+```
 
 

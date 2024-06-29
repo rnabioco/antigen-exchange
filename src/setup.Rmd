@@ -1352,35 +1352,31 @@ norm_file <- here(params$ref_dir, "norm_factors.tsv")
 if (!file.exists(norm_file)) {
   plan(strategy = multisession, workers = 6)
   
-  norm_factors <- sam_info %>%
-    mutate(
-      raw_lib_size = future_pmap_dbl(., ~ {
-        args <- list(...)
-        .calc_lib_size(
-          here(params$res_dir[[args$experiment]], args$directory),
-          "raw_feature_bc_matrix"
-        )
-      }),
-      filt_lib_size = future_pmap_dbl(., ~ {
-        args <- list(...)
-        .calc_lib_size(
-          here(params$res_dir[[args$experiment]], args$directory),
-          "filtered_feature_bc_matrix"
-        )
-      })
-    )
+  norm_info <- sam_info %>%
+    future_pmap_dfr(~ {
+      args    <- list(...)
+      dat_dir <- here(params$res_dir[[args$experiment]], args$directory)
+      raw     <- .calc_lib_size(dat_dir, "raw_feature_bc_matrix")
+      filt    <- .calc_lib_size(dat_dir, "filtered_feature_bc_matrix")
+      
+      tibble(
+        !!!args,
+        raw_lib_size  = raw,
+        filt_lib_size = filt
+      )
+    })
   
   plan(strategy = sequential)
   
-  norm_factors %>%
+  norm_info %>%
     write_tsv(norm_file)
 }
 
-norm_factors <- read_tsv(norm_file)
+norm_info <- read_tsv(norm_file)
 
 norm_factors <- set_names(
-  norm_factors$raw_lib_size,
-  norm_factors$directory
+  norm_info$raw_lib_size,
+  norm_info$directory
 )
 ```
 
@@ -1414,6 +1410,8 @@ sobjs <- sam_info %>%
       norm_sobj()
   })
 
+names(sobjs) <- sam_info$directory
+
 sobjs %>%
   qsave(here(params$so_dir, "raw_sobjs.qs"))
 
@@ -1424,42 +1422,17 @@ stat_clmns <- c(
   "pct_mito"
 )
 
-plan(multisession, workers = 6)
-
-sam_stats <- sam_info %>%
-  future_pmap_dfr(~ {
-    args <- list(...)
-    
-    mat_dir <- args$directory %>%
-      here(params$res_dir[args$experiment], ., "outs")
-    
-    c("raw", "filtered") %>%
-      map_dfr(~ {
-        mat <- Read10X(here(mat_dir, str_c(.x, "_feature_bc_matrix")))
-        mat <- mat$`Antibody Capture`
-        
-        tibble(
-          matrix    = str_c("Ag_counts_", .x),
-          directory = args$directory,
-          ag_counts = sum(mat)
-        )
-      })
-  }) %>%
-  pivot_wider(names_from = matrix, values_from = ag_counts) %>%
-  mutate(Ag_counts_frac = Ag_counts_filtered / Ag_counts_raw)
-
-plan(strategy = sequential)
-
 sobjs %>%
   map_dfr(~ {
     .x@meta.data %>%
       as_tibble(rownames = "cell_id") %>%
-      group_by(directory, exp, sample, tm, mouse, vaccination, cell_sort, qc_class) %>%
+      group_by(directory, qc_class) %>%
       mutate(across(all_of(stat_clmns), median, .names = "med_{.col}")) %>%
       group_by(qc_class, !!!syms(str_c("med_", stat_clmns)), .add = TRUE) %>%
       summarize(n = n(), .groups = "drop")
   }) %>%
-  left_join(sam_stats, by = "directory") %>%
+  left_join(norm_info, by = "directory") %>%
+  mutate(frac_filt_Ag_counts = filt_lib_size / raw_lib_size) %>%
   write_tsv(here(params$so_dir, "sample_stats.tsv"))
 
 # Save filtered objects
@@ -1481,9 +1454,11 @@ sobjs %>%
 
 # Merge objects
 neg_idx    <- sam_info$cell_sort == "CD45neg"
-cd45neg_so <- merge(sobjs[neg_idx][[1]], sobjs[neg_idx][-1])
+sobjs      <- sobjs[neg_idx]
+cd45neg_so <- merge(sobjs[[1]], sobjs[-1])
 
 rm(sobjs)
+gc()
 
 cd45neg_so <- cd45neg_so %>%
   integrate_sobjs(group_vars = "mouse")
@@ -1560,9 +1535,11 @@ sobjs <- qread(here(params$so_dir, "sobjs.qs"))
 
 # Merge objects
 pos_idx    <- sam_info$cell_sort == "CD45pos"
-cd45pos_so <- merge(sobjs[pos_idx][[1]], sobjs[pos_idx][-1])
+sobjs      <- sobjs[pos_idx]
+cd45pos_so <- merge(sobjs[[1]], sobjs[-1])
 
 rm(sobjs)
+gc()
 
 cd45pos_so <- cd45pos_so %>%
   integrate_sobjs(group_vars = "mouse")
