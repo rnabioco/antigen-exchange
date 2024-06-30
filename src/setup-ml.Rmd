@@ -57,7 +57,9 @@ rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
   
   res <- res %>%
     dplyr::select(.cell_id, all_of(data_clmn), pred) %>%
-    mutate(correct = pred == !!sym(data_clmn)) %>%
+    mutate(
+      correct = as.character(pred) == as.character(!!sym(data_clmn))
+    ) %>%
     group_by(pred) %>%
     mutate(frac_correct = sum(correct) / n()) %>%
     ungroup()
@@ -1382,19 +1384,19 @@ ag_clmns <- set_names(
 
 ag_clmns %>%
   iwalk(~ {
-    lec_so <- lec_so %>%
-      mutate_meta(mutate, mouse_type = str_c(subtype, "_", mouse)) %>%
+    ag_so <- lec_so %>%
+      subset(mouse == rf_mouse) %>%
       cluster_signal(
         data_column  = .x,
-        grp_column   = "mouse_type",
+        grp_column   = "subtype",
         clust_column = .y,
         method       = "km"
       )
     
     # The threshold will be the same for each column since this is set using
     # only the d14 mouse
-    threshold <- lec_so@meta.data %>%
-      filter(mouse == rf_mouse, !!sym(.y) == "high") %>%
+    threshold <- ag_so@meta.data %>%
+      filter(!!sym(.y) == "high") %>%
       group_by(subtype) %>%
       summarize(threshold = min(!!sym(.x)), .groups = "drop")
     
@@ -1403,7 +1405,7 @@ ag_clmns %>%
     lec_so <<- lec_so %>%
       mutate_meta(
         mutate,
-        !!sym(.y) := ifelse(!!sym(.x) >= threshold[subtype], "high", "low")
+        !!sym(.y) := ifelse(!!sym(.x) >= threshold[as.character(subtype)], "high", "low")
       )
   })
 
@@ -1560,7 +1562,9 @@ rf_mods_best <- rf_stats %>%
   group_by(subtype) %>%
   slice_max(`Balanced Accuracy`, prop = 0.2) %>%
   slice_max(F1, n = 1, with_ties = FALSE) %>%
-  ungroup() %>%
+  ungroup()
+  
+rf_mods_best <- rf_mods_best %>%
   pmap_dfr(~ {
     args <- list(...)
     typ  <- args$subtype
@@ -1584,7 +1588,8 @@ rf_mods_best <- rf_stats %>%
         data_clmn       = rf_dat_clmn,
         param_lst       = args[stats],
         include_objects = TRUE
-      )
+      ) %>%
+      mutate(subtype = args$subtype)
     
     mods
   })
