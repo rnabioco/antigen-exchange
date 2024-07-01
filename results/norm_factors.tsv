@@ -1,4 +1,4 @@
-experiment	date	lanes	directory	sample	tm	mouse	vaccination	cell_sort	description	platform	chemistry	raw_lib_size	filt_lib_size
+experiment	date	lanes	directory	sample	tm	mouse	vaccination	cell_sort	description	platform	chemistry	Ag_counts_raw	Ag_counts_filtered
 exp-0	2020-07-10	200109_A00405_0194_AHNM2VDSXX,200129_A00405_0201_AH2FHWDSXY,200710_A00405_0247_AHCLTKDSXY	GEX_CD45neg_d2-ADT_CD45neg_d2	d2	2	d2	single	CD45neg	Day 2, CD45- cells	10X Chromium Controller	Single Cell 3' v3	11.20293	3.633454
 exp-0	2020-07-10	200109_A00405_0194_AHNM2VDSXX,200129_A00405_0201_AH2FHWDSXY,200710_A00405_0247_AHCLTKDSXY	GEX_CD45pos_d2-ADT_CD45pos_d2	d2	2	d2	single	CD45pos	Day 2, CD45+ cells	10X Chromium Controller	Single Cell 3' v3	12.004533	10.183123
 exp-0	2020-07-10	200109_A00405_0194_AHNM2VDSXX,200129_A00405_0201_AH2FHWDSXY,200710_A00405_0247_AHCLTKDSXY	GEX_CD45neg_d14-ADT_CD45neg_d14	d14	14	d14	single	CD45neg	Day 14, CD45- cells	10X Chromium Controller	Single Cell 3' v3	25.035399	15.657466
