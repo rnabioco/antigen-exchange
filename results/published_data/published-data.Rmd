@@ -16,7 +16,7 @@ params:
   mod_dir: "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-01"
   so_dir:  "~/Dropbox/Ryan/Projects/antigen-exchange/results/published_data"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -55,6 +55,9 @@ library("clustifyr")
 library("ranger")
 
 source(here("src/funs.R"))
+
+# Should objects be created
+create_so <- !file.exists(here(params$so_dir, "lec_so.qs"))
 ```
 
 ```{r "functions", eval = FALSE}
@@ -1577,10 +1580,10 @@ ref_immgen_dc <- cbind(ref_immgen[shared_gns, ], ref_mousespleenDC[shared_gns, ]
 
 ```{r "load models"}
 # Load RF models
-ag_mods  <- qread(here(params$mod_dir, "ag-high_best_models.qs"))
-ag_feats <- qread(here(params$mod_dir, "ag-high_features.qs"))
+rf_mods_best  <- qread(here(params$mod_dir, "ag-high_best_models.qs"))
+rf_feats      <- qread(here(params$mod_dir, "ag-high_features.qs"))
 
-all_ag_feats <- ag_feats %>%
+all_feats <- rf_feats %>%
   unlist(use.names = FALSE) %>%
   unique()
 ```
@@ -1598,7 +1601,7 @@ m_mart <- useEnsembl(biomrt, dataset = "mmusculus_gene_ensembl", host = host)
 
 hlogs <- getLDS(
   filters     = "external_gene_name",
-  values      = all_ag_feats,
+  values      = all_feats,
   attributes  = c("external_gene_name", "entrezgene_id"),
   attributesL = c("external_gene_name", "entrezgene_id"),
   mart        = h_mart,
@@ -1855,103 +1858,150 @@ takeda_so <- takeda_so %>%
   })
 ```
 
-```{r "load abe data"}
-so_file  <- here(params$so_dir, "abe.qs")
+```{r "abe process data", eval = create_so}
+# Load matrices
 data_dir <- here("data/abe")
 
-if (!file.exists(so_file)) {
-  meta <- read_tsv(here(data_dir, "metadata/sample_file.tsv"))
-  
-  # For some reason there are duplicate files with the same name/MD5
-  # remove these duplicates
-  meta <- meta %>%
-    mutate(
-      md5 = map_chr(file_accession_id, ~ {
-        md5 <- dir(here(data_dir, .x), pattern = ".md5$", full.names = TRUE)
-        
-        readLines(md5, warn = FALSE)
-      }),
-      duplicated = duplicated(md5)
-    ) %>%
-    filter(!duplicated)
-  
-  # Create separate directory for each sample with symlinks
-  ega_dirs <- meta$file_accession_id
-  
-  sams <- c()
-  
-  ega_dirs %>%
-    walk(~ {
-      d <- file.path(data_dir, .x)
+meta <- read_tsv(here(data_dir, "metadata/sample_file.tsv"))
+
+# For some reason there are duplicate files with the same name/MD5
+# remove these duplicates
+meta <- meta %>%
+  mutate(
+    md5 = map_chr(file_accession_id, ~ {
+      md5 <- dir(here(data_dir, .x), pattern = ".md5$", full.names = TRUE)
       
-      file <- dir(d, pattern = ".gz$", full.names = TRUE)
-      
-      file_prfx <- str_extract(basename(file), "^[A-Z0-9_]+")
-      file_base <- str_remove(basename(file), file_prfx)
-      
-      dir_nm <- file.path(data_dir, str_remove(file_prfx, "_$"))
-      
-      if (!dir.exists(dir_nm)) dir.create(dir_nm)
-      
-      file.symlink(file, file.path(dir_nm, file_base))
-      
-      if (!dir_nm %in% sams) sams <<- c(sams, dir_nm)
-    })
-  
-  names(sams) <- basename(sams)
-  
-  # Create Seurat objects
-  so <- sams %>%
-    imap(~ {
-      .x %>%
-        Read10X() %>%
-        CreateSeuratObject(project = .y) %>%
-        mutate_meta(mutate, sample = .y)
-    })
-  
-  # Merge objects
-  so <- merge(so[[1]], so[-1], add.cell.ids = names(so))
-  
-  so %>%
-    subset(orig.ident == "FL01_NHC") %>%
+      readLines(md5, warn = FALSE)
+    }),
+    duplicated = duplicated(md5)
+  ) %>%
+  filter(!duplicated)
+
+# Create separate directory for each sample with symlinks
+ega_dirs <- meta$file_accession_id
+
+sams <- c()
+
+ega_dirs %>%
+  walk(~ {
+    d <- file.path(data_dir, .x)
     
-    run_m3drop(var_p = 0.05) %>%
-    ScaleData() %>%
-    RunPCA() %>%
-    RunUMAP(
-      dims = 1:40,
-      umap.method = "umap-learn"
-    ) %>%
-    cluster_RNA(
-      rerun_pca  = FALSE,
-      umap_meta  = FALSE,
-      resolution = c(1, 3, 5, 10)
-    )
-  
-  # Annotate cell types
-  
-    # clustify(
-    #   ref_mat     = ref_immgen,
-    #   cluster_col = "RNA_snn_res.5"
-    # )
-  
-  qsave(so, so_file)
-  
-  rm(so)
-}
+    file <- dir(d, pattern = ".gz$", full.names = TRUE)
+    
+    file_prfx <- str_extract(basename(file), "^[A-Z0-9_]+")
+    file_base <- str_remove(basename(file), file_prfx)
+    
+    dir_nm <- file.path(data_dir, str_remove(file_prfx, "_$"))
+    
+    if (!dir.exists(dir_nm)) dir.create(dir_nm)
+    
+    file.symlink(file, file.path(dir_nm, file_base))
+    
+    if (!dir_nm %in% sams) sams <<- c(sams, dir_nm)
+  })
 
-abe_so <- qread(so_file)
+names(sams) <- basename(sams)
 
-# Format cell type labels
-abe_so <- abe_so %>%
+# Create Seurat objects
+so <- sams %>%
+  imap(~ {
+    .x %>%
+      Read10X() %>%
+      CreateSeuratObject(project = .y) %>%
+      mutate_meta(mutate, sample = .y)
+  })
+
+# Merge objects
+so <- merge(so[[1]], so[-1], add.cell.ids = names(so))
+
+so <- so %>%
+  NormalizeData() %>%
+  run_m3drop(var_p = 0.001) %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  RunUMAP(
+    dims = 1:40,
+    umap.method = "umap-learn"
+  ) %>%
+  cluster_RNA(
+    rerun_pca  = FALSE,
+    umap_meta  = FALSE,
+    resolution = c(1, 3, 5, 10)
+  ) %>%
   mutate_meta(
     mutate,
-    cell_type = if_else(
-      grepl("^Endothelial cells", type),
-      str_extract(type, "(?<=\\().+(?=\\))"),
-      str_remove(type, "\\(.+")
-    )
+    tissue = str_extract(orig.ident, "^[A-Z]+")
   )
+```
+
+```{r "abe cell types", eval = create_so}
+# Annotate cell types
+clst_clmn <- "RNA_snn_res.5"
+
+so <- so %>%
+  mutate_meta(mutate, cell_type = "other CD45-") %>%
+  classify_markers(
+    feats      = "PTPRC",
+    filt       = PTPRC >= 0.4,
+    clst_col   = clst_clmn,
+    type_label = "other CD45+",
+    type_col   = "cell_type"
+  ) %>%
+  classify_markers(
+    feats      = c("cell_type", "PROX1", "PECAM1"),
+    filt       = cell_type == "other CD45-" & PROX1 > 0.75 & PECAM1 > 1,
+    clst_col   = clst_clmn,
+    type_label = "LEC",
+    type_col   = "cell_type"
+  ) %>%
+  classify_markers(
+    feats      = c("cell_type", "JAM2", "PECAM1"),
+    filt       = cell_type == "other CD45-" & JAM2 > 0.75 & PECAM1 > 1,
+    clst_col   = clst_clmn,
+    type_label = "BEC",
+    type_col   = "cell_type"
+  ) %>% 
+  classify_markers(
+    feats      = c("cell_type", "CR2"),
+    filt       = cell_type == "other CD45-" & CR2 > 1,
+    clst_col   = clst_clmn,
+    type_label = "FDC",
+    type_col   = "cell_type"
+  )
+
+save_objs(so, ob_dir = params$so_dir)
+```
+
+```{r "abe lec types", eval = create_so}
+# Process LEC object
+lec_so <- so %>%
+  subset(cell_type == "LEC") %>%
+  NormalizeData() %>%
+  run_m3drop(var_p = 0.001) %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  RunUMAP(
+    dims = 1:40,
+    umap.method = "umap-learn"
+  ) %>%
+  cluster_RNA(
+    rerun_pca  = FALSE,
+    umap_meta  = FALSE,
+    resolution = c(1, 3, 5, 10)
+  )
+
+# Annotate LEC subsets
+lec_so <- lec_so %>%
+  clustify(
+    ref_mat     = ref_LEC,
+    cluster_col = "RNA_snn_res.5"
+  )
+
+save_objs(lec_so, ob_dir = params$so_dir)
+```
+
+```{r "abe load object"}
+lec_so <- qread(here(params$so_dir, "lec_so.qs"))
 ```
 
 ```{r "theme"}
@@ -1968,38 +2018,56 @@ umap_theme <- theme(
 umap_theme_2 <- umap_theme +
   theme(panel.border = element_rect(color = "grey85"))
 
+# Cell type colors
+typs <- unique(lec_so$type)
+
+pal  <- "Austria"
+clrs <- as.character(met.brewer(pal, length(typs)))
+clrs <- set_names(clrs, typs) 
+
+# Tissue colors
+tissue_clrs <- c(
+  MFLN = "#00B7A7",
+  FL   = "#A40000"
+)
+
 # Ag colors
 ag_clrs <- c(
   `Ag-low` = "lightblue",
   `Ag-competent` = "#A40000"
 )
+
+# Set label levels
+lec_so <- lec_so %>%
+  mutate_meta(
+    mutate,
+    tissue = fct_relevel(tissue, names(tissue_clrs))
+  )
 ```
 
 ```{r "predict Ag-competent cLECs"}
 # Pull data for RF features
-# MISSING 28/122 FEATURES
-rf_feats <- unlist(ag_feats$cLEC, use.names = FALSE)
-
+# MISSING 31/169 FEATURES
 hu_feats <- hlogs %>%
   filter(
-    gene_mm %in% rf_feats,
-    gene_hs %in% rownames(hu_so)
+    gene_mm %in% all_feats,
+    gene_hs %in% rownames(lec_so)
   ) %>%
   distinct(gene_mm, gene_hs)
 
 hu_feats <- set_names(hu_feats$gene_mm, hu_feats$gene_hs)
 
-missing_feats <- rf_feats[!rf_feats %in% hu_feats]
+missing_feats <- all_feats[!all_feats %in% hu_feats]
 
 # Filter LEC subsets
-# LEC1 == cLECs
-# rename columns with mouse gene names
-# add zeros for missing genes
-# need to adjust gene names to remove "-" and add an "x" for genes starting with
+# * LEC1 == cLECs
+# * rename columns with mouse gene names
+# * add zeros for missing genes
+# * need to adjust gene names to remove "-" and add an "x" for genes starting with
 #   a number
-hu_dat <- hu_so %>%
+hu_dat <- lec_so %>%
   FetchData(c("type", names(hu_feats))) %>%
-  # filter(type == "LEC1") %>%
+  filter(type == "LEC1") %>%
   dplyr::select(-type)
 
 colnames(hu_dat) <- hu_feats[colnames(hu_dat)]
@@ -2014,7 +2082,7 @@ nms[idx] <- str_c("x", nms[idx])
 colnames(hu_dat) <- nms
 
 # Predict Ag-competent cLECs
-rf_mod <- ag_mods %>%
+rf_mod <- rf_mods_best %>%
   filter(subtype == "cLEC") %>%
   pull(mod)
 
@@ -2025,7 +2093,7 @@ hu_pred <- hu_dat %>%
   mutate(pred = rf_res$predictions) %>%
   dplyr::select(pred)
 
-hu_so <- hu_so %>%
+lec_so <- lec_so %>%
   AddMetaData(hu_pred) %>%
   mutate_meta(
     mutate,
@@ -2035,7 +2103,7 @@ hu_so <- hu_so %>%
 # Add module scores
 key <- set_names(names(hu_feats), unname(hu_feats))
 
-hu_modules <- ag_feats$cLEC %>%
+hu_modules <- rf_feats$cLEC %>%
   map(~ na.omit(unname(key[.x])))
 
 module_nms <- set_names(
@@ -2043,7 +2111,7 @@ module_nms <- set_names(
   names(hu_modules)
 )
 
-hu_so <- hu_so %>%
+lec_so <- lec_so %>%
   mutate_meta(dplyr::select, -any_of(c("low", "high"))) %>%
   AddModuleScore(features = hu_modules, name = names(hu_modules)) %>%
   mutate_meta(rename, !!!module_nms)
@@ -2051,157 +2119,51 @@ hu_so <- hu_so %>%
 
 <br>
 
-## Lei
-
-Data from [Lei et al.](https://doi.org/10.1084/jem.20221847) were downloaded
-and processed.
-
-UMAP projections show cell type annotations, LECs and BECs are circled.
-
-```{r "cell types", fig.width = 8, fig.height = 6}
-# Plot colors
-clrs <- unique(lei_so$cell_type)
-
-clrs <- set_names(
-  as.character(met.brewer("Austria", n_distinct(clrs))),
-  clrs
-)
-
-clrs["unassigned"] <- "grey65"
-
-# Create UMAPs
-top <- list(Inf, c("LEC", "BEC"))
-
-circ_dat <- lei_so@meta.data %>%
-  filter(cell_type %in% c("LEC", "BEC")) %>%
-  summarize(across(starts_with("UMAP_"), mean), .groups = "drop")
-
-u <- lei_so %>%
-  plot_scatter(
-    "cell_type",
-    group_col   = "sample",
-    plot_colors = clrs,
-    size        = 0.2,
-    top         = Inf
-  ) +
-  geom_circle(
-    aes(x0 = UMAP_1, y0 = UMAP_2, r  = 2.5),
-    data     = circ_dat,
-    color    = "black",
-    linetype = 2
-  ) +
-  umap_theme_2 +
-  theme(legend.title = element_blank())
-
-u
-```
-
-<br>
-
-Expression of key cell type markers is shown below.
-
-```{r "type markers", fig.width = 11, fig.height = 8}
-gns <- c(
-  "Ptprc",
-  "Cd3d",  "Cd19",
-  "Pdpn",  "Pecam1",
-  "Prox1", "Lyve1"
-)
-
-marker_plt <- gns %>%
-  map(~ {
-    lei_so %>%
-      plot_violin(
-        .x,
-        cluster_col    = "cell_type",
-        plot_colors    = clrs,
-        scale          = "width",
-        draw_quantiles = c(0.25, 0.75)
-      )
-  }) %>%
-  plot_grid(
-    plotlist = .,
-    ncol     = 2,
-    align    = "vh",
-    axis     = "trbl"
-  )
-
-marker_plt
-```
-
----
-
-<br>
-
-<br>
-
-## Takeda
-
-Data from [Takeda et al.](https://doi.org/10.1016/j.immuni.2019.06.027) were
-downloaded and processed.
-This study includes scRNA-seq data for 4 axillary lymph nodes (Ax LN) and 2
-head and neck lymph nodes (HN LN).
-Ag-competent cells were predicted for human cLECs (LEC1) using a random forest
-model trained using mouse day 14 cLECs.
-
 The fraction of predicted Ag-competent cells is shown below for each sample.
-
-```{r "takeda colors"}
-# Cell type colors
-typs <- unique(hu_so$type)
-
-pal  <- "Austria"
-clrs <- as.character(met.brewer(pal, length(typs)))
-clrs <- set_names(clrs, typs)
-```
 
 ```{r "fraction Ag-competent cLECs", fig.width = 8, fig.height = 3}
 # Plot fraction Ag-competent cLECs
-hu_so@meta.data %>%
+bars1 <- lec_so@meta.data %>%
   filter(type == "LEC1") %>%
-  group_by(type, sample) %>%
+  group_by(sample, tissue) %>%
   
   summarize(
-    frac_high = sum(pred == names(ag_clrs)[[2]]) / n()
+    frac_high = sum(pred == names(ag_clrs)[[2]]) / n(),
+    .groups = "drop"
   ) %>%
-  ggplot(aes(sample, frac_high)) +
-  geom_col(color = "black", fill = ag_clrs[[2]]) +
-  
-  # facet_wrap(~ type) +
-  
-  coord_cartesian(ylim = c(0, 1)) +
-  labs(y = "fraction Ag-competent cLECs") +
+  ggplot(aes(sample, frac_high, fill = tissue)) +
+  geom_col(color = "black") +
+  facet_wrap(~ tissue, scales = "free_x") +
+  scale_fill_manual(values = tissue_clrs) +
+  labs(y = "fraction Ag-competent") +
   djvdj_theme() +
   theme(
     aspect.ratio = 1,
+    legend.position = "none",
     axis.title.x = element_blank(),
     axis.text.x  = element_text(angle = 45, hjust = 1)
   )
 
-# # Calculate mean expression of Ag-high module
-# # BECs also show similar proportion of Ag-high cells as LEC1
-# # while BECs show lower overall expression of the Ag-high cLEC module,
-# #   they also show lower overall expression of the Ag-low cLEC module
-# gns <- hu_modules$low
-# 
-# mean_expr <- hu_so %>%
-#   FetchData(c("sample", "type", "pred", gns)) %>%
-#   as_tibble(rownames = "cell_id") %>%
-#   
-#   pivot_longer(all_of(gns)) %>%
-#   group_by(cell_id) %>%
-#   summarize(mean_module_expression = mean(value), .groups = "drop") %>%
-#   column_to_rownames("cell_id")
-# 
-# hu_so <- hu_so %>%
-#   AddMetaData(mean_expr)
-# 
-# hu_so@meta.data %>%
-#   filter(type %in% c("BEC", "LEC1")) %>%
-#   ggplot(aes(sample, mean_module_expression, fill = pred)) +
-#   geom_boxplot() +
-#   facet_wrap(~ type) +
-#   djvdj_theme()
+bars2 <- lec_so %>%
+  subset(type == "LEC1") %>%
+  plot_frequency(
+    data_col    = "pred",
+    cluster_col = "sample",
+    group_col   = "tissue",
+    plot_colors = tissue_clrs,
+    color = "black",
+    alpha = 0.9
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+plot_grid(
+  bars1, bars2,
+  rel_widths = c(1, 0.5),
+  align = "h",
+  axis  = "tb"
+)
 ```
 
 <br>
@@ -2210,16 +2172,17 @@ The total number of predicted Ag-competent cells is shown below for each sample.
 
 ```{r "total Ag-competent cells", fig.width = 8, fig.height = 3}
 # Plot total number of Ag-low/high cells per sample
-hu_so@meta.data %>%
+lec_so@meta.data %>%
   filter(type == "LEC1") %>%
   mutate(pred = fct_relevel(pred, names(ag_clrs))) %>%
   ggplot(aes(sample, fill = pred)) +
   geom_bar(color = "black") +
+  facet_wrap(~ tissue, scales = "free_x") +
   scale_fill_manual(values = ag_clrs) +
   guides(fill = guide_legend(title = "predicted Ag class")) +
   djvdj_theme() +
   theme(
-    aspect.ratio = 1,
+    aspect.ratio = 0.5,
     axis.text.x  = element_text(angle = 45, hjust = 1),
     axis.title.x = element_blank()
   )
@@ -2230,14 +2193,14 @@ hu_so@meta.data %>%
 The expression of Ag-low and Ag-high gene modules is shown for predicted Ag-low
 and Ag-competent cells.
 
-```{r "Ag modules", fig.width = 8, fig.height = 3}
+```{r "Ag modules", fig.width = 6, fig.height = 3}
 # Plot Ag-low/high gene modules
-hu_so@meta.data %>%
+lec_so@meta.data %>%
   filter(type == "LEC1") %>%
   mutate(pred = fct_relevel(pred, names(ag_clrs))) %>%
   pivot_longer(all_of(names(module_nms))) %>%
-  ggplot(aes(sample, value, fill = pred)) +
-  geom_boxplot(outlier.size = 0.2, notch = TRUE) +
+  ggplot(aes(tissue, value, fill = pred)) +
+  geom_boxplot(outlier.size = 0.2, position = position_dodge2(preserve = "single")) +
   facet_wrap(
     ~ name, nrow = 1,
     labeller = as_labeller(~ str_c("Ag-", .x, " module"))
@@ -2247,7 +2210,7 @@ hu_so@meta.data %>%
   labs(y = "module expression") +
   djvdj_theme() +
   theme(
-    aspect.ratio = 0.7,
+    aspect.ratio = 1.2,
     axis.title.x = element_blank(),
     axis.text.x  = element_text(angle = 45, hjust = 1)
   )
@@ -2258,26 +2221,16 @@ hu_so@meta.data %>%
 UMAP projections show predicted Ag-low and Ag-competent cLECs for each sample.
 
 ```{r "UMAP projections", fig.width = 8, fig.height = 6.5}
-ag_clrs <- c(
-  `Ag-low` = "black",
-  `Ag-competent` = "#0072B2"
-)
-
 # Plot Ag classes for each sample
-hu_so %>%
-  mutate_meta(
-    mutate,
-    pred = ifelse(type != "LEC1", as.character(NA), as.character(pred))
-  ) %>%
+lec_so %>%
   plot_scatter(
-    "pred", group_col = "sample",
+    "pred", group_col = "tissue",
     size        = 0.1,
     plot_lvls   = c("Ag-low", "Ag-competent"),
-    plot_colors = ag_clrs,
-    n_label     = "corner"
+    plot_colors = ag_clrs
   ) +
   guides(color = guide_legend(
-    title = "predicted cLEC\nAg class",
+    title = "predicted Ag class",
     override.aes = list(size = 4))
   ) +
   umap_theme_2 +
@@ -2289,25 +2242,78 @@ hu_so %>%
 
 <br>
 
-ACKR4 expression is shown below for each cell type identified for each sample.
+Expression of LEC markers is shown below for each sample.
 
-```{r "ACKR4 expression", fig.width = 8, fig.height = 6}
-hu_so %>%
-  plot_violin(
-    "ACKR4", "type",
-    group_col    = "sample",
-    method       = "boxplot",
-    plot_colors  = clrs,
-    n_label      = "none",
-    outlier.size = 0.2,
-    color = "black",
-    alpha = 0.7
-  ) +
-  theme(aspect.ratio = 0.7)
+```{r "marker expression", fig.width = 10, fig.height = 12}
+marks <- c(
+  "PECAM1", "PROX1",         # broad LEC markers
+  "ACKR4", "MFAP4",          # LEC I, III (cLECs, collecting)
+  "TNFRSF9",                 # LEC II (fLEC)
+  "CLDN11",                  # LEC V (valve)
+  "MARCO", "LYVE1",          # LEC VI (medullary)
+  "JAM2"                     # contaminating BECs
+)
+
+marks %>%
+  map(~ {
+    lec_so %>%
+      plot_violin(
+        .x,
+        cluster_col  = "type",
+        method       = "boxplot",
+        plot_colors  = clrs,
+        # n_label      = "none",
+        outlier.size = 0.2,
+        color = "black",
+        alpha = 0.7
+      )
+  }) %>%
+  plot_grid(plotlist = ., ncol = 2)
 ```
 
 <br>
 
 ```{r}
 sessionInfo()
+```
+
+
+```{r "markers", eval = FALSE}
+# marks <- c(
+#   "PECAM1", "PROX1",   # LECs
+#   "JAM2",              # BECs
+#   # "ACTA2",            # SMCs
+#   # "CCL19", "CCL21",   # TRCs
+#   "CR2",               # FDCs
+#   # "DCN",              # NESCs
+#   "PTPRC"              # lymphocytes
+#   # "SDC1",             # plasma cells
+#   # "CCR7", "CD83"      # dendritic cells
+# )
+
+lec_so %>%
+  plot_scatter(
+    "NT5E",
+    group_col = "tissue",
+    size = 0.25
+  )
+
+marks <- c(
+  "ACKR4", "NT5E", "MFAP4",  # LEC I, III (cLECs, collecting)
+  "TNFRSF9",                 # LEC II (fLEC)
+  "CLDN11",                  # LEC V (valve)
+  "MARCO", "LYVE1",          # LEC VI (medullary)
+  "JAM2"                     # contaminating BECs
+)
+
+marks %>%
+  map(~ {
+    lec_so %>%
+      plot_violin(
+        .x,
+        cluster_col = "type",
+        method = "boxplot"
+      )
+  }) %>%
+  plot_grid(plotlist = ., nrow = 2)
 ```
