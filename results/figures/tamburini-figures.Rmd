@@ -13,14 +13,14 @@ output:
     highlight:      "kate"
 params:
   template_dir:  "src"                                                     # template Rmarkdowns
-  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs"  # Seurat objects
-  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models" # RF models
+  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-07-01"  # Seurat objects
+  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-01" # RF models
   geomx_dir:     "results/geomx"
   chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
   ref_dir:       "ref"                                                     # clustifyr references
-  table_dir:     "results/tables"
+  table_dir:     "results/tables/2024-07-01"
   sample_info:   "sample_info.xlsx"
-  res_dir:                                                
+  res_dir:
     value:
       exp-0: "~/Projects/antigen-tracking/results"
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
@@ -130,6 +130,7 @@ ag_objs <- list(LEC = lec_so, DC = dc_so)
 # * once the models are finalized, this information can be saved in the
 #   meta.data
 # * rf_pred will be NA if cell type was not used for training
+# * pred_grp includes Ag-competent groups based on Ag predictions
 lec_so <- lec_so %>%
   AddMetaData(rf_preds, col.name = str_c("rf_", colnames(rf_preds)))
 
@@ -889,8 +890,8 @@ hsts <- wrap_plots(
 rf_bar_dat <- lec_so@meta.data %>%
   filter(
     tm %in% rf_tms,
-    subtype %in% rf_typs,
-    !training_data
+    subtype %in% rf_typs
+    # !training_data
   ) %>%
   mutate(
     subtype    = fct_relevel(subtype, rf_typs),
@@ -921,17 +922,14 @@ rf_bar_1 <- rf_bar_dat %>%
 # Format plot data
 # exclude dual vaccination data
 clmns <- c(
-  "tm", "subtype", "pred_grp", "training_data",
+  "tm", "subtype", "pred_grp",
   "Ag_score", ag_modules
 )
 
 rf_bx_dat <- lec_so %>%
   FetchData(clmns) %>%
   as_tibble(rownames = ".cell_id") %>%
-  filter(
-    tm %in% rf_tms
-    # !training_data
-  )
+  filter(tm %in% rf_tms)
 
 rf_mod_args <- list(
   mod_typ = c("high", "low"),
@@ -1139,7 +1137,7 @@ fig2
 
 ### Figure S3
 
-A.  The top 15 gene ontology terms are shown for Ag-high gene modules
+A.  The top 15 gene ontology terms (cellular component) are shown for Ag-high gene modules
     for each cLECs, fLECs, and collecting LECs.
 B.  Top gene ontology terms are shown for Ag-low gene modules as described in A.
 C.  The expression of each Ag-high gene module is shown for naive LECs
@@ -1159,7 +1157,7 @@ H.  UMAP projections show collecting LEC Ag-high module scores for each
 
 ```{r "RF GO"}
 # Term similarity for simplifying terms
-dbs <- set_names(c("BP", "CC"))
+dbs <- set_names(c("BP", "CC", "MF"))
 
 go_sim_data <- dbs %>%
   map(~ {
@@ -1210,8 +1208,9 @@ go_sig <- go_res %>%
   filter(p.adjust < 0.05) %>%
   arrange(p.adjust)
 
-# Plot top GO terms
+# Plot top CC GO terms
 go_fig <- go_sig %>%
+  filter(db == "CC") %>%
   group_by(Cluster, pred_grp) %>%
   slice(1:15) %>%
   split(.$pred_grp) %>%

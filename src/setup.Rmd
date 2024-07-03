@@ -265,6 +265,7 @@ calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
 format_ag_data <- function(so_in, norm_factors, ag_key, ...) {
   
   # Assign labels for Ag tags (ABPS2, ABPS4)
+  # * the identify of each tag is differs depending on the experiment
   res <- so_in %>%
     mutate_meta(~ {
       dat <- .x
@@ -307,7 +308,7 @@ format_ag_data <- function(so_in, norm_factors, ag_key, ...) {
     mutate_meta(
       mutate,
       Ag_score = case_when(
-        exp == "exp-0" ~ ovalbumin_score,
+        exp   == "exp-0" ~ ovalbumin_score,
         mouse == "3wk" ~ Ag_3wk_score,
         mouse == "6wk" ~ Ag_6wk_score,
         
@@ -1339,7 +1340,7 @@ ref_immgen_dc <- cbind(ref_immgen[shared_gns, ], ref_mousespleenDC[shared_gns, ]
 # do not use filtered matrix since a poor quality library would have a high
 # fraction of counts in empty drops that would not be taken into account when
 # normalizing data
-norm_file <- here(params$ref_dir, "norm_factors.tsv")
+norm_file <- here("results/norm_factors.tsv")
 
 .calc_lib_size <- function(mat_path, mat_file, factor = 1e6) {
   mat <- here(mat_path, "outs", mat_file)
@@ -1361,8 +1362,8 @@ if (!file.exists(norm_file)) {
       
       tibble(
         !!!args,
-        raw_lib_size  = raw,
-        filt_lib_size = filt
+        Ag_counts_raw      = raw,
+        Ag_counts_filtered = filt
       )
     })
   
@@ -1375,7 +1376,7 @@ if (!file.exists(norm_file)) {
 norm_info <- read_tsv(norm_file)
 
 norm_factors <- set_names(
-  norm_info$raw_lib_size,
+  norm_info$Ag_counts_raw,
   norm_info$directory
 )
 ```
@@ -1432,8 +1433,9 @@ sobjs %>%
       summarize(n = n(), .groups = "drop")
   }) %>%
   left_join(norm_info, by = "directory") %>%
-  mutate(frac_filt_Ag_counts = filt_lib_size / raw_lib_size) %>%
-  write_tsv(here(params$so_dir, "sample_stats.tsv"))
+  rename()
+  mutate(Ag_counts_frac = Ag_counts_filtered / Ag_counts_raw) %>%
+  write_tsv(here("results/sample_stats.tsv"))
 
 # Save filtered objects
 sobjs <- sobjs %>%
@@ -1444,14 +1446,6 @@ sobjs %>%
 ```
 
 ```{r "CD45- samples", eval = create_sobjs}
-# NEED TO:
-# 1. Check epithelial cells, some may be PvCs based on Pdpn, Pecam1, Acta2,
-#    Itga7. They do express expected markers, Cdh1, Krt8, Muc1, Ocln
-# 2. Check unassigned cells, some may be epithelial cells. They do express
-#    epithelial cell markers including Cdh1 and Krt8
-# 3. Check stem cells, are these accurate? They express Cd19 and Cd79a, these
-#    should be reclassified as B cells
-
 # Merge objects
 neg_idx    <- sam_info$cell_sort == "CD45neg"
 sobjs      <- sobjs[neg_idx]
@@ -1604,85 +1598,7 @@ cd45pos_so <- cd45pos_so %>%
   )
 ```
 
-```{r "Ag scores", eval = create_sobjs}
-# CD45-
-cd45neg_so <- cd45neg_so %>%
-  AddMetaData(FetchData(., ags, slot = "counts"), col.name = ags)
-
-cd45neg_so <- cd45neg_so %>%
-  format_ag_data(
-    norm_factors = norm_factors,
-    ag_key = ag_key
-  )
-
-# CD45+
-cd45pos_so <- cd45pos_so %>%
-  AddMetaData(FetchData(., ags, slot = "counts"), col.name = ags)
-
-cd45pos_so <- cd45pos_so %>%
-  format_ag_data(
-    norm_factors = norm_factors,
-    ag_key = ag_key
-  )
-```
-
-```{r "Ag class", eval = create_sobjs}
-# Format data for clustering based on Ag scores
-# The strategy is to identify Ag-high/low cells for all datasets together
-# One might expect that changes in gene expression will depend on absolute
-# levels of Ag taken up by the cell, and so it would make the most sense to
-# use a consistent cutoff for Ag-high cells across all cell types and datasets.
-# This should work since Ag scores are corrected based on background T/B signal.
-all_meta <- list(cd45neg_so, cd45pos_so) %>%
-  map_dfr(~ .x@meta.data) %>%
-  as_tibble(rownames = ".cell_id")
-
-clust_dat <- all_meta %>%
-  filter(Ag_score > 0)
-
-# Downsample samples
-# This ensures that larger samples do not skew the clustering
-sam_size <- min(table(clust_dat$mouse))
-
-set.seed(42)
-  
-clust_dat <- clust_dat %>%
-  group_by(mouse) %>%
-  slice_sample(n = sam_size) %>%
-  ungroup()
-
-# Identify threshold for Ag-high/low cells
-ag_threshold <- clust_dat %>%
-  mutate(km_class = kmeans(Ag_score, centers = 2)$cluster) %>%
-  group_by(km_class) %>%
-  summarize(Ag_score = max(Ag_score)) %>%
-  pull(Ag_score) %>%
-  min()
-
-# Set Ag-high/low classifications
-cd45neg_so <- cd45neg_so %>%
-  mutate_meta(
-    mutate,
-    Ag_class = ifelse(
-      Ag_score >= ag_threshold,
-      "high", "low"
-    )
-  )
-
-cd45pos_so <- cd45pos_so %>%
-  mutate_meta(
-    mutate,
-    Ag_class = ifelse(
-      Ag_score >= ag_threshold,
-      "high", "low"
-    )
-  )
-```
-
 ```{r "LEC object", eval = create_sobjs}
-# NEED TO:
-# 1. check Marco_LECs, they do not express Marco
-
 # Re-cluster and integrate endothelial cells
 lec_so <- cd45neg_so %>%
   subset(cell_type == "Endothelial cells") %>%
@@ -1865,12 +1781,6 @@ cd45neg_so <- cd45neg_so %>%
 ```
 
 ```{r "DC object", eval = create_sobjs}
-# NEED TO:
-# 1. check cDC2s, there is a cluster that might be T-bet+. The cDC2 subset
-#    shows higher expression of T-bet+ markers than the T-bet- cells, however,
-#    the expression of T-bet+ markers is still very sparse and not especially
-#    convincing
-
 # Re-cluster and integrate DCs
 # DC subsets were annotated with broad cell types
 dc_so <- cd45pos_so %>%
@@ -1880,7 +1790,53 @@ dc_so <- dc_so %>%
   integrate_sobjs(group_vars = "mouse")
 ```
 
-```{r "save suerat objects", eval = create_sobjs}
+```{r "Ag scores", eval = create_sobjs}
+# Calculate Ag scores for CD45- object
+cd45neg_so <- cd45neg_so %>%
+  AddMetaData(FetchData(., ags, slot = "counts"), col.name = ags)
+
+cd45neg_so <- cd45neg_so %>%
+  format_ag_data(
+    norm_factors = norm_factors,
+    ag_key = ag_key
+  )
+
+# Calculate Ag scores for CD45+ object
+cd45pos_so <- cd45pos_so %>%
+  AddMetaData(FetchData(., ags, slot = "counts"), col.name = ags)
+
+cd45pos_so <- cd45pos_so %>%
+  format_ag_data(
+    norm_factors = norm_factors,
+    ag_key = ag_key
+  )
+
+# Add Ag scores to CD45- objects
+ag_clmns <- c(
+  "ovalbumin", "Ag_3wk", "Ag_6wk",
+  "ovalbumin_score", "Ag_3wk_score", "Ag_6wk_score",
+  "Ag_score", "Ag_score_3", "Ag_score_6",
+  "tm_3", "tm_6"
+)
+
+ag_data <- cd45neg_so %>%
+  FetchData(ag_clmns)
+
+lec_so <- lec_so %>%
+  AddMetaData(ag_data)
+
+frc_so <- frc_so %>%
+  AddMetaData(ag_data)
+
+# Add Ag scores to CD45+ objects
+ag_data <- cd45pos_so %>%
+  FetchData(ag_clmns)
+
+dc_so <- dc_so %>%
+  AddMetaData(ag_data)
+```
+
+```{r "save seurat objects", eval = create_sobjs}
 # Save meta.data for all cells combined
 all_meta <- list(cd45neg_so, cd45pos_so) %>%
   map_dfr(~ .x@meta.data) %>%
@@ -2066,6 +2022,61 @@ tm_key <- set_names(tm_key$tm, tm_key$mouse)
 
 
 
+```{r "OLD Ag class", eval = FALSE}
+# Format data for clustering based on Ag scores
+# * The strategy is to identify Ag-high/low cells for all datasets together
+# * One might expect that changes in gene expression will depend on absolute
+#   levels of Ag taken up by the cell, and so it would make the most sense to
+#   use a consistent cutoff for Ag-high cells across all cell types and
+#   datasets.
+# * This should work since Ag scores are corrected based on background T/B
+#   signal.
+all_meta <- list(cd45neg_so, cd45pos_so) %>%
+  map_dfr(~ .x@meta.data) %>%
+  as_tibble(rownames = ".cell_id")
+
+clust_dat <- all_meta %>%
+  filter(Ag_score > 0)
+
+# Downsample samples
+# * This ensures that larger samples do not skew the clustering
+sam_size <- min(table(clust_dat$mouse))
+
+set.seed(42)
+  
+clust_dat <- clust_dat %>%
+  group_by(mouse) %>%
+  slice_sample(n = sam_size) %>%
+  ungroup()
+
+# Identify threshold for Ag-high/low cells
+ag_threshold <- clust_dat %>%
+  mutate(km_class = kmeans(Ag_score, centers = 2)$cluster) %>%
+  group_by(km_class) %>%
+  summarize(Ag_score = max(Ag_score)) %>%
+  pull(Ag_score) %>%
+  min()
+
+# Set Ag-high/low classifications
+cd45neg_so <- cd45neg_so %>%
+  mutate_meta(
+    mutate,
+    Ag_class = ifelse(
+      Ag_score >= ag_threshold,
+      "high", "low"
+    )
+  )
+
+cd45pos_so <- cd45pos_so %>%
+  mutate_meta(
+    mutate,
+    Ag_class = ifelse(
+      Ag_score >= ag_threshold,
+      "high", "low"
+    )
+  )
+```
+
 ```{r "MARKERS TO CHECK ANNOTATIONS", eval = FALSE}
 marks <- c(
   "type",
@@ -2120,89 +2131,4 @@ marks[-1] %>%
       )
   }) %>%
   plot_grid(plotlist = .)
-```
-
-```{r "AG HIGH", eval = FALSE}
-clust_dat <- lec_so@meta.data %>%
-  as_tibble(rownames = "cell_id") %>%
-  filter(Ag_score > 0)
-
-# Downsample samples
-# This ensures that larger samples do not skew the clustering
-sam_size <- min(table(clust_dat$mouse))
-
-set.seed(42)
-  
-clust_dat <- clust_dat %>%
-  group_by(mouse) %>%
-  slice_sample(n = sam_size) %>%
-  ungroup()
-
-# Identify threshold for Ag-high/low cells
-ag_threshold <- clust_dat %>%
-  filter(cell_type %in% c("LEC", "BEC")) %>%
-  
-  mutate(
-    km_class  = kmeans(Ag_score, centers = 2)$cluster
-    
-    # gmm_class = normalmixEM(clust_score, k = 2)$posterior %>%
-    #   as.data.frame() %>%
-    #   mutate(Ag_class = ifelse(comp.2 > 0.5, "high", "low")) %>%
-    #   pull(Ag_class)
-  ) %>%
-  group_by(km_class) %>%
-  summarize(Ag_score = max(Ag_score)) %>%
-  pull(Ag_score) %>%
-  min()
-
-# Set Ag-high/low classifications
-lec_so <- lec_so %>%
-  mutate_meta(
-    mutate,
-    Ag_class = ifelse(
-      Ag_score >= ag_threshold,
-      "high", "low"
-    )
-  )
-
-# DEGs
-old_so <- qread("~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/2022-10-28/sobjs/so_lec_new.qs")
-
-deg_dat <- old_so %>%
-  mutate_meta(
-    mutate,
-    # mouse_type = mouse
-    mouse_type = str_c(subtype, "--", mouse)
-  )
-
-typs <- deg_dat@meta.data %>%
-  group_by(mouse_type) %>%
-  filter(n_distinct(Ag_class) == 2) %>%
-  pull(mouse_type) %>%
-  unique()
-
-degs <- typs %>%
-  map_dfr(~ {
-    deg_dat %>%
-      subset(mouse_type == .x) %>%
-      wilcoxauc(group_by = "Ag_class") %>%
-      mutate(mouse_type = .x)
-  })
-
-degs_filt <- degs %>%
-  filter(padj < 0.05, logFC > 0) %>%
-  separate(mouse_type, into = c("mouse", "type"), sep = "--") %>%
-  arrange(mouse, type, padj)
-
-degs_filt %>%
-  write_tsv(here("ag_high_degs.tsv.gz"))
-
-# # Plot examples
-# old_so %>%
-#   FetchData(c("Apoe", "mouse", "tm", "subtype", "Ag_class")) %>%
-#   mutate(mouse = fct_relevel(mouse, mice)) %>%
-#   ggplot(aes(mouse, Apoe, fill = Ag_class)) +
-#   geom_boxplot() +
-#   # facet_wrap(~ subtype) +
-#   djvdj_theme()
 ```
