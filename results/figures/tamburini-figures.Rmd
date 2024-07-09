@@ -26,7 +26,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options:
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -1634,8 +1634,9 @@ ex_mod_bxs <- rf_mod_args %>%
   })
 ```
 
-```{r "Fig 3 diagram"}
-img <- readPNG(here("results/figures/experiment_design/fig3_exp_design.png"))
+```{r "Fig 3 diagram", fig.width = 15.5, fig.height = 10}
+img <- "results/figures/experiment_design/fig3_exp_design_landscape-2.png"
+img <- readPNG(here(img))
 img <- rasterGrob(img, interpolate = TRUE)
 
 # Adjust plot limits if necessary
@@ -1651,16 +1652,21 @@ fig3_dsgn <- ggplot(img_lims, aes(x, y)) +
   xlim(c(-Inf, Inf)) +
   ylim(c(-Inf, Inf)) +
   theme_void() +
-  theme(plot.margin = margin(0, 20, 20, 0))
+  theme(plot.margin = margin(0, 0, 30, 0))
+
+fig3_dsgn <- plot_grid(
+  fig3_dsgn, NULL,
+  rel_widths = c(1, 0.4)
+)
 ```
 
-```{r "Fig 3", fig.width = 15.5, fig.height = 24}
-fig3 <- (fig3_dsgn + plot_spacer()) /
+```{r "Fig 3", fig.width = 15.5, fig.height = 23}
+fig3 <- fig3_dsgn /
   (ex_heat[[1]] + ex_u[[1]]) / ex_bxs[[1]] /
   (ex_heat[[2]] + ex_u[[2]]) / ex_bxs[[2]] /
   ex_scat[[ag_exps$LEC]] /
   (ex_mod_bxs[[1]] + ex_mod_bxs[[2]]) +
-  plot_layout(heights = c(1.25, 1, 0.55, 1, 0.55, 0.8, 0.95)) +
+  plot_layout(heights = c(1.1, 1, 0.55, 1, 0.55, 0.8, 0.95)) +
   plot_annotation(tag_levels = "A") &
   theme(
     plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
@@ -2544,6 +2550,87 @@ fig5gh <- list(img_g, img_h) %>%
   )
 ```
 
+```{r "Cormac's data", eval = FALSE}
+# Format data for plot
+tbl_nm <- "ova+ LECs (%)"
+
+pzfx_dat <- read_pzfx(
+  here("results/figures/morrison_chikv/TEM2306 results.pzfx"),
+  table = tbl_nm
+)
+
+pzfx_lvls <- colnames(pzfx_dat)
+
+pzfx_clrs <- set_names(
+  c("#56B4E9", "#E69F00", "#D7301F"),
+  pzfx_lvls
+)
+
+pzfx_dat <- pzfx_dat %>%
+  as_tibble() %>%
+  filter(if_any(everything(), ~ !is.na(.x))) %>%
+  mutate(mouse = row_number()) %>%
+  pivot_longer(-mouse) %>%
+  filter(!is.na(value)) %>%
+  mutate(name = fct_relevel(name, pzfx_lvls))
+
+# Add significance labels based on Cormac's original plot
+pzfx_sig <- list(
+  `CHIKV 181/25` = "*",
+  `polyI:C/ova`  = "**"
+)
+
+p_dat <- pzfx_dat %>%
+  pull(name) %>%
+  unique() %>%
+  expand.grid(., .) %>%
+  filter(
+    Var1 != Var2,
+    Var1 == last(pzfx_lvls),
+  ) %>%
+  mutate(Var2 = fct_relevel(Var2, pzfx_lvls)) %>%
+  arrange(desc(Var2)) %>%
+  mutate(
+    sig  = pzfx_sig[as.character(Var2)],
+    y    = 110 + (10 * (row_number() - 1)),
+    x    = match(Var2, pzfx_lvls),
+    x    = x + ((length(pzfx_lvls) - x) / 2)
+  )
+
+# Format data for bargraphs
+bar_dat <- pzfx_dat %>%
+  group_by(name) %>%
+  summarize(value = median(value), .groups = "drop")
+
+# Create bargraphs
+pzfx_plt <- pzfx_dat %>%
+  ggplot(aes(name, value, fill = name)) +
+  geom_col(data = bar_dat, width = 0.75) +
+  geom_point(size = 3, show.legend = FALSE) +
+  
+  geom_segment(
+    aes(x = Var1, xend = Var2, y = y, yend = y, fill = NULL),
+    data = p_dat
+  ) +
+  geom_text(
+    aes(x = x, y = y, label = sig, fill = NULL),
+    data = p_dat,
+    size = ttl_pt2 * 1.5 / .pt
+  ) +
+  
+  scale_fill_manual(values = pzfx_clrs) +
+  scale_y_continuous(expand = expansion(c(0.01, 0.05))) +
+  labs(y = tbl_nm) +
+  base_theme +
+  theme(
+    plot.margin     = margin(20, 0, 0, 0),
+    aspect.ratio    = 1.3,
+    legend.position = "none",
+    axis.title.x    = element_blank(),
+    axis.text.x     = element_text(size = ttl_pt2, angle = 30, hjust = 1)
+  )
+```
+
 ```{r "Fig 5", fig.width = 12, fig.height = 20}
 # Combine and annotate center panels
 c("D", "B") %>%
@@ -2594,9 +2681,13 @@ A.  Ag-high and Ag-low module scores are shown for the predicted Ag classes.
 B.  Ag-high and Ag-low module scores are shown for mock and CHIKV-infected mice
     for each biological replicate. P values were calculated using a two-sided
     Wilcoxon rank sum test with Benjamini-Hochberg correction.
-C.  The fraction of cells predicted to be Ag-competent is shown for mock and
-    CHIKV-infected mice for each biological replicate. P values were calculated
-    using Fisher's exact test with Benjamini-Hochberg correction.
+C.  The total fraction of cLECs, fLECs, and collecting LECs predicted to be
+    Ag-competent is shown for mock and CHIKV-infected mice for each biological
+    replicate.
+    P values were calculated using Fisher's exact test with Benjamini-Hochberg
+    correction.
+D.  The fraction of fLECs and collecting LECs predicted to be Ag-competent is
+    shown as described in C.
 
 ```{r "Fig S6", fig.width = 13.5, fig.height = 13}
 # Plot Ag module scores for predicted classes
@@ -2616,8 +2707,17 @@ all_chikv_bxs_2 <- chikv_bx_dat %>%
     ttl = "module score"
   )
 
-# Bargraphs for all LEC subtypes
+# Bargraphs for combined LEC subsets
 all_chikv_bars <- chikv_bar_dat %>%
+  mutate(subtype = "cLEC, fLEC, Collecting") %>%
+  create_chikv_class_bars(
+    x   = "treatment",
+    n_p = n_distinct(chikv_bar_dat$subtype),
+    ttl = "fraction Ag-competent"
+  )
+
+# Bargraphs for other LEC subtypes
+other_chikv_bars <- chikv_bar_dat %>%
   filter(subtype != rf_cell_type) %>%
   create_chikv_class_bars(
     x   = "treatment",
@@ -2627,8 +2727,9 @@ all_chikv_bars <- chikv_bar_dat %>%
 
 # Create final figure
 figS6 <- plot_grid(
-  all_chikv_bxs_1, all_chikv_bxs_2, all_chikv_bars,
-  labels = c("A", "B", "C"),
+  all_chikv_bxs_1, all_chikv_bxs_2,
+  all_chikv_bars,  other_chikv_bars,
+  labels = c("A", "B", "C", "D"),
   label_size = ttl_pt2 * 1.5,
   nrow  = 2,
   align = "vh",
