@@ -1,5 +1,5 @@
 
-```{r "packages", include = FALSE, warning = FALSE, message = FALSE}
+```{r "main setup", include = FALSE, warning = FALSE, message = FALSE}
 # Default chunk options
 knitr::opts_chunk$set(
   message = FALSE,
@@ -84,7 +84,7 @@ ag_key <- ag_key %>%
   split(.$experiment) %>%
   map(~ set_names(.x$tag, .x$identity))
 
-# Check for save objects
+# Check for saved objects
 create_sobjs <- !file.exists(here(params$so_dir, "lec_so.qs"))
 ```
 
@@ -1107,7 +1107,7 @@ create_ag_boxes <- function(df_in, clrs, facet_vars = "subtype") {
 #' 
 #' Used for figure 5
 create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
-                                    ttl, n_p = NULL) {
+                                    rep_clmn = "rep", ttl, n_p = NULL) {
   
   # Set colors
   grps <- unique(df_in[[x]])
@@ -1123,7 +1123,7 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
     mutate(x_clmn = fct_inorder(x_clmn))
   
   dat <- df_in %>%
-    group_by(x_clmn, !!sym(x), subtype, rep) %>%
+    group_by(!!!syms(c("x_clmn", x, "subtype", rep_clmn))) %>%
     summarize(
       frac_comp = sum(pred_grp == "Ag-competent") / n(),
       .groups = "drop"
@@ -1181,8 +1181,16 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
   x_labs <- set_names(x_labs$n, x_labs$x_clmn)
   
   # Create bargraphs
+  plt_aes <- aes(
+    x    = x_clmn,
+    y    = frac_comp,
+    fill = !!sym(x)
+  )
+  
+  if (!is.null(rep_clmn)) plt_aes$alpha <- sym(rep_clmn)
+  
   res <- dat %>%
-    ggplot(aes(x_clmn, frac_comp, fill = !!sym(x), alpha = rep)) +
+    ggplot(plt_aes) +
     geom_col(position = position_dodge2(padding = 0.15)) +
     
     geom_text(
@@ -1194,8 +1202,7 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
     ) +
     
     facet_wrap(~ subtype, scales = "free_x") +
-    scale_fill_manual(values = treat_clrs) +
-    scale_alpha_manual(values = rep(1, n_distinct(df_in$rep))) +
+    scale_fill_manual(values = clrs) +
     scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
     scale_x_discrete(labels = x_labs) +
     guides(alpha = "none") +
@@ -1207,6 +1214,13 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
       axis.title.x    = element_blank(),
       axis.text.x     = element_text(size = ttl_pt2)
     )
+  
+  if (!is.null(rep_clmn)) {
+    al_vals <- rep(1, n_distinct(df_in[[rep_clmn]]))
+    
+    res <- res +
+      scale_alpha_manual(values = al_vals)
+  }
   
   res
 }

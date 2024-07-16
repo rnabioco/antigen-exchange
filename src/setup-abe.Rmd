@@ -1,0 +1,289 @@
+
+```{r "abe setup", include = FALSE}
+# Chunk options
+knitr::opts_chunk$set(
+  message = FALSE, 
+  warning = FALSE,
+  comment = "",
+  echo    = FALSE,
+  dpi     = 600
+)
+
+create_sobjs <- !file.exists(here(params$abe_dir, "abe_lec_so.qs"))
+```
+
+```{r "abe load homologs"}
+# Get human/mouse homologs
+# * get server error when using default host
+hfile <- here(params$ref_dir, "hlogs.tsv.gz")
+
+if (!file.exists(hfile)) {
+  host   <- "https://dec2021.archive.ensembl.org"
+  biomrt <- "ensembl"
+  h_mart <- useEnsembl(biomrt, dataset = "hsapiens_gene_ensembl", host = host)
+  m_mart <- useEnsembl(biomrt, dataset = "mmusculus_gene_ensembl", host = host)
+  
+  hlogs <- getLDS(
+    filters     = "external_gene_name",
+    values      = all_feats,
+    attributes  = c("external_gene_name", "entrezgene_id"),
+    attributesL = c("external_gene_name", "entrezgene_id"),
+    mart        = m_mart,
+    martL       = h_mart
+  )
+  
+  # Format columns
+  # mouse columns end in '.1'
+  hlogs <- hlogs %>%
+    rename_with(.cols = matches("[^1]$"),   ~ str_c(.x, "_mm")) %>%
+    rename_with(.cols = ends_with(".1"),       ~ str_replace(.x, ".1$", "_hs")) %>%
+    rename_with(.cols = matches("^Gene.name"), ~ str_replace(.x, "^[^_]+", "gene")) %>%
+    rename_with(.cols = matches("^NCBI"),      ~ str_replace(.x, "^[^_]+", "entrez")) %>%
+    as_tibble() %>%
+    mutate(across(everything(), ~ str_replace(.x, "^$", as.character(NA)))) %>%
+    distinct(gene_mm, gene_hs, entrez_hs)
+  
+  hlogs %>%
+    write_tsv(hfile)
+}
+
+hlogs <- read_tsv(hfile)
+```
+
+```{r "abe process data", eval = create_sobjs}
+# Load matrices
+data_dir <- here("data/abe")
+
+meta <- read_tsv(here(data_dir, "metadata/sample_file.tsv"))
+
+# For some reason there are duplicate files with the same name/MD5
+# remove these duplicates
+meta <- meta %>%
+  mutate(
+    md5 = map_chr(file_accession_id, ~ {
+      md5 <- dir(here(data_dir, .x), pattern = ".md5$", full.names = TRUE)
+      
+      readLines(md5, warn = FALSE)
+    }),
+    duplicated = duplicated(md5)
+  ) %>%
+  filter(!duplicated)
+
+# Create separate directory for each sample with symlinks
+ega_dirs <- meta$file_accession_id
+
+sams <- c()
+
+ega_dirs %>%
+  walk(~ {
+    d <- file.path(data_dir, .x)
+    
+    file <- dir(d, pattern = ".gz$", full.names = TRUE)
+    
+    file_prfx <- str_extract(basename(file), "^[A-Z0-9_]+")
+    file_base <- str_remove(basename(file), file_prfx)
+    
+    dir_nm <- file.path(data_dir, str_remove(file_prfx, "_$"))
+    
+    if (!dir.exists(dir_nm)) dir.create(dir_nm)
+    
+    file.symlink(file, file.path(dir_nm, file_base))
+    
+    if (!dir_nm %in% sams) sams <<- c(sams, dir_nm)
+  })
+
+names(sams) <- basename(sams)
+
+# Create Seurat objects
+abe_so <- sams %>%
+  imap(~ {
+    .x %>%
+      Read10X() %>%
+      CreateSeuratObject(project = .y) %>%
+      mutate_meta(mutate, sample = .y)
+  })
+
+# Merge objects
+abe_so <- merge(abe_so[[1]], abe_so[-1], add.cell.ids = names(abe_so))
+
+abe_so <- abe_so %>%
+  NormalizeData() %>%
+  run_m3drop(var_p = 0.001) %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  RunUMAP(
+    dims = 1:40,
+    umap.method = "umap-learn"
+  ) %>%
+  cluster_RNA(
+    rerun_pca  = FALSE,
+    umap_meta  = FALSE,
+    resolution = c(1, 3, 5, 10)
+  ) %>%
+  mutate_meta(
+    mutate,
+    tissue = str_extract(orig.ident, "^[A-Z]+")
+  )
+```
+
+```{r "abe cell types", eval = create_sobjs}
+# Annotate cell types
+clst_clmn <- "RNA_snn_res.5"
+
+abe_so <- abe_so %>%
+  mutate_meta(mutate, cell_type = "other CD45-") %>%
+  classify_markers(
+    feats      = "PTPRC",
+    filt       = PTPRC >= 0.4,
+    clst_col   = clst_clmn,
+    type_label = "other CD45+",
+    type_col   = "cell_type"
+  ) %>%
+  classify_markers(
+    feats      = c("cell_type", "PROX1", "PECAM1"),
+    filt       = cell_type == "other CD45-" & PROX1 > 0.75 & PECAM1 > 1,
+    clst_col   = clst_clmn,
+    type_label = "LEC",
+    type_col   = "cell_type"
+  ) %>%
+  classify_markers(
+    feats      = c("cell_type", "JAM2", "PECAM1"),
+    filt       = cell_type == "other CD45-" & JAM2 > 0.75 & PECAM1 > 1,
+    clst_col   = clst_clmn,
+    type_label = "BEC",
+    type_col   = "cell_type"
+  ) %>% 
+  classify_markers(
+    feats      = c("cell_type", "CR2"),
+    filt       = cell_type == "other CD45-" & CR2 > 1,
+    clst_col   = clst_clmn,
+    type_label = "FDC",
+    type_col   = "cell_type"
+  )
+
+save_objs(abe_so, ob_dir = params$abe_dir)
+```
+
+```{r "abe lec types", eval = create_sobjs}
+# Process LEC object
+abe_lec_so <- abe_so %>%
+  subset(cell_type == "LEC") %>%
+  NormalizeData() %>%
+  run_m3drop(var_p = 0.001) %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  RunUMAP(
+    dims = 1:40,
+    umap.method = "umap-learn"
+  ) %>%
+  cluster_RNA(
+    rerun_pca  = FALSE,
+    umap_meta  = FALSE,
+    resolution = c(1, 3, 5, 10)
+  )
+
+# Annotate LEC subsets
+abe_lec_so <- abe_lec_so %>%
+  clustify(
+    ref_mat     = ref_LEC,
+    cluster_col = "RNA_snn_res.5"
+  )
+
+# Save object
+save_objs(abe_lec_so, ob_dir = params$abe_dir)
+```
+
+```{r "abe load object"}
+abe_lec_so <- qread(here(params$abe_dir, "abe_lec_so.qs"))
+```
+
+```{r "abe predict Ag-competent"}
+# Pull data for RF features
+# MISSING 9/77 FEATURES
+abe_feats <- reduce(rf_feats$cLEC, c)
+
+hu_feats <- hlogs %>%
+  filter(
+    gene_mm %in% abe_feats,
+    gene_hs %in% rownames(abe_lec_so)
+  ) %>%
+  distinct(gene_mm, gene_hs, .keep_all = TRUE)
+
+hu_feats <- set_names(hu_feats$gene_mm, hu_feats$gene_hs)
+
+missing_feats <- abe_feats[!abe_feats %in% hu_feats]
+
+# Format data for predictions
+# * LEC1 == cLECs
+# * Calculate mean expression for mouse genes with multiple human homologs
+# * rename columns with mouse gene names
+# * add zeros for missing genes
+# * need to adjust gene names to remove "-" and add an "x" for genes starting with
+#   a number
+abe_dat <- abe_lec_so %>%
+  FetchData(c("type", names(hu_feats))) %>%
+  filter(type == "LEC1") %>%
+  dplyr::select(-type) %>%
+  rownames_to_column(".cell_id") %>%
+  pivot_longer(-.cell_id) %>%
+  mutate(name_mm = hu_feats[as.character(name)]) %>%
+  group_by(.cell_id, name_mm) %>%
+  summarize(value = mean(value), .groups = "drop")
+
+abe_dat <- abe_dat %>%
+  dplyr::select(.cell_id, value, name_mm) %>%
+  pivot_wider(names_from = name_mm) %>%
+  column_to_rownames(".cell_id")
+
+abe_dat[, missing_feats] <- 0
+
+nms      <- colnames(abe_dat)
+nms      <- str_replace(nms, "-", "_")
+idx      <- grepl("^[0-9]", nms)
+nms[idx] <- str_c("x", nms[idx])
+
+colnames(abe_dat) <- nms
+
+# Predict Ag-competent cLECs
+rf_mod <- rf_mods_best %>%
+  filter(subtype == "cLEC") %>%
+  pull(mod)
+
+rf_res <- rf_mod[[1]] %>%
+  predict(abe_dat)
+
+abe_preds <- abe_dat %>%
+  mutate(pred = rf_res$predictions) %>%
+  dplyr::select(pred)
+
+# Add predictions
+abe_lec_so <- abe_lec_so %>%
+  AddMetaData(abe_preds) %>%
+  mutate_meta(
+    mutate,
+    pred_grp = recode(pred, low = "Ag-low", high = "Ag-competent")
+  )
+
+# Add module scores
+module_key <- set_names(names(hu_feats), unname(hu_feats))
+
+hu_modules <- rf_feats$cLEC %>%
+  map(~ as.character(na.omit(unname(module_key[.x]))))
+
+module_nms <- set_names(
+  str_c(names(hu_modules), seq_along(hu_modules)),
+  names(hu_modules)
+)
+
+abe_lec_so <- abe_lec_so %>%
+  mutate_meta(dplyr::select, -any_of(c("low", "high"))) %>%
+  AddModuleScore(features = hu_modules, name = names(hu_modules)) %>%
+  mutate_meta(rename, !!!module_nms)
+```
+
+```{r "abe theme"}
+abe_clrs <- c(
+  MFLN = "#00B7A7",
+  FL   = "#A40000"
+)
+```

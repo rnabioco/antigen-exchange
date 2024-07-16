@@ -12,14 +12,15 @@ output:
     self_contained: true
     highlight:      "kate"
 params:
-  template_dir:  "src"                                                     # template Rmarkdowns
-  so_dir:        "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-07-01"  # Seurat objects
-  mod_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-01" # RF models
-  geomx_dir:     "results/geomx"
-  chikv_dir:     "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"     # CHIKV objects
-  ref_dir:       "ref"                                                     # clustifyr references
-  table_dir:     "results/tables/2024-07-01"
-  sample_info:   "sample_info.xlsx"
+  template_dir: "src"                                                                # Rmd templates
+  so_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-07-01"  # Seurat objects
+  mod_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-01" # RF models
+  abe_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/abe"               # Abe et al objects
+  geomx_dir:    "results/geomx"                                                      # GeoMx objects
+  chikv_dir:    "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"                # CHIKV objects
+  ref_dir:      "ref"                                                                # clustifyr references
+  table_dir:    "results/tables/2024-07-01"                                          # tables
+  sample_info:  "sample_info.xlsx"                                                   # samples names/info
   res_dir:
     value:
       exp-0: "~/Projects/antigen-tracking/results"
@@ -43,6 +44,7 @@ options(java.parameters = "-Xmx12000m")
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 knitr::knit(here::here(params$template_dir, "setup-ml.Rmd"), "")
 knitr::knit(here::here(params$template_dir, "setup-geomx.Rmd"), "")
+knitr::knit(here::here(params$template_dir, "setup-abe.Rmd"), "")
 
 # Plot parameters
 min_cells <- 5
@@ -1061,7 +1063,6 @@ shared_feats <- rf_feats %>%
         )
       })
   }) %>%
-  # filter(subtype %in% rf_typs) %>%
   group_by(class, gene) %>%
   filter(n_distinct(subtype) > 1) %>%
   ungroup()
@@ -1070,7 +1071,9 @@ p_dat <- p_vals %>%
   filter(
     subtype == rf_cell_type,
     p_adj < 0.05,
-    gene %in% shared_feats$gene
+    gene %in% shared_feats$gene,
+    
+    gene != "Xist"  # FIX THIS
   ) %>%
   group_by(gene) %>%
   filter(any(med_diff > 0)) %>%
@@ -2689,7 +2692,7 @@ C.  The total fraction of cLECs, fLECs, and collecting LECs predicted to be
 D.  The fraction of fLECs and collecting LECs predicted to be Ag-competent is
     shown as described in C.
 
-```{r "Fig S6", fig.width = 13.5, fig.height = 13}
+```{r "Fig S7", fig.width = 13.5, fig.height = 13}
 # Plot Ag module scores for predicted classes
 all_chikv_bxs_1 <- chikv_bx_dat %>%
   create_chikv_module_boxes(
@@ -2738,6 +2741,73 @@ figS6 <- plot_grid(
 )
 
 figS6
+```
+
+<br>
+
+<br>
+
+### Figure S8
+
+A.  The fraction of cLECs predicted to be Ag-competent is shown for
+    metastasis-free lymph node (MFLN) and follicular lymphoma (FL) samples
+    from Abe et al.
+B.  The total fraction of cLECs predicated to be Ag-competent is shown for
+    pooled MFLN and FL samples shown in A.
+    P values were calculated using Fisher's exact test.
+
+```{r "Fig S8", fig.width = 12, fig.height = 4.5}
+# Plot fraction Ag-competent cLECs
+abe_bar_dat <- abe_lec_so@meta.data %>%
+  rownames_to_column(".cell_id") %>%
+  filter(type == "LEC1") %>%
+  mutate(tissue = fct_relevel(tissue, names(abe_clrs)))
+
+abe_bars_1 <- abe_bar_dat %>%
+  group_by(sample, tissue) %>%
+  summarize(
+    frac_high = sum(pred_grp == "Ag-competent") / n(),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(sample, frac_high, fill = tissue)) +
+  geom_col() +
+  facet_wrap(~ tissue, scales = "free_x") +
+  scale_fill_manual(values = abe_clrs) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  labs(y = "fraction Ag-competent") +
+  base_theme +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1)
+  )
+
+# Bargraphs for combined samples
+abe_bars_2 <- abe_bar_dat %>%
+  mutate(subtype = "LEC1") %>%
+  create_chikv_class_bars(
+    x        = "tissue",
+    n_p      = 1,
+    rep_clmn = NULL,
+    ttl      = "fraction Ag-competent",
+    clrs     = abe_clrs
+  ) +
+  theme(
+    aspect.ratio = 1.5,
+    strip.text   = element_blank(),
+    axis.text.x  = element_text(hjust = c(0.65, 0.35))
+  )
+
+# Create final figure
+plot_grid(
+  abe_bars_1, abe_bars_2,
+  rel_widths = c(1, 0.5),
+  labels     = c("A", "B"),
+  label_size = ttl_pt2 * 1.5,
+  align      = "h",
+  axis       = "tb"
+)
 ```
 
 ---
