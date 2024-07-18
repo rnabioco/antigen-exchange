@@ -331,7 +331,8 @@ format_ag_data <- function(so_in, norm_factors, ag_key, ...) {
 #' Used for figure 2
 create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
                                    p_method = wilcox.test, p_alt = "two.sided",
-                                   p_hjust = c(0.7, 0.5), p_vjust = c(1.2, 2.4)
+                                   p_hjust = c(0.7, 0.5), p_vjust = c(1.2, 2.4),
+                                   n_label = FALSE
                                    ) {
 
   # Format data for boxplots  
@@ -366,7 +367,21 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
     ) %>%
     ungroup()
   
+  # Format n labels
+  # the order of n labels in n_dat determines order on plot
+  # need to make sure n_dat is ordered based on factor level which is set
+  # upstream
+  n_dat <- dat %>%
+    group_by(tm, subtype, pred_grp) %>%
+    summarize(n = n_distinct(.cell_id), .groups = "drop") %>%
+    mutate(n_lab = label_comma()(n)) %>%
+    arrange(pred_grp)
+  
   # Create boxplots
+  y_exp <- c(0.05, 0.25)
+  
+  if (n_label) y_exp[1] <- 0.1
+  
   res <- dat %>%
     ggplot(aes(as.character(tm), value, fill = pred_grp)) +
     geom_boxplot(
@@ -375,25 +390,28 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
       key_glyph    = draw_key_point
     ) +
     
+    # r label
     geom_text(
       aes(y = Inf, fill = NULL, label = r_lab),
-      size = 10 / .pt,
       data = p_dat,
+      size = 10 / .pt,
       hjust = p_hjust[1],
       vjust = p_vjust[1],
       parse = TRUE
     ) +
+    
+    # p label
     geom_text(
       aes(y = Inf, fill = NULL, label = p_adj),
-      size = 10 / .pt,
-      data = p_dat,
+      data  = p_dat,
+      size  = 10 / .pt,
       hjust = p_hjust[2],
       vjust = p_vjust[2],
       parse = TRUE
     ) +
     
     scale_fill_manual(values = clrs) +
-    scale_y_continuous(expand = expansion(c(0.05, 0.25))) +
+    scale_y_continuous(expand = expansion(y_exp)) +
     facet_wrap(~ subtype, nrow = 1, scales = "free_y") +
     labs(x = "days post vaccination", y = module_title) +
     guides(fill = guide_legend(override.aes = list(shape = 22, size = 5))) +
@@ -405,6 +423,18 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
       legend.title    = element_blank(),
       plot.margin     = margin(t = 0, r = 5, b = 5, l = 5)
     )
+  
+  # n label
+  if (n_label) {
+    res <- res +
+      geom_text(
+        aes(y = -Inf, fill = NULL, label = n_lab),
+        data     = n_dat,
+        position = position_dodge2(preserve = "single", width = 1),
+        size     = 10 / .pt,
+        vjust    = -0.25
+      )
+  }
   
   res
 }

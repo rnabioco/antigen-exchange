@@ -27,7 +27,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options:
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -889,11 +889,12 @@ hsts <- wrap_plots(
 
 ```{r "RF Ag-competent bars", fig.width = 8, fig.height = 5}
 # Format data for bargraphs
+# * for main figure include cells used for training
+# * exclude training data for supp figure
 rf_bar_dat <- lec_so@meta.data %>%
   filter(
     tm %in% rf_tms,
     subtype %in% rf_typs
-    # !training_data
   ) %>%
   mutate(
     subtype    = fct_relevel(subtype, rf_typs),
@@ -936,7 +937,8 @@ rf_bx_dat <- lec_so %>%
 rf_mod_args <- list(
   mod_typ = c("high", "low"),
   p_alt   = c("greater", "less"),
-  p_hjust = c(0.7, 0.55)
+  p_hjust = c(0.7, 0.55),
+  n_label = c(FALSE, TRUE)
 )
 
 mod_bxs <- rf_mod_args %>%
@@ -953,7 +955,8 @@ mod_bxs <- rf_mod_args %>%
         p_alt        = args$p_alt,
         p_hjust      = c(args$p_hjust, 0.5),
         p_vjust      = c(1.2, 2),
-        clrs         = pred_clrs
+        clrs         = pred_clrs,
+        n_label      = args$n_label
       )
   })
 ```
@@ -987,6 +990,8 @@ mod_u <- u_args %>%
 
 ```{r "RF top features examples", fig.height = 8, fig.width = 8}
 # Calculate p-values
+# use all features included in models, adjust based on this number of genes
+# adjust p-values separately for each tm and pred_grp
 p_vals <- rf_feats[rf_typs] %>%
   imap_dfr(~ {
     p_alt <- c(high = "greater", low = "less")
@@ -1154,6 +1159,7 @@ F.  Ag-low module score is shown for Ag-low, Ag-high, and predicted
     shown for each timepoint.
     One-sided p values were calculated and adjusted using Benjamini-Hochberg
     correction.
+    The number of cells plotted is shown below each boxplot.
 G.  UMAP projections show fLEC Ag-high module scores for each timepoint.
 H.  UMAP projections show collecting LEC Ag-high module scores for each
     timepoint.
@@ -1295,6 +1301,7 @@ naive_fig <- naive_dat %>%
 ```{r "RF predicted Ag class", fig.width = 8, fig.height = 5}
 # Plot fraction predicted groups
 rf_bar_2 <- rf_bar_dat %>%
+  filter(!rf_training_data) %>%
   ggplot(aes(tm, fill = rf_pred, alpha = rf_correct)) +
   geom_bar(position = "fill") +
   scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +

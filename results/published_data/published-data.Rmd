@@ -57,7 +57,7 @@ library("ranger")
 source(here("src/funs.R"))
 
 # Should objects be created
-create_so <- !file.exists(here(params$so_dir, "lec_so.qs"))
+create_so <- !file.exists(here(params$so_dir, "abe_lec_so.qs"))
 ```
 
 ```{r "functions", eval = FALSE}
@@ -1974,7 +1974,7 @@ save_objs(so, ob_dir = params$so_dir)
 
 ```{r "abe lec types", eval = create_so}
 # Process LEC object
-lec_so <- so %>%
+abe_lec_so <- so %>%
   subset(cell_type == "LEC") %>%
   NormalizeData() %>%
   run_m3drop(var_p = 0.001) %>%
@@ -1991,17 +1991,17 @@ lec_so <- so %>%
   )
 
 # Annotate LEC subsets
-lec_so <- lec_so %>%
+abe_lec_so <- abe_lec_so %>%
   clustify(
     ref_mat     = ref_LEC,
     cluster_col = "RNA_snn_res.5"
   )
 
-save_objs(lec_so, ob_dir = params$so_dir)
+save_objs(abe_lec_so, ob_dir = params$so_dir)
 ```
 
 ```{r "abe load object"}
-lec_so <- qread(here(params$so_dir, "lec_so.qs"))
+abe_lec_so <- qread(here(params$so_dir, "abe_lec_so.qs"))
 ```
 
 ```{r "theme"}
@@ -2019,7 +2019,7 @@ umap_theme_2 <- umap_theme +
   theme(panel.border = element_rect(color = "grey85"))
 
 # Cell type colors
-typs <- unique(lec_so$type)
+typs <- unique(abe_lec_so$type)
 
 pal  <- "Austria"
 clrs <- as.character(met.brewer(pal, length(typs)))
@@ -2038,7 +2038,7 @@ ag_clrs <- c(
 )
 
 # Set label levels
-lec_so <- lec_so %>%
+abe_lec_so <- abe_lec_so %>%
   mutate_meta(
     mutate,
     tissue = fct_relevel(tissue, names(tissue_clrs))
@@ -2051,7 +2051,7 @@ lec_so <- lec_so %>%
 hu_feats <- hlogs %>%
   filter(
     gene_mm %in% all_feats,
-    gene_hs %in% rownames(lec_so)
+    gene_hs %in% rownames(abe_lec_so)
   ) %>%
   distinct(gene_mm, gene_hs)
 
@@ -2065,7 +2065,7 @@ missing_feats <- all_feats[!all_feats %in% hu_feats]
 # * add zeros for missing genes
 # * need to adjust gene names to remove "-" and add an "x" for genes starting with
 #   a number
-hu_dat <- lec_so %>%
+hu_dat <- abe_lec_so %>%
   FetchData(c("type", names(hu_feats))) %>%
   filter(type == "LEC1") %>%
   dplyr::select(-type)
@@ -2093,7 +2093,7 @@ hu_pred <- hu_dat %>%
   mutate(pred = rf_res$predictions) %>%
   dplyr::select(pred)
 
-lec_so <- lec_so %>%
+abe_lec_so <- abe_lec_so %>%
   AddMetaData(hu_pred) %>%
   mutate_meta(
     mutate,
@@ -2111,7 +2111,7 @@ module_nms <- set_names(
   names(hu_modules)
 )
 
-lec_so <- lec_so %>%
+abe_lec_so <- abe_lec_so %>%
   mutate_meta(dplyr::select, -any_of(c("low", "high"))) %>%
   AddModuleScore(features = hu_modules, name = names(hu_modules)) %>%
   mutate_meta(rename, !!!module_nms)
@@ -2123,7 +2123,7 @@ The fraction of predicted Ag-competent cells is shown below for each sample.
 
 ```{r "fraction Ag-competent cLECs", fig.width = 8, fig.height = 3}
 # Plot fraction Ag-competent cLECs
-bars1 <- lec_so@meta.data %>%
+bars1 <- abe_lec_so@meta.data %>%
   filter(type == "LEC1") %>%
   group_by(sample, tissue) %>%
   
@@ -2144,7 +2144,7 @@ bars1 <- lec_so@meta.data %>%
     axis.text.x  = element_text(angle = 45, hjust = 1)
   )
 
-bars2 <- lec_so %>%
+bars2 <- abe_lec_so %>%
   subset(type == "LEC1") %>%
   plot_frequency(
     data_col    = "pred",
@@ -2172,7 +2172,7 @@ The total number of predicted Ag-competent cells is shown below for each sample.
 
 ```{r "total Ag-competent cells", fig.width = 8, fig.height = 3}
 # Plot total number of Ag-low/high cells per sample
-lec_so@meta.data %>%
+abe_lec_so@meta.data %>%
   filter(type == "LEC1") %>%
   mutate(pred = fct_relevel(pred, names(ag_clrs))) %>%
   ggplot(aes(sample, fill = pred)) +
@@ -2195,7 +2195,7 @@ and Ag-competent cells.
 
 ```{r "Ag modules", fig.width = 6, fig.height = 3}
 # Plot Ag-low/high gene modules
-lec_so@meta.data %>%
+abe_lec_so@meta.data %>%
   filter(type == "LEC1") %>%
   mutate(pred = fct_relevel(pred, names(ag_clrs))) %>%
   pivot_longer(all_of(names(module_nms))) %>%
@@ -2222,7 +2222,7 @@ UMAP projections show predicted Ag-low and Ag-competent cLECs for each sample.
 
 ```{r "UMAP projections", fig.width = 8, fig.height = 6.5}
 # Plot Ag classes for each sample
-lec_so %>%
+abe_lec_so %>%
   plot_scatter(
     "pred", group_col = "tissue",
     size        = 0.1,
@@ -2256,7 +2256,7 @@ marks <- c(
 
 marks %>%
   map(~ {
-    lec_so %>%
+    abe_lec_so %>%
       plot_violin(
         .x,
         cluster_col  = "type",
@@ -2291,7 +2291,7 @@ sessionInfo()
 #   # "CCR7", "CD83"      # dendritic cells
 # )
 
-lec_so %>%
+abe_lec_so %>%
   plot_scatter(
     "NT5E",
     group_col = "tissue",
@@ -2308,7 +2308,7 @@ marks <- c(
 
 marks %>%
   map(~ {
-    lec_so %>%
+    abe_lec_so %>%
       plot_violin(
         .x,
         cluster_col = "type",
