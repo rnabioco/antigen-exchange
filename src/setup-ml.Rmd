@@ -1651,7 +1651,6 @@ rf_feats %>%
 
 ```{r "RF predict Ag class", eval = run_rf}
 # Predict Ag class
-# * predictions are made separately for each mouse
 info_clmns <- c("subtype", "mouse")
 
 pred_dat <- lec_so %>%
@@ -1668,24 +1667,21 @@ rf_preds <- rf_mods_best %>%
     
     dat <- pred_dat %>%
       filter(subtype == args$subtype) %>%
-      split(.$mouse) %>%
-      map(dplyr::select, -all_of(info_clmns))
+      dplyr::select(-all_of(info_clmns))
     
     mod <- args$mod
     
     if (identical("train", class(mod))) mod <- mod$finalModel
     
     dat %>%
-      imap_dfr(~ {
-        rf_predict(
-          mod          = mod,
-          dat          = .x,
-          data_clmn    = rf_dat_clmn,
-          return_stats = FALSE
-        ) %>%
-          dplyr::select(pred, correct) %>%
-          mutate(training_data = rownames(.) %in% args$training_bcs)
-      })
+      rf_predict(
+        mod          = mod,
+        dat          = .,
+        data_clmn    = rf_dat_clmn,
+        return_stats = FALSE
+      ) %>%
+      dplyr::select(pred, correct) %>%
+      mutate(training_data = rownames(.) %in% args$training_bcs)
   })
 
 # Write table with predictions
@@ -1698,10 +1694,6 @@ rf_preds %>%
 # Load CHIKV data
 chikv_so <- qread(here(params$chikv_dir, "so_lec.qs"))
 
-chikv_feats <- degs %>%
-  pull(feature) %>%
-  unique()
-
 chikv_clmns <- c(
   "orig.ident", "rep", "treatment", "tm",
   chikv_type_clmn,
@@ -1709,10 +1701,12 @@ chikv_clmns <- c(
 )
 
 chikv_dat <- chikv_so %>%
-  FetchData(c(chikv_clmns, chikv_feats))
+  FetchData(c(chikv_clmns, all_feats))
 
 # Add zeros for missing genes
-missing_gns <- chikv_feats[!chikv_feats %in% colnames(chikv_dat)]
+# * to predict Ag classes, need to fix gene names to conform to required
+#   feature format
+missing_gns <- all_feats[!all_feats %in% colnames(chikv_dat)]
 
 chikv_dat[, missing_gns] <- 0
 

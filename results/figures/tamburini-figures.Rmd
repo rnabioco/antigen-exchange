@@ -14,12 +14,12 @@ output:
 params:
   template_dir: "src"                                                                # Rmd templates
   so_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-07-01"  # Seurat objects
-  mod_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-01" # RF models
+  mod_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-17" # RF models
   abe_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/abe"               # Abe et al objects
   geomx_dir:    "results/geomx"                                                      # GeoMx objects
   chikv_dir:    "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"                # CHIKV objects
   ref_dir:      "ref"                                                                # clustifyr references
-  table_dir:    "results/tables/2024-07-01"                                          # tables
+  table_dir:    "results/tables/2024-07-17"                                          # tables
   sample_info:  "sample_info.xlsx"                                                   # samples names/info
   res_dir:
     value:
@@ -27,7 +27,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options:
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -971,27 +971,35 @@ u_dat <- lec_so@meta.data %>%
 # Create UMAPs
 u_args <- list(
   typ = set_names(rf_typs),
-  pt_size = list(1, c(0.5, 0.1), c(0.5, 0.1))
+  pt_size = list(1, c(0.5, 0.1), c(0.5, 0.1)),
+  ag_clrs = list(
+    c("lightblue", "lightblue", "white", "#D7301F"),
+    c("lightblue", "white", "#D7301F"),
+    c("lightblue", "white", "#D7301F")
+  )
 )
 
 mod_u <- u_args %>%
   pmap(~ {
+    args <- list(...)
+    
     u_dat %>%
       create_rf_module_umaps(
-        typ           = .x,
+        typ           = args$typ,
         ag_class_clmn = "Ag_class_ml",
-        module_clmn   = str_c(.x, "_high"),
-        module_title  = str_c(.x, " Ag-high module"),
+        module_clmn   = str_c(args$typ, "_high"),
+        module_title  = str_c(args$typ, " Ag-high module"),
         equal_scales  = FALSE,
-        pt_size       = .y
+        pt_size       = args$pt_size,
+        ag_clrs       = args$ag_clrs
       )
   })
 ```
 
 ```{r "RF top features examples", fig.height = 8, fig.width = 8}
 # Calculate p-values
-# use all features included in models, adjust based on this number of genes
-# adjust p-values separately for each tm and pred_grp
+# * use all features included in models, adjust based on this number of genes
+# * adjust p-values separately for each tm and pred_grp
 p_vals <- rf_feats[rf_typs] %>%
   imap_dfr(~ {
     p_alt <- c(high = "greater", low = "less")
@@ -1045,7 +1053,7 @@ p_vals <- rf_feats[rf_typs] %>%
   })
 
 # Adjust p-values for multiple testing
-# adjust each tm and pred_grp separately
+# * adjust each tm and pred_grp separately
 p_vals <- p_vals %>%
   group_by(tm, pred_grp, subtype) %>%
   mutate(
@@ -1075,10 +1083,7 @@ shared_feats <- rf_feats %>%
 p_dat <- p_vals %>%
   filter(
     subtype == rf_cell_type,
-    p_adj < 0.05,
-    gene %in% shared_feats$gene,
-    
-    gene != "Xist"  # FIX THIS
+    p_adj < 0.05
   ) %>%
   group_by(gene) %>%
   filter(any(med_diff > 0)) %>%
@@ -1092,13 +1097,15 @@ gene_examples <- lec_so %>%
   subset(tm %in% rf_tms) %>%
   create_gn_plots(
     p_data = p_dat,
-    # top_gns     = c("Gdf10", "Tgfa", "Ctsd", "Grn", "Col4a1", "Col4a2", "Fau", "Lama4"),
-    top_gns     = c("Ctsd", "Lgmn", "Psap", "Grn", "Col4a1", "Col4a2", "Fau", "Lama4"),
-    n_gns       = 4,
-    plt_clrs    = pred_clrs,
-    x_lvls      = names(pred_clrs),
-    draw_line   = FALSE,
-    pt_size     = 2.5
+    top_gns = c(
+      "Ctsd", "Lgmn", "Psap", "Grn",
+      "Ctla2a", "Col4a2", "Ltbp4", "Ifitm2"
+    ),
+    n_gns     = 4,
+    plt_clrs  = pred_clrs,
+    x_lvls    = names(pred_clrs),
+    draw_line = FALSE,
+    pt_size   = 2.5
   )
 ```
 
@@ -1247,6 +1254,7 @@ go_fig <- go_sig %>%
       theme(
         legend.position = "none",
         plot.title      = element_text(size = ttl_pt2 * 1.5, hjust = 0.25),
+        strip.clip      = "off",
         axis.title.y    = element_blank()
       )
   }) %>%
@@ -1278,7 +1286,7 @@ naive_fig <- naive_dat %>%
   imap(~ {
     .x %>%
       ggplot(aes(tm, value, fill = subtype)) +
-      geom_boxplot(outlier.size = 0.25) +
+      geom_boxplot(outlier.size = 0.25, width = 0.5) +
       facet_grid(~ module_type) +
       scale_fill_manual(values = lec_clrs) +
       labs(x = "days post vaccination", y = "module score") +
@@ -1316,7 +1324,7 @@ rf_bar_2 <- rf_bar_dat %>%
   bar_thm
 ```
 
-```{r "Fig S3", fig.width = 20, fig.height = 25}
+```{r "Fig S3", fig.width = 20, fig.height = 22}
 top <- plot_grid(
   rf_bar_2, mod_bxs[[2]],
   rel_widths = c(0.75, 1),
@@ -1352,7 +1360,7 @@ bot <- plot_grid(
 figS3 <- plot_grid(
   go_fig, naive_fig, top, bot,
   ncol = 1,
-  rel_heights = c(1, 0.5, 0.5, 1)
+  rel_heights = c(0.5, 0.5, 0.5, 1)
 )
 
 figS3
@@ -2410,6 +2418,7 @@ top <- chikv_so %>%
   chikv_u_theme +
   theme(
     legend.title = element_blank(),
+    legend.text  = element_text(size = 11.5),
     panel.border = element_blank()
   )
 ```
@@ -2476,6 +2485,7 @@ chikv_ag_bxs <- chikv_bx_dat %>%
 
 ```{r "CHIKV Ag-high heatmap"}
 # Ag-high heatmap data
+# * two genes are not in the CHIKV object
 heat_feats <- rf_feats$cLEC$high
 heat_feats <- heat_feats[heat_feats %in% rownames(chikv_so)]
 
@@ -2490,8 +2500,6 @@ gn_lvls <- heat_dat %>%
   pivot_wider(names_from = treatment, values_from = value) %>%
   mutate(value = CHIKV / mock, .keep = "unused") %>%
   arrange(desc(value)) %>%
-  # pivot_wider(names_from = lec_subtype, values_from = value) %>%
-  # arrange(desc(!!sym(rf_typs[1])), desc(!!sym(rf_typs[2])), desc(!!sym(rf_typs[3]))) %>%
   pull(name) %>%
   unique()
   
@@ -2500,9 +2508,8 @@ heat_dat <- heat_dat %>%
   mutate(value = as.numeric(scale(value))) %>%
   ungroup() %>%
   mutate(
-    treatment   = fct_relevel(treatment, c("mock", "CHIKV")),
-    name        = fct_relevel(name, rev(gn_lvls))
-    # lec_subtype = fct_relevel(lec_subtype, rev(rf_typs))
+    treatment = fct_relevel(treatment, c("mock", "CHIKV")),
+    name      = fct_relevel(name, rev(gn_lvls))
   )
 
 # Ag heatmap
@@ -2763,47 +2770,81 @@ B.  The total fraction of cLECs predicated to be Ag-competent is shown for
     pooled MFLN and FL samples shown in A.
     P values were calculated using Fisher's exact test.
 
-```{r "Fig S8", fig.width = 12, fig.height = 4.5}
+```{r "Fig S8", fig.width = 10, fig.height = 4.5}
 # Plot fraction Ag-competent cLECs
+# * cLECs are the LEC1 population
+# * only include samples with at least 20 cLECs
 abe_bar_dat <- abe_lec_so@meta.data %>%
   rownames_to_column(".cell_id") %>%
   filter(type == "LEC1") %>%
-  mutate(tissue = fct_relevel(tissue, names(abe_clrs)))
-
-abe_bars_1 <- abe_bar_dat %>%
+  mutate(
+    tissue = fct_relevel(tissue, names(abe_clrs)),
+    sample = str_remove(sample, "_NHC$")
+  ) %>%
   group_by(sample, tissue) %>%
+  filter(n() > 20) %>%
   summarize(
     frac_high = sum(pred_grp == "Ag-competent") / n(),
     .groups = "drop"
-  ) %>%
+  )
+
+abe_bars_1 <- abe_bar_dat %>%
   ggplot(aes(sample, frac_high, fill = tissue)) +
   geom_col() +
-  facet_wrap(~ tissue, scales = "free_x") +
+  facet_grid(~ tissue, scales = "free_x", space = "free_x") +
   scale_fill_manual(values = abe_clrs) +
-  scale_y_continuous(breaks = c(0, 0.5, 1)) +
-  labs(y = "fraction Ag-competent") +
+  scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
+  labs(y = "fraction Ag-competent cLECs") +
   base_theme +
   theme(
-    aspect.ratio = 1,
     legend.position = "none",
     axis.title.x = element_blank(),
     axis.text.x  = element_text(angle = 45, hjust = 1)
   )
 
 # Bargraphs for combined samples
+p_dat <- abe_bar_dat %>%
+  mutate(
+    p = wilcox.test(
+      frac_high[tissue == "FL"],
+      frac_high[tissue == "MFLN"]
+    )$p.value
+  ) %>%
+  group_by(tissue, p) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  rowwise() %>%
+  mutate(
+    p_lab = str_c("italic(p) == ", .format_pvalue(p)),
+    n_lab = str_c(tissue, "\nn = ", n)
+  )
+
+n_labs <- set_names(p_dat$n_lab, p_dat$tissue)
+
 abe_bars_2 <- abe_bar_dat %>%
-  mutate(subtype = "LEC1") %>%
-  create_chikv_class_bars(
-    x        = "tissue",
-    n_p      = 1,
-    rep_clmn = NULL,
-    ttl      = "fraction Ag-competent",
-    clrs     = abe_clrs
+  group_by(tissue) %>%
+  summarize(frac_high = median(frac_high), .groups = "drop") %>%
+  ggplot(aes(tissue, frac_high, fill = tissue)) +
+  geom_col() +
+  geom_jitter(data = abe_bar_dat, size = 2, width = 0.03) +
+  geom_text(
+    aes(1.5, Inf),
+    label = unique(p_dat$p_lab),
+    parse = TRUE,
+    size  = 12 / .pt,
+    vjust = 1.3,
   ) +
+  scale_fill_manual(values = abe_clrs) +
+  scale_y_continuous(
+    breaks = c(0, 0.5, 1),
+    limits = c(0, 1)
+  ) +
+  scale_x_discrete(labels = n_labs) +
+  labs(y = "fraction Ag-competent cLECs") +
+  base_theme +
   theme(
-    aspect.ratio = 1.5,
-    strip.text   = element_blank(),
-    axis.text.x  = element_text(hjust = c(0.65, 0.35))
+    aspect.ratio    = 1.5,
+    legend.position = "none",
+    axis.title.x    = element_blank()
   )
 
 # Create final figure
