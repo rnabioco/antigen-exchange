@@ -4631,7 +4631,7 @@
     },
     "reticulate": {
       "Package": "reticulate",
-      "Version": "1.32.0",
+      "Version": "1.38.0",
       "Source": "Repository",
       "Repository": "RSPM",
       "Requirements": [
@@ -4649,7 +4649,7 @@
         "utils",
         "withr"
       ],
-      "Hash": "3bcef49cfb33dcc522ab94eabd5d3714"
+      "Hash": "8810e64cfe0240afe926617a854a38a4"
     },
     "rjson": {
       "Package": "rjson",
@@ -4924,7 +4924,7 @@
     },
     "sctransform": {
       "Package": "sctransform",
-      "Version": "0.4.0",
+      "Version": "0.4.1",
       "Source": "Repository",
       "Repository": "RSPM",
       "Requirements": [
@@ -4944,7 +4944,7 @@
         "reshape2",
         "rlang"
       ],
-      "Hash": "d55ea018c4cf7ee12c3188c574857755"
+      "Hash": "0242402f321be0246fb67cf8c63b3572"
     },
     "segmented": {
       "Package": "segmented",
