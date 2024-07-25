@@ -1099,7 +1099,8 @@ gene_examples <- lec_so %>%
     p_data = p_dat,
     top_gns = c(
       "Ctsd", "Lgmn", "Psap", "Grn",
-      "Ctla2a", "Col4a2", "Ltbp4", "Ifitm2"
+      "Col4a2", "Tmsb4x",  # cell migration, angiogenesis
+      "Ctla2a", "Ltbp4"    # immune response
     ),
     n_gns     = 4,
     plt_clrs  = pred_clrs,
@@ -2770,7 +2771,7 @@ B.  The total fraction of cLECs predicated to be Ag-competent is shown for
     pooled MFLN and FL samples shown in A.
     P values were calculated using Fisher's exact test.
 
-```{r "Fig S8", fig.width = 10, fig.height = 4.5}
+```{r "Fig S8", fig.width = 10, fig.height = 4.5, out.width = "75%"}
 # Plot fraction Ag-competent cLECs
 # * cLECs are the LEC1 population
 # * only include samples with at least 20 cLECs
