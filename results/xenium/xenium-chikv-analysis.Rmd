@@ -150,6 +150,38 @@ create_object <- !file.exists(here(params$so_dir, str_c("xen", sffx)))
   res
 }
 
+.plot_full_fov_signal <- function(df_in, fov_in, color,
+                                  clrs = c("white", "#D7301F"),
+                                  size = 0.3, pseudo = 1, trans = "log10",
+                                  ttl = NULL, ...) {
+  
+  # Format input data
+  plt_theme <- umap_theme +
+    theme(
+      legend.key.height = unit(30, "pt"),
+      legend.key.width  = unit(7, "pt"),
+      legend.title      = element_text(size = 18)
+    )
+  
+  dat <- df_in %>%
+    filter(fov == fov_in)
+  
+  res <- dat %>%
+    arrange(!!sym(color)) %>%
+    ggplot(aes(y_cell, x_cell, fill = !!sym(color) + pseudo)) +
+    geom_point_trace(
+      size = 1,
+      stroke = 0.5,
+      ...
+    ) +
+    scale_fill_gradientn(colours = clrs, trans = trans) +
+    guides(fill = guide_colorbar(ticks = FALSE, title = ttl)) +
+    coord_fixed() +
+    plt_theme
+  
+  res
+}
+
 .process_xenium <- function(obj, dims = 1:40, resolution = c(1, 3, 5, 10)) {
 
   res <- obj %>%
@@ -1248,7 +1280,7 @@ set.seed(42)
 plt_cells <- sample(colnames(xen), 50000)
 
 plt_cells <- xen@meta.data %>%
-  filter(cell_type %in% top_types | Ag_class == "Ag-high" | chikv_class == "CHIKV-high") %>%
+  filter(cell_type %in% top_types | Ag_km == "Ag-high" | chikv_class == "CHIKV-high") %>%
   rownames() %>%
   c(plt_cells) %>%
   unique()
@@ -1447,6 +1479,7 @@ typ_clrs[c("other CD45+", "other CD45-", "other", "Ag-low", "CHIKV-low")] <- "gr
 # typ_clrs[c("LEC", "BEC", "cDC1")] <- c("#D7301F", "#0072B2", "#6A51A3")
 # typ_clrs[c("LEC", "BEC", "cDC1")] <- c("#56B4E9", "#D7301F", "#6A51A3")
 typ_clrs[c("LEC", "cDC1", "Monocytes", "B cells")] <- c("#0072B2", "#6A51A3", "#D55E00", "#56B4E9")
+typ_clrs["Macrophages"] <- "black"
 
 top_typ_clrs <- typ_clrs
 top_typ_clrs[!names(top_typ_clrs) %in% top_types] <- "grey85"
@@ -1489,21 +1522,16 @@ sam_clrs <- set_names(
 
 ## Summary
 
-* Ag signals are sparse (most Ag+ cells have 1 count).
-  This is at least partly due to the short length of the Ag tags, which only
-  accommodate a single Xenium probe.
-  We should consider re-designing and lengthening the Ag tags to allow binding
-  of 2-3 probes.
-* Due to the low number of Ag+ cells, Ag+ cells were identified as those with at
-  least 1 count for either the 3 week or 6 week tag.
-* LECs (specifically cLECs) are the top cell type enriched for Ag+ cells.
-* When compared with Ag- DCs, Ag+ DCs tend to be in closer proximity to
-  Ag+ LECs.
-  This supports our previous GeoMx data and is in line with published work
-  showing Ag is passed to DCs by LECs.
-* Analysis of intracellular localization of Ag molecules for LECs interacting
-  with a DC was inconclusive. This was due to the very few LEC-DC interactions,
-  and the low number of Ag molecules.
+* LECs show strongest enrichment of Ag-high and CHIKV-high cells
+* Samples infected with WT CHIKV show highest levels of viral RNA
+* CHIKV WT sample shows higher relative levels of viral sgRNA
+* Ag signals are highest in CHIKV 181/25 samples when compared to WT CHIKV
+
+<u>To do</u>
+
+* Refine cell type annotations
+* Annotate DC subsets, perform Ag-exchange analysis
+* Assess background signals
 
 <br>
 
@@ -1511,38 +1539,24 @@ sam_clrs <- set_names(
 
 ---
 
-```{r, eval = FALSE}
-xen_dat %>%
-  ggplot(aes(fov, nCount_Xenium, fill = sample)) +
-  geom_boxplot() +
-  facet_wrap(~ sample, scales = "free_x", nrow = 1) +
-  scale_y_log10() +
-  base_theme
-
-xen_dat %>%
-  filter(
-    cell_type == "LEC"
-    # tot_CHIKV > 0
-  ) %>%
-  ggplot(aes(fov, CHIKV_sgRNA + 1, fill = sample)) +
-  geom_boxplot() +
-  facet_wrap(~ sample, scales = "free_x", nrow = 1) +
-  scale_y_log10() +
-  base_theme
-```
-
 ## Cell types
 
 Annotated cell types are shown for LN sections.
 Cells were downsampled to allow for visualization of all cell types.
 
-```{r "SLIDE 1: cell type sections", fig.width = 15, fig.height = 16}
+```{r "SLIDE 1: cell type sections", fig.width = 15.5, fig.height = 16}
 # Legend labels
 cell_n <- xen@meta.data %>%
   group_by(cell_type) %>%
   summarize(n = n(), .groups = "drop") %>%
   mutate(
-    n_lab = str_c(cell_type, "\nn = ", label_comma()(n))
+    pct   = round((n / sum(n)) * 100, 1),
+    n_lab = ifelse(
+      n >= 1000,
+      str_c(round(n / 1000, 1), "k"),
+      label_comma()(n)
+    ),
+    n_lab = str_c(cell_type, " (", n_lab, ", ", pct, "%)")
   ) %>%
   arrange(desc(n))
 
@@ -1561,14 +1575,11 @@ plts <- fovs %>%
         dark.background = FALSE
       ) +
       guides(fill = guide_legend(override.aes = list(shape = 22, size = 4))) +
-      scale_fill_manual(values = typ_clrs, labels = lgnd_labs) +
+      scale_fill_manual(values = typ_clrs) +
       labs(tag = fov_lvls[.x]) +
       coord_fixed() +
       umap_theme +
       theme(
-        # legend.key.height = unit(35, "pt"),
-        # legend.title      = element_blank(),
-        # legend.text       = element_text(size = ttl_pt1),
         legend.position   = "none",
         plot.tag.position = c(0.15, 0.95),
         plot.tag          = element_text(size = ttl_pt2)
@@ -1589,20 +1600,21 @@ plts <- plts %>%
 
 # Create bargraphs
 # be sure to NOT use downsampled data
-brs <- xen@meta.data %>%
+brs <- xen_dat %>%
   mutate(sample = fct_relevel(sample, sam_lvls)) %>%
   plot_frequency(
     "cell_type",
     cluster_col = "fov",
-    plot_colors = typ_clrs,
     plot_lvls   = names(lgnd_labs),
     alpha       = 1
   ) +
+  guides(color = "none") +
   facet_grid(~ sample, scales = "free_x", space = "free_x") +
-  base_theme +
+  scale_fill_manual(values = typ_clrs, labels = lgnd_labs) +
+  scale_color_manual(values = typ_clrs) +
   scale_y_continuous(expand = expansion(c(0, 0))) +
+  base_theme +
   theme(
-    # aspect.ratio    = 0.7,
     plot.margin     = margin(0, 0, 0, 0),
     panel.border    = element_blank(),
     legend.position = "right",
@@ -1619,13 +1631,16 @@ fig <- wrap_plots(
   ncol = 1,
   heights = c(1, 0.25)
 )
-  # plot_annotation(caption = "* cells downsampled for visualization") &
-  # theme(plot.caption = element_text(hjust = 0.02, vjust = 30, face = "italic"))
 
 fig
 ```
 
+<br>
+
 ### {.tabset .tabset-pills}
+
+High resolution images show all cells (left) or all cells with LECs highlighted
+(right).
 
 ```{r "SLIDE 3: LEC DC sections", fig.width = 13, fig.height = 16, eval = FALSE}
 # Create section plots
@@ -1924,9 +1939,9 @@ marker_plt
 ### {.tabset .tabset-pills}
 
 Annotated LEC subsets are shown for LN sections.
-High-resolution images showing all cells are included at the bottom
+High-resolution images showing showing all cells are included at the bottom
 
-```{r "SLIDE 5: LEC type sections", fig.width = 15, fig.height = 15}
+```{r "SLIDE 5: LEC type sections", fig.width = 15, fig.height = 12}
 # Legend labels
 lec_labs <- xen@meta.data %>%
   group_by(lec_type) %>%
@@ -2015,8 +2030,7 @@ fovs %>%
 
 ### LECs are the primary cell type harboring CHIKV RNA {.tabset .tabset-pills}
 
-CHIKV+ cells are shown for LN sections.
-High-resolution images showing all cells are included at the bottom
+CHIKV-high cells are shown for LN sections.
 
 ```{r "CHIKV+ cell types", fig.width = 17, fig.height = 11}
 .create_class_figure(
@@ -2030,27 +2044,27 @@ High-resolution images showing all cells are included at the bottom
 )
 ```
 
-```{r, fig.width = 20, fig.height = 10, results = "asis", out.height = "50%"}
-ag_types <- xen_dat$cell_type %>%
-  unique() %>%
-  grep("other|CHIKV-low", ., invert = TRUE, value = TRUE)
+<br>
 
+High-resolution images show CHIKV counts for each tissue section.
+
+```{r, fig.width = 20, fig.height = 10, results = "asis", out.height = "50%"}
 fovs %>%
   walk(~ {
     cat("\n\n####", .x, "\n\n")
     
     fig <- xen_dat %>%
-      .plot_full_fov(
-        fov        = .x,
-        color      = "chikv_type",
-        clrs       = typ_clrs,
-        trace      = list(ag_types),
-        trace_clr  = NA,
-        trace_size = 1.5
+      .plot_full_fov_signal(
+        fov    = .x,
+        color  = "tot_CHIKV",
+        clrs   = c("white", "#D7301F"),
+        ttl    = "CHIKV\ncounts + 1",
+        pseudo = 1,
+        trans  = "log10"
       )
     
     print(fig)
-    cat("\n\n<br>\n\n<br>\n\n")
+    cat("\n\n")
   })
 ```
 
@@ -2173,10 +2187,46 @@ hist_dat %>%
 
 <br>
 
+The fraction of CHIKV-high cells is shown for each sample.
+
+```{r, fig.width = 11, fig.height = 3.5}
+type_dat %>%
+  group_by(sample, cell_type) %>%
+  summarize(
+    frac = sum(chikv_class == "CHIKV-high") / n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    cell_type = fct_reorder(cell_type, frac, max, .desc = TRUE)
+  ) %>%
+  group_by(cell_type) %>%
+  filter(
+    "CHIKV WT" %in% sample,
+    max(frac) >= 0.1
+  ) %>%
+  
+  ggplot(aes(sample, frac, fill = sample)) +
+  geom_col() +
+  facet_wrap(~ cell_type, scales = "free_y", nrow = 1) +
+  scale_fill_manual(values = sam_clrs) +
+  scale_y_continuous(label = label_percent()) +
+  labs(y = "% CHIKV-high cells") +
+  base_theme +
+  theme(
+    aspect.ratio     = 1,
+    panel.background = element_rect(fill = NA, color = "grey75", linewidth = ln_pt),
+    legend.position  = "none",
+    axis.title.x     = element_blank(),
+    axis.text.x      = element_text(angle = 45, hjust = 1)
+  )
+```
+
+<br>
+
 Total CHIKV counts are shown for all LECs (left) or CHIKV+ LECs (right).
 The number of cells plotted is shown above each boxplot.
 
-```{r "CHIKV SIGNAL SAMPLES", fig.width = 10, fig.height = 4, out.height = "40%"}
+```{r "CHIKV SIGNAL SAMPLES", fig.width = 15, fig.height = 4, out.height = "50%"}
 args <- list(
   y      = c(rep("tot_CHIKV", 2), rep("frac_CHIKV", 2)),
   ttl    = c("LECs", "CHIKV+ LECs", "LECs", "CHIKV+ LECs"),
@@ -2252,7 +2302,7 @@ The fraction of total counts assigned to CHIKV probes is shown for
 all LECs (left) or CHIKV+ LECs (right).
 The number of cells plotted is shown above each boxplot.
 
-```{r "CHIKV SIGNAL SAMPLES 2", fig.width = 10, fig.height = 4, out.height = "40%"}
+```{r "CHIKV SIGNAL SAMPLES 2", fig.width = 15, fig.height = 4, out.height = "50%"}
 plot_grid(
   plotlist = plts[3:4],
   nrow  = 1,
@@ -2585,7 +2635,7 @@ fig <- .create_class_figure(
 fig
 ```
 
-```{r, fig.width = 20, fig.height = 10, results = "asis", out.height = "50%"}
+```{r, fig.width = 20, fig.height = 10, results = "asis", out.height = "25%"}
 ag_types <- xen_dat$lec_Ag_type %>%
   unique() %>%
   grep("other|CHIKV-low", ., invert = TRUE, value = TRUE)
@@ -2613,8 +2663,9 @@ fovs %>%
 
 ### LECs show strongest enrichment of Ag-high cells {.tabset .tabset-pills}
 
-Ag counts are shown below for Ag+ LECs.
-The number of Ag+ LECs and total LECs is shown for each sample.
+Ag counts are shown below for LECs with >=1 Ag count.
+LECs were divided into Ag-low and Ag-high groups.
+The number of Ag-high LECs and total LECs is shown for each sample.
 Replicates were pooled together.
 
 ```{r, fig.width = 20, fig.height = 4}
@@ -2676,8 +2727,8 @@ hist_dat %>%
 
 <br>
 
-Ag-high cells are shown for LN sections.
-High-resolution images showing all cells are included at the bottom
+Ag-high cells are shown for each LN tissue section.
+The fraction of cells that are Ag-high is shown on the right.
 
 ```{r "SLIDE 2: Ag+ cell types", fig.width = 17, fig.height = 11}
 .create_class_figure(
@@ -2691,23 +2742,30 @@ High-resolution images showing all cells are included at the bottom
 )
 ```
 
-```{r, fig.width = 20, fig.height = 10, results = "asis", out.height = "50%"}
-ag_types <- xen_dat$cell_type %>%
-  unique() %>%
-  grep("other|Ag-low", ., invert = TRUE, value = TRUE)
+<br>
 
-fovs %>%
+High-resolution images show Ag counts for each tissue section.
+
+```{r, fig.width = 20, fig.height = 10, results = "asis", out.height = "50%"}
+plt_fovs <- xen_dat %>%
+  group_by(fov) %>%
+  filter(sum(Ag_tag) > 100) %>%
+  pull(fov) %>%
+  unique() %>%
+  as.character()
+
+plt_fovs %>%
   walk(~ {
     cat("\n\n####", .x, "\n\n")
     
     fig <- xen_dat %>%
-      .plot_full_fov(
-        fov        = .x,
-        color      = "Ag_type",
-        clrs       = typ_clrs,
-        trace      = list(ag_types),
-        trace_clr  = NA,
-        trace_size = 1.5
+      .plot_full_fov_signal(
+        fov    = .x,
+        color  = "Ag_tag",
+        clrs   = c("white", "#065D43"),
+        ttl    = "Ag counts + 1",
+        pseudo = 1,
+        trans  = "log10"
       )
     
     print(fig)
@@ -2715,7 +2773,7 @@ fovs %>%
   })
 ```
 
-### Ag signal is higher in CHIKV 181/25 samples
+### Ag signal is reduced in CHIKV WT samples
 
 The fraction of total counts assigned to Ag-tag probes (Ag-tag counts / total counts)
 for each sample is shown on the left.
@@ -3010,12 +3068,12 @@ High-resolution images showing all cells are included at the bottom
 )
 ```
 
-```{r, fig.width = 20, fig.height = 10, results = "asis", out.height = "50%"}
+```{r, fig.width = 20, fig.height = 10, results = "asis", out.height = "25%"}
 ag_types <- xen_dat$lec_Ag_type %>%
   unique() %>%
   grep("other|Ag-low", ., invert = TRUE, value = TRUE)
 
-fovs %>%
+plt_fovs %>%
   walk(~ {
     cat("\n\n####", .x, "\n\n")
     
@@ -3041,6 +3099,33 @@ sessionInfo()
 ```
 
 
+
+```{r "XENIUM EXAMPLES", eval = FALSE}
+
+xen_dat %>%
+  filter(fov == "Group_B_6") %>%
+  arrange(frac_CHIKV) %>%
+  ggplot(aes(x_cell, y_cell, fill = tot_CHIKV + 1)) +
+  geom_point_trace(
+    size = 1,
+    stroke = 0.5
+  ) +
+  scale_fill_gradientn(colours = c("white", "#D7301F"), trans = "log10") +
+  umap_theme
+
+xen_dat %>%
+  filter(fov == "Group_D_6") %>%
+  arrange(Ag_tag) %>%
+  ggplot(aes(x_cell, y_cell, fill = Ag_tag + 1)) +
+  geom_point_trace(
+    size = 1,
+    stroke = 0.5
+  ) +
+  coord_fixed() +
+  scale_fill_gradientn(colours = c("white", "#D7301F"), trans = "log10") +
+  umap_theme
+
+```
 
 ```{r "LEC-DC INTERACTIONS", eval = FALSE}
 fov_id <- "D"
