@@ -59,7 +59,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 <br>
@@ -1522,7 +1522,7 @@ sam_clrs <- set_names(
 
 ## Summary
 
-* LECs show strongest enrichment of Ag-high and CHIKV-high cells
+* LECs show strongest enrichment of Ag-high and CHIKV+ cells
 * Samples infected with WT CHIKV show highest levels of viral RNA
 * CHIKV WT sample shows higher relative levels of viral sgRNA
 * Ag signals are highest in CHIKV 181/25 samples when compared to WT CHIKV
@@ -1538,6 +1538,87 @@ sam_clrs <- set_names(
 <br>
 
 ---
+
+```{r "QC", eval = FALSE}
+# Format plotting data
+feats <- c(
+  "sample", "fov", "cell_type",
+  "nCount_Xenium", "nCount_Xenium_custom"
+)
+
+DefaultAssay(xen) <- "Xenium_custom"
+
+qc_dat <- xen %>%
+  FetchData(c(feats, params$custom_targets), slot = "counts") %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(params$custom_targets))
+
+# Format heatmap data
+heat_dat <- qc_dat %>%
+  group_by(fov, name) %>%
+  mutate(
+    tot_counts = sum(nCount_Xenium + nCount_Xenium_custom)
+  ) %>%
+  group_by(name, fov, sample, tot_counts) %>%
+  summarize(
+    value   = sum(value),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    frac   = value / tot_counts,
+    fov    = fct_relevel(fov, names(fov_lvls)),
+    sample = fct_relevel(sample, sam_lvls)
+  )
+
+# Tiles to outline
+top_dat <- heat_dat %>%
+  filter(frac >= 0.0001)
+
+# Tiles to label
+lab_dat <- heat_dat %>%
+  filter(frac >= 0.0001) %>%
+  mutate(
+    lab = round(frac * 100, 2),
+    lab = str_c(lab, "%")
+  )
+
+# Create heatmap
+heat_dat %>%
+  ggplot(aes(fov, name, fill = frac + 0.0001)) +
+  geom_tile() +
+  geom_tile(
+    data = top_dat,
+    color = "black"
+  ) +
+  geom_text(
+    aes(color = NULL, fill = NULL, label = lab),
+    data = lab_dat
+  ) +
+  facet_grid(~ sample, space = "free", scales = "free") +
+  scale_fill_gradientn(colours = c("white", "#D7301F"), labels = label_percent(), trans = "log10") +
+  scale_color_manual(values = c(`TRUE` = "black", `FALSE` = "white")) +
+  base_theme +
+  theme(
+    # aspect.ratio       = n_distinct(heat_dat$fov) / n_distinct(heat_dat$name),
+    strip.clip         = "off",
+    strip.text.y.right = element_text(angle = 0, hjust = 0),
+    axis.text.x        = element_text(angle = 90, vjust = 0.5, hjust = 1)
+  )
+
+
+# # Boxplots
+# qc_dat %>%
+#   ggplot(aes(cell_type, value + 1, fill = cell_type)) +
+#   geom_boxplot(outlier.size = 0.1) +
+#   facet_grid(name ~ fov, scales = "free") +
+#   scale_y_log10() +
+#   base_theme +
+#   theme(
+#     strip.clip         = "off",
+#     strip.text.y.right = element_text(angle = 0),
+#     axis.text.x        = element_text(angle = 90, vjust = 0.5, hjust = 1)
+#   )
+```
 
 ## Cell types
 
@@ -2030,7 +2111,7 @@ fovs %>%
 
 ### LECs are the primary cell type harboring CHIKV RNA {.tabset .tabset-pills}
 
-CHIKV-high cells are shown for LN sections.
+CHIKV+ cells (>0 CHIKV counts) are shown for LN sections.
 
 ```{r "CHIKV+ cell types", fig.width = 17, fig.height = 11}
 .create_class_figure(
@@ -2187,7 +2268,7 @@ hist_dat %>%
 
 <br>
 
-The fraction of CHIKV-high cells is shown for each sample.
+The fraction of CHIKV+ cells is shown for each sample.
 
 ```{r, fig.width = 11, fig.height = 3.5}
 type_dat %>%
@@ -2210,7 +2291,7 @@ type_dat %>%
   facet_wrap(~ cell_type, scales = "free_y", nrow = 1) +
   scale_fill_manual(values = sam_clrs) +
   scale_y_continuous(label = label_percent()) +
-  labs(y = "% CHIKV-high cells") +
+  labs(y = "% CHIKV+ cells") +
   base_theme +
   theme(
     aspect.ratio     = 1,
@@ -3099,6 +3180,19 @@ sessionInfo()
 ```
 
 
+
+```{r "CHIKV+ Ag-high", eval = FALSE}
+xen_dat %>%
+  filter(grepl("Ag$", sample)) %>%
+  group_by(sample, cell_type, chikv_class) %>%
+  summarize(
+    n = n(),
+    n_ag = sum(Ag_km == "Ag-high"),
+    .groups = "drop"
+  ) %>%
+  mutate(frac = n_ag / n)
+
+```
 
 ```{r "XENIUM EXAMPLES", eval = FALSE}
 

@@ -13,22 +13,24 @@ output:
 params:
   res_dir:     "results/xenium"
   xen_dir:     "20240322__194506__032224_Tamburini_Run_1"
-  so_dir:      "~/Dropbox/Ryan/Projects/tamburini-antigen-tracking/results/2024-03-22/sobjs"
+  xen_ref:     "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-07-01"
+  so_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/xenium/2024-03-22"
   ref_dir:     "ref"
   clst_rsln:   10
   slide_id:    1
   slide_regex: "output-XETG00230__0022624__[A-Z]__"
   # slide_id:    2
   # slide_regex: "output-XETG00230__0022841__[A-Z]__"
+  # Sample identify with 6wk and 3wk barcode identity (listed in this order)
+  # * `1` indicates GeoMx-Barcode01
   samples:
     value:
-      A: "6wk"
-      B: "6wk"
-      C: "6wk-3wk"
-      D: "6wk-3wk"
-      E: "3wk"
-      F: "3wk"
-      G: "naive"
+      A: ["6wk", 1, 2]
+      B: ["6wk", 2, 1]
+      C: ["6wk-3wk", 1, 2]
+      D: ["6wk-3wk", 2, 1]
+      E: ["3wk", 2, 1]
+      F: ["3wk", 1, 2]
   ag_targets:
     value:
       Ag_tag_1: "GeoMx-Barcode01-ERCC00142"
@@ -83,6 +85,9 @@ library(colorblindr)
 library(ggtrace)
 library(sf)
 library(sp)
+
+# ggspruce dev install
+library(ggspruce, lib.loc = "/home/rmsheridan/.cache/R/renv/library/ggspruce-c2135e66/R-4.3/x86_64-pc-linux-gnu")
 
 source(here("src/funs.R"))
 
@@ -149,6 +154,9 @@ create_object <- !file.exists(here(params$so_dir, str_c("xen", sffx)))
       npcs     = 50,
       features = rownames(.)
     ) %>%
+    
+    # Need to activate umap micromamba environment
+    # reticulate::use_condaenv("umap") 
     RunUMAP(
       assay       = "SCT",
       reduction   = "pca",
@@ -308,44 +316,157 @@ xen <- xen_dirs %>%
     
     obj
   })
-
-xen <- merge(xen[[1]], xen[-1], add.cell.ids = names(xen))
 ```
 
 ```{r "process object", include = FALSE, eval = create_object}
 # Process data
 # Add FOV labels
 xen <- xen %>%
-  mutate_meta(
-    mutate,
-    fov = str_extract(.cell_id, "^[A-Z]+(?=_)")
-  ) %>%
-  .process_xenium(
-    dims = 1:40,
-    resolution = params$clst_rsln
-  )
+  imap(~ {
+    .x %>%
+      mutate_meta(mutate, fov = .y) %>%
+      .process_xenium(
+        dims = 1:40,
+        resolution = params$clst_rsln
+      )
+  })
 
 # Identify Ag+ cells
+# * set Ag tag signals for each sample based on params$samples
 ag_feats <- str_c("xenium_custom_", ag_targets)
 
 xen <- xen %>%
-  AddMetaData(
-    FetchData(., ag_feats),
-    col.name = ag_clmns
-  ) %>%
-  mutate_meta(~ {
+  imap(~ {
+    ag_info <- params$samples[[.y]]
+    
     .x %>%
-      mutate(
-        Ag_class = ifelse(
-          rowSums(select(., all_of(ag_clmns)) > 0) > 0,
-          "Ag-high",
-          "Ag-low"
-        )
-      )
+      AddMetaData(
+        FetchData(., ag_feats),
+        col.name = ag_clmns
+      ) %>%
+      mutate_meta(~ {
+        .x %>%
+          rowwise() %>%
+          mutate(
+            mouse      = ag_info[[1]],
+            Ag_6wk_tag = ag_info[[2]],
+            Ag_3wk_tag = ag_info[[3]]
+          ) %>%
+          ungroup() %>%
+          mutate(
+            Ag_3wk_counts = ifelse(Ag_3wk_tag == 1, Ag_tag_1, Ag_tag_2),
+            Ag_6wk_counts = ifelse(Ag_6wk_tag == 1, Ag_tag_1, Ag_tag_2)
+          ) %>%
+          mutate(
+            Ag_counts = case_when(
+              mouse == "6wk"     ~ Ag_6wk_counts,
+              mouse == "3wk"     ~ Ag_3wk_counts,
+              mouse == "6wk-3wk" ~ Ag_6wk_counts + Ag_3wk_counts
+            ),
+            Ag_class = ifelse(Ag_counts > 0, "Ag-high", "Ag-low")
+          )
+      })
   })
 ```
 
-```{r "cell types", eval = create_object}
+```{r "cell type reference", eval = create_object}
+# Create reference using scRNA-seq data
+ref_so <- c("neg", "pos") %>%
+  map(~ {
+    file.path(params$xen_ref, str_c("cd45", .x, "_so.qs")) %>%
+      qread() %>%
+      subset(mouse == "6wk")
+  })
+
+ref_so <- merge(ref_so[[1]], ref_so[[2]])
+
+ref_so <- ref_so %>%
+  SCTransform(vst.flavor = "v2")
+
+ref_so <- ref_so %>%
+  RunPCA(
+    assay    = "SCT",
+    npcs     = 50,
+    features = rownames(.)
+  ) %>%
+  RunUMAP(
+    assay       = "SCT",
+    reduction   = "pca",
+    dims        = dims,
+    umap.method = "umap-learn"
+  )
+
+# Filter object to reduce memory requirement
+ref_so <- ref_so %>%
+  AddMetaData(FetchData(., c("UMAP_1", "UMAP_2"))) %>%
+  DietSeurat(assays = c("SCT", "RNA"))
+
+ref_so@assays$SCT@counts <- matrix(nrow = 0, ncol = 0)
+
+ref_so %>%
+  qsave(here(params$so_dir, str_c("ref_so", sffx)))
+```
+
+```{r "cell type annotations", eval = create_object}
+# Identify transfer anchors
+anchors <- xen %>%
+  map(~ {
+    FindTransferAnchors(
+      ref_so,
+      query = .x,
+      query.assay = "SCT",
+      normalization.method = "SCT"
+    )
+  })
+
+preds <- xen %>%
+  imap(~ {
+    TransferData(
+      anchorset        = anchors[[.y]],
+      refdata          = ref_so$cell_type,
+      prediction.assay = TRUE,
+      weight.reduction = .x[["pca"]],
+      dims             = 1:40
+    )
+  })
+
+anchors %>%
+  qsave(here(params$so_dir, str_c("ref_anchors", sffx)))
+
+preds %>%
+  qsave(here(params$so_dir, str_c("ref_preds", sffx)))
+
+# Predict cell types for Xenium data
+xen <- xen %>%
+  imap(~ {
+    .x[["preds"]] <- preds[[.y]]
+    
+    xen_types <- .x@assays$preds@data %>%
+      as_tibble(rownames = "cell_type") %>%
+      pivot_longer(-cell_type, values_to = "pred_conf") %>%
+      filter(cell_type != "max") %>%
+      group_by(name) %>%
+      filter(pred_conf == max(pred_conf)) %>%
+      mutate(cell_type = if_else(n() > 1, "unassigned", cell_type)) %>%
+      ungroup() %>%
+      column_to_rownames("name")
+    
+    .x %>%
+      AddMetaData(xen_types) %>%
+      mutate_meta(
+        mutate,
+        Ag_type = ifelse(Ag_class == "Ag-high", cell_type, "Ag-low")
+      )
+  })
+
+# Merge objects
+xen <- merge(xen[[1]], xen[-1], add.cell.ids = names(xen))
+
+xen %>%
+  qsave(here(params$so_dir, str_c("xen", sffx)))
+```
+
+```{r "OLD cell types", eval = FALSE}
 clst_clmn <- str_c("SCT_snn_res.", params$clst_rsln)
 
 # Annotate CD45+ cells
@@ -388,7 +509,7 @@ xen <- xen %>%
 
 ```{r "create lec/frc objects", include = FALSE, eval = create_object}
 # Process data
-type_key <- c(lec = "LEC", frc = "other CD45-")
+type_key <- c(lec = "LEC", frc = "Fibroblasts")
 
 cd45neg <- type_key %>%
   imap(~ {
@@ -401,9 +522,16 @@ cd45neg <- type_key %>%
     
     obj
   })
+
+# Split list
+lec <- cd45neg$lec
+frc <- cd45neg$frc
+
+rm(cd45neg)
+gc()
 ```
 
-```{r "refine cell types", include = FALSE, eval = create_object}
+```{r "OLD refine cell types", include = FALSE, eval = FALSE}
 # Adjust LEC annotations based on marker genes
 # clustifyr annotation exclude fLECs despite expression of fLEC markers
 lec_clst_clmn <- "SCT_snn_res.3"
@@ -542,12 +670,16 @@ xen <- xen %>%
 
 ```{r "lec types", eval = create_object}
 # Annotate LEC types
+# * automated threshold leaves a small Marco-high cluster as unassigned
+lec_clst_clmn <- "SCT_snn_res.3"
+
 ann <- clustify(
   input       = lec@assays$SCT@data,
   ref_mat     = ref_LEC_xiang,
   metadata    = lec@meta.data,
   cluster_col = lec_clst_clmn,
   vec_out     = TRUE,
+  threshold   = 0.55
 )
 
 names(ann) <- colnames(lec)
@@ -555,15 +687,15 @@ names(ann) <- colnames(lec)
 lec <- lec %>%
   AddMetaData(ann, col.name = "lec_type")
 
-# Refine fLEC annotations
-lec <- lec %>%
-  classify_markers(
-    Madcam1 > 0.25,
-    feats      = "Madcam1",
-    type_label = "fLEC",
-    clst_col   = lec_clst_clmn,
-    type_col   = "lec_type"
-  )
+# # Refine fLEC annotations
+# lec <- lec %>%
+#   classify_markers(
+#     Madcam1 > 0.25,
+#     feats      = "Madcam1",
+#     type_label = "fLEC",
+#     clst_col   = lec_clst_clmn,
+#     type_col   = "lec_type"
+#   )
 
 # Add annotations to meta.data
 lec <- lec %>%
@@ -583,8 +715,8 @@ xen <- xen %>%
 lec %>%
   qsave(here(params$so_dir, str_c("lec", sffx)))
 
-frc %>%
-  qsave(here(params$so_dir, str_c("frc", sffx)))
+# frc %>%
+#   qsave(here(params$so_dir, str_c("frc", sffx)))
 ```
 
 ```{r "FRC TYPES", eval = FALSE}
@@ -935,6 +1067,67 @@ lec_lvls <- c(
 <br>
 
 ---
+
+## QC
+
+```{r "XENIUM AG TYPE HEAT", eval = FALSE, fig.width = 14, fig.height = 6}
+bar_dat <- xen@meta.data %>%
+  group_by(fov, cell_type) %>%
+  summarize(
+    n = n(),
+    pct_ag_pos = (sum(Ag_class == "Ag-high") / n) * 100,
+    .groups = "drop"
+  ) %>%
+  filter(n > 100)
+
+# Filter to exclude cell types with < 100 cells
+bar_dat %>%
+  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
+  
+  group_by(fov) %>%
+  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
+  
+  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
+  geom_tile() +
+  scale_fill_gradientn(colours = c("white", "#E7301F")) +
+  base_theme +
+  theme(
+    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov)
+  )
+```
+
+```{r "XENIUM 3WK 6WK SIGNAL", eval = FALSE}
+
+bar_dat <- xen@meta.data %>%
+  group_by(fov, mouse, cell_type) %>%
+  summarize(
+    `3wk tag` = (sum(Ag_3wk_counts > 0) / n()) * 100,
+    `6wk tag` = (sum(Ag_6wk_counts > 0) / n()) * 100,
+    .groups   = "drop"
+  )
+
+bar_dat %>%
+  pivot_longer(ends_with("wk tag")) %>%
+  mutate(mouse = str_c(mouse, "-", fov)) %>%
+  
+  ggplot(aes(mouse, value, fill = name)) +
+  geom_col(position = position_dodge2()) +
+  
+  facet_wrap(~ cell_type, scales = "free_y") +
+  
+  labs(y = "% Ag+ cells") +
+  base_theme +
+  theme(
+    aspect.ratio = 1,
+    axis.text.x  = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_blank()
+  )
+
+```
+
+<br>
+
+<br>
 
 ## Cell types
 
@@ -1808,6 +2001,52 @@ plts %>%
     print(.x)
     cat("\n\n<br>\n\n<br>\n\n")
   })
+```
+
+```{r "SPATIAL CORRELATION", eval = FALSE}
+# DO NOT SEE A SIGNIFICANT CORRELATION BASED ON THIS APPROACH
+
+library(vegan)
+
+dc_class <- "Ag-high"
+
+# Plots
+xen@meta.data %>%
+  filter((cell_type == "LEC" & Ag_class == "Ag-high") | (grepl("^cDC2$", cell_type) & Ag_class == dc_class)) %>%
+  group_by(cell_type) %>%
+  slice_sample(n = 274) %>%
+  ungroup() %>%
+  
+  ggplot(aes(y_cell, x_cell, color = cell_type)) +
+  geom_point() +
+  facet_wrap(~ cell_type) +
+  coord_fixed() +
+  base_theme
+  
+# Matrices for calculating p-values
+lecs <- xen@meta.data %>%
+  filter(cell_type == "LEC" & Ag_class == "Ag-high", fov == "D") %>%
+  dplyr::select(x_cell, y_cell) %>%
+  as.matrix()
+
+dcs <- xen@meta.data %>%
+  filter(grepl("^cDC2$", cell_type) & Ag_class == dc_class, fov == "D") %>%
+  dplyr::select(x_cell, y_cell) %>%
+  as.matrix()
+
+# Downsample DCs so equal number of each cell type
+# set.seed(42)
+
+idx <- sample(seq_len(nrow(dcs)), nrow(lecs))
+
+dcs <- dcs[idx, ]
+
+# Procrustes test
+protest(lecs, dcs, permutations = 999)
+
+# Mantel test
+mantel(dist(lecs), dist(dcs))
+
 ```
 
 <br>

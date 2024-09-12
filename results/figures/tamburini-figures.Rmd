@@ -17,6 +17,7 @@ params:
   mod_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-17" # RF models
   abe_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/abe"               # Abe et al objects
   geomx_dir:    "results/geomx"                                                      # GeoMx objects
+  xen_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/xenium/2024-03-22"  # Xenium objects
   chikv_dir:    "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"                # CHIKV objects
   ref_dir:      "ref"                                                                # clustifyr references
   table_dir:    "results/tables/2024-07-17"                                          # tables
@@ -27,7 +28,7 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
 editor_options:
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -1706,8 +1707,8 @@ A.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
     This analysis was not performed for a biological replicate for LEC subsets
     due to the low number of LECs recovered (<40 total cells).
     Other timepoints are shown in grey.
-    P values were calculated using a one-sided t test with Bonferroni
-    correction.
+    P values were calculated using a one-sided Wilcoxon rank sum test with
+    Benjamini-Hochberg correction.
 B.  Ag-score is shown for the 42 day timepoint for LEC subsets from a
     biological replicate, as described in A.
 C.  Ag-score is shown for the 42 day timepoint for DC subsets from a biological
@@ -2220,6 +2221,594 @@ fig4 <- plot_grid(
 )
 
 fig4
+```
+
+
+
+```{r "XENIUM FUNCTIONS, eval = FALSE}
+library(ggspruce, lib.loc = "/home/rmsheridan/.cache/R/renv/library/ggspruce-c2135e66/R-4.3/x86_64-pc-linux-gnu")
+
+.plot_full_fov <- function(df_in, fov_in, color, trace = list(), clrs,
+                           size = 0.3, trace_size = 1, trace_clr = "black") {
+  
+  # Format input data
+  plt_theme <- umap_theme +
+    theme(
+      legend.title = element_blank(),
+      legend.text  = element_text(size = 28)
+    )
+  
+  dat <- df_in %>%
+    filter(fov == fov_in)
+  
+  n_dat <- dat %>%
+    group_by(!!sym(color)) %>%
+    summarize(n = n(), .groups = "drop") %>%
+    mutate(
+      n_lab = str_c(!!sym(color), "\nn = ", label_comma()(n))
+    )
+  
+  # Plot highlighted cells
+  res <- trace %>%
+    map(~ {
+      n_dat <- n_dat %>%
+        arrange(desc(!!sym(color) %in% .x), desc(n))
+      
+      n_labs <- set_names(n_dat$n_lab, n_dat[[color]])
+      
+      dat %>%
+        mutate(!!sym(color) := fct_relevel(!!sym(color), names(n_labs))) %>%
+        arrange(!!sym(color)) %>%
+        ggplot(aes(y_cell, x_cell, fill = !!sym(color))) +
+        geom_point_trace(
+          trace_position    = !!sym(color) %in% .x,
+          background_params = list(size = size, color = NA),
+          size  = trace_size,
+          color = trace_clr
+        ) +
+        scale_fill_manual(values = clrs, labels = n_labs) +
+        guides(fill = guide_legend(override.aes = list(size = 10, color = NA))) +
+        coord_fixed() +
+        plt_theme
+    })
+  
+  if (length(trace) == 1) res <- res[[1]]
+  
+  res
+}
+```
+
+```{r "XENIUM DATA", eval = FALSE}
+# Load objects
+xen   <- qread(here(params$xen_dir, "xen_s1.qs"))
+small <- qread(here(params$xen_dir, "small_s1.qs"))
+
+# Top cell types to plot
+dcs <- xen$cell_type %>%
+  unique() %>%
+  grep("DC", ., value = TRUE) %>%
+  sort()
+
+ag_dcs <- xen@meta.data %>%
+  filter(cell_type %in% dcs) %>%
+  group_by(cell_type) %>%
+  filter(all(table(Ag_class) > 15)) %>%
+  pull(cell_type) %>%
+  unique()
+
+top_types <- c("LEC", dcs)
+
+# Cells to plot for sections
+plt_cells <- colnames(small)
+
+# FOVs to plot
+fovs      <- sort(unique(xen$fov))
+top_fov   <- "D"
+top_fov_2 <- "B"
+
+# Format plotting data
+clmns <- c(
+  ".cell_id", "fov", "cell_type",
+  "Ag_class", "Ag_type", "lec_Ag_type",
+  "lec_type", "lec_dc_type", "lec_dc_Ag_type",
+  "lec_id", "lec_dist"
+)
+
+xen_dat <- xen@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  dplyr::select(all_of(clmns), matches("^[xy]_"))
+
+small_dat <- small@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  dplyr::select(all_of(clmns), matches("^[xy]_")) %>%
+  mutate(Ag_class = fct_relevel(Ag_class, c("Ag-low", "Ag-high"))) %>%
+  arrange(Ag_class)
+
+# Xenium colors
+xen_clrs <- typ_clrs
+
+xen_clrs["unassigned"] <- "grey65"
+
+xen_clrs <- xen_clrs %>%
+  spruce_up_colors(
+    adjust_colors = "Neutrophils",
+    filter     = c("deutan", "protan", "tritan"),
+    difference = 10,
+    property   = "lightness",
+    range      = c(10, 85)
+  )
+
+xen_clrs <- xen_clrs[names(xen_clrs) %in% xen_dat$cell_type]
+# xen_clrs <- c(xen_clrs, dc_clrs)
+```
+
+```{r "XENIUM BAD", eval = FALSE}
+library(ggspruce)
+
+typ_clrs["unassigned"] <- "grey65"
+
+typ_clrs <- typ_clrs %>%
+  spruce_up_colors(
+    adjust_colors = "Neutrophils",
+    adjust        = "b",
+    difference    = 10
+  )
+
+xen_clrs <- typ_clrs[names(typ_clrs) %in% xen_dat$cell_type]
+xen_clrs <- c(xen_clrs, dc_clrs)
+
+xen_clrs <- xen_clrs %>%
+  spruce_up_colors(
+    adjust_colors = "Siglec-H DC",
+    difference    = 30
+  )
+
+# Plot all cells for tissue section
+full_fig <- xen_dat %>%
+  .plot_full_fov(
+    fov   = "D",
+    color = "cell_type",
+    trace = list(c("LEC", dcs)),
+    clrs  = xen_clrs
+  )
+```
+
+```{r "XENIUM AG CLASS", eval = FALSE}
+# Format plot data
+dat <- xen@meta.data %>%
+  filter(fov == top_fov) %>%
+  mutate(
+    broad_type = if_else(cell_type %in% dcs, "DC", cell_type),
+    broad_type = if_else(
+      broad_type %in% c("LEC", "DC"),
+      broad_type,
+      "other"
+    ),
+    broad_type = fct_relevel(broad_type, c("LEC", "DC", "other")),
+    Ag_class  = fct_relevel(Ag_class, c("Ag-high", "Ag-low")),
+    type_ag   = if_else(
+      broad_type %in% c("LEC", "DC"),
+      str_c(broad_type, " (", Ag_class, ")"),
+      broad_type
+    ),
+    Ag_counts = Ag_tag_1 + Ag_tag_2
+  ) %>%
+  arrange(broad_type, Ag_class) %>%
+  mutate(type_ag = fct_inorder(type_ag))
+
+# Adjust color palette
+new_clrs <- c("#E7301F", "#56B4E9", "white") %>%
+  expand_colors(
+    n             = c(2, 2, 1),
+    keep_original = TRUE,
+    filter        = c("deutan", "protan", "tritan"),
+    difference    = Inf,
+    direction     = -1,
+    range         = c(10, 90),
+    maxit         = 2000
+  )
+
+names(new_clrs) <- c(
+  "LEC (Ag-low)", "LEC (Ag-high)",
+  "DC (Ag-low)", "DC (Ag-high)",
+  "other"
+)
+
+# Format legend labels
+lec_dc_ag_labs <- dat %>%
+  group_by(type_ag) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  mutate(
+    n_lab = str_c(type_ag, "\nn = ", label_comma()(n))
+  ) %>%
+  arrange(type_ag)
+
+lec_dc_ag_labs <- set_names(
+  lec_dc_ag_labs$n_lab,
+  lec_dc_ag_labs$type_ag
+)
+
+# Plot Ag+ cells
+ag_pos_fig <- dat %>%
+  arrange(desc(type_ag)) %>%
+  mutate(type_ag = fct_inorder(type_ag)) %>%
+  
+  ggplot(aes(y_cell, x_cell, fill = type_ag)) +
+  geom_point_trace(
+    size = 1,
+    color = NA,
+    trace_position = type_ag != "other",
+    background_params = list(color = "black", size = 0.5)
+  ) +
+  guides(fill = guide_legend(
+    nrow = 2,
+    # title = "Ag+ LECs/DCs",
+    title.position = "top",
+    override.aes = list(size = 4, color = "black")
+  )) +
+  scale_fill_manual(
+    values = new_clrs,
+    breaks = names(new_clrs),
+    labels = lec_dc_ag_labs,
+    drop   = FALSE
+  ) +
+  coord_fixed() +
+  umap_theme +
+  theme(
+    legend.key.height = unit(35, "pt"),
+    legend.title      = element_blank(),
+    legend.text       = element_text(size = txt_pt2),
+    plot.tag.position = c(0.05, 0.95),
+    plot.tag          = element_text(size = ttl_pt2, face = "bold"),
+    legend.position   = "bottom"
+  )
+```
+
+```{r "XENIUM AG SIGNAL", eval = FALSE}
+# Plot Ag+ cells
+ag_sig_fig <- dat %>%
+  arrange(Ag_counts) %>%
+  
+  ggplot(aes(y_cell, x_cell, fill = Ag_counts + 1)) +
+  geom_point_trace(size = 0.5, trace_position = "bottom") +
+  scale_fill_gradientn(colours = c("white", "#E7301F"), trans = "log10") +
+
+  guides(fill = guide_colorbar(
+    ticks = FALSE,
+    title.position = "top",
+    title = "Ag counts + 1"
+  )) +
+  # guides(fill = guide_legend(
+  #   title = "Ag+ LECs/DCs",
+  #   title.position = "top",
+  #   override.aes = list(size = 4)
+  # )) +
+  # scale_fill_manual(
+  #   values = new_clrs,
+  #   # labels = lec_dc_ag_labs,
+  #   drop   = FALSE
+  # ) +
+  coord_fixed() +
+  umap_theme +
+  theme(
+    legend.key.width  = unit(35, "pt"),
+    legend.key.height = unit(7, "pt"),
+    legend.title      = element_text(hjust = 0.5),
+    legend.text       = element_text(size = txt_pt2),
+    plot.tag.position = c(0.05, 0.95),
+    plot.tag          = element_text(size = ttl_pt2, face = "bold"),
+    legend.position   = "bottom"
+  )
+```
+
+```{r "XENIUM PROXIMITY", fig.width = 18, fig.height = 13}
+# Ag class labels
+ag_classes <- c(
+  `Ag-low`  = "Ag-",
+  `Ag-high` = "Ag+"
+)
+
+# Format data for histograms
+# only include cell types that have both Ag-low/high cells
+hist_dat <- xen@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  dplyr::select(.cell_id, fov, cell_type, lec_type, Ag_class, lec_id, lec_dist) %>%
+  filter(cell_type != "LEC") %>%
+  group_by(fov, cell_type) %>%
+  filter(
+    cell_type == "DC",
+    all(names(ag_classes) %in% Ag_class),
+    all(table(Ag_class) > 5)
+  ) %>%
+  ungroup()
+  
+# Format data for median lines
+ln_dat <- hist_dat %>%
+  group_by(fov, cell_type, Ag_class) %>%
+  summarize(
+    lec_dist = median(lec_dist),
+    n        = n(),
+    .groups  = "drop"
+  )
+
+# Format data for n labels
+n_dat <- ln_dat %>%
+  group_by(fov, cell_type) %>%
+  mutate(
+    n_lab = str_c(ag_classes[Ag_class], " (", label_comma()(n), " cells)")
+  ) %>%
+  summarize(
+    n_lab = str_c(n_lab, collapse = "\n"),
+    .groups = "drop"
+  )
+
+# Format data for p-values
+p_dat <- hist_dat %>%
+  group_by(fov, cell_type) %>%
+  summarize(
+    p = wilcox.test(
+      lec_dist[Ag_class == "Ag-high"],
+      lec_dist[Ag_class == "Ag-low"],
+      alternative = "less"
+    )$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(p_adj = p.adjust(p, method = "bonferroni")) %>%
+  rowwise() %>%
+  mutate(
+    p_lab = .format_pvalue(p_adj),
+    p_lab = str_c("italic(p) == ", p_lab)
+  ) %>%
+  ungroup()
+
+# Plot distance from nearest Ag+ LEC
+hist <- hist_dat %>%
+  
+  mutate(lec_dist = lec_dist + 1) %>%  # ADD 1
+  
+  ggplot(aes(lec_dist, fill = Ag_class, alpha = Ag_class)) +
+  geom_vline(
+    aes(xintercept = lec_dist, color = Ag_class, alpha = NULL),
+    data      = ln_dat,
+    linetype  = 2,
+    linewidth = 0.75,
+    show.legend = FALSE
+  ) +
+  geom_density(aes(color = Ag_class)) +
+  
+  geom_text(
+    aes(x = 3, y = Inf, label = n_lab, fill = NULL, alpha = NULL),
+    data = n_dat,
+    hjust = 0,
+    vjust = 1.2,
+    size  = (txt_pt1 * 0.8) / .pt,
+    show.legend = FALSE
+  ) +
+  
+  geom_text(
+    aes(x = Inf, y = Inf, label = p_lab, fill = NULL, alpha = NULL),
+    data  = p_dat,
+    parse = TRUE,
+    hjust = 1.1,
+    vjust = 1.2,
+    size  = (txt_pt1 * 0.8) / .pt,
+    show.legend = FALSE
+  ) +
+  
+  facet_grid(cell_type ~ fov, scales = "free_y") +
+  labs(x = "distance from nearest Ag+ LEC", y = "density") +
+  scale_fill_manual(values = c(`Ag-low` = "grey85", `Ag-high` = "#D7301F"), labels = ag_classes) +
+  scale_color_manual(values = c(`Ag-low` = "black", `Ag-high` = "#D7301F"), labels = ag_classes) +
+  scale_alpha_manual(values = c(`Ag-low` = 0.5, `Ag-high` = 0.85), labels = ag_classes) +
+  scale_x_log10() +
+  base_theme +
+  theme(
+    aspect.ratio    = 0.5,
+    legend.position = "bottom",
+    legend.title    = element_blank()
+  )
+
+hist
+```
+
+```{r "XENIUM AG TYPE HEAT", eval = FALSE, fig.width = 14, fig.height = 6}
+bar_dat <- xen@meta.data %>%
+  mutate(Ag_counts = Ag_tag_1 + Ag_tag_2) %>%
+  group_by(fov, cell_type) %>%
+  summarize(
+    n = n(),
+    pct_ag_pos = (sum(Ag_counts > 0) / n) * 100,
+    .groups = "drop"
+  ) %>%
+  filter(n > 100)
+
+# Filter to exclude cell types with < 100 cells
+bar_dat %>%
+  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
+  
+  group_by(fov) %>%
+  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
+  
+  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
+  geom_tile() +
+  scale_fill_gradientn(colours = c("white", "#E7301F")) +
+  base_theme +
+  theme(
+    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov)
+  )
+```
+
+```{r "XENIUM AG TYPE BARS", eval = FALSE, fig.width = 14, fig.height = 6}
+bar_dat <- xen@meta.data %>%
+  mutate(Ag_counts = Ag_tag_1 + Ag_tag_2) %>%
+  group_by(fov, cell_type) %>%
+  summarize(
+    n = n(),
+    pct_ag_pos = (sum(Ag_counts > 0) / n) * 100,
+    .groups = "drop"
+  )
+
+# Ag+ bars
+bar_dat <- dat %>%
+  group_by(fov, cell_type) %>%
+  summarize(
+    n = n(),
+    pct_ag_pos = (sum(Ag_counts > 0) / n) * 100,
+    .groups = "drop"
+  )
+
+# Filter to exclude cell types with < 100 cells
+br <- bar_dat %>%
+  filter(
+    n > 100,
+    fov == top_fov
+  ) %>%
+  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
+  ggplot(aes(cell_type, pct_ag_pos, fill = cell_type)) +
+  geom_col() +
+  # facet_wrap(~ fov, scales = "free_x") +
+  scale_fill_manual(values = xen_clrs) +
+  scale_y_continuous(expand = expansion(c(0.01, 0.05))) +
+  labs(y = "% Ag+ cells") +
+  coord_flip() +
+  base_theme +
+  theme(
+    aspect.ratio    = 2,
+    legend.position = "none",
+    axis.title.y    = element_blank()
+  )
+
+# Create final figure
+fig <- plot_grid(
+  ag_sig_fig, ag_pos_fig, br,
+  nrow  = 1,
+  align = "h",
+  axis  = "tb",
+  rel_widths = c(1, 1, 0.5)
+)
+
+fig
+```
+
+```{r "XENIUM UMAPS", eval = FALSE}
+top <- c("LEC", "other CD45-", "BEC")
+
+xen@meta.data %>%
+  plot_scatter(
+    "cell_type",
+    group_col = "fov",
+    size      = 0.00001
+    # top       = top
+  ) +
+  scale_color_spruce(difference = 20) +
+  theme(aspect.ratio = 0.9)
+
+xen@meta.data %>%
+  mutate(Ag_counts = Ag_tag_1 + Ag_tag_2 + 1) %>%
+  plot_scatter(
+    "Ag_counts",
+    outline     = TRUE,
+    plot_colors = c("white", "red"),
+    group_col   = "fov",
+    size        = 0.00001,
+    trans       = "log10"
+  ) +
+  theme(aspect.ratio = 0.9)
+
+xen@meta.data %>%
+  filter(cell_type %in% top) %>%
+  plot_scatter(
+    "SCT_snn_res.10",
+    group_col = "fov",
+    size      = 0.00001
+  ) +
+  scale_color_spruce(difference = 20) +
+  theme(aspect.ratio = 0.9)
+
+# Boxplots
+gns <- c(
+  "Ptprc", "Pdpn", "Pecam1",
+  "Cd3d", "Cd19",
+  "Prox1", "Lyve1",
+  "Itgax",           # DCs
+  "Xcr1",            # cDC1
+  "Sirpa", "Itgam",  # cDC2
+  "Siglech",         # Siglech DCs
+  "Ccr7"
+)
+
+dat <- xen %>%
+  FetchData(c(
+    "fov", "cell_type",
+    "UMAP_1", "UMAP_2",
+    "SCT_snn_res.10", gns
+  ))
+
+gns %>%
+  map(~ {
+    dat %>%
+      # filter(cell_type %in% top) %>%
+      plot_violin(
+        .x,
+        cluster_col = "SCT_snn_res.10",
+        method = "boxplot",
+        top = 20
+      ) +
+      scale_fill_spruce() +
+      scale_color_spruce()
+  }) %>%
+  plot_grid(plotlist = .)
+
+dat %>%
+  filter(cell_type %in% top) %>%
+  plot_violin(
+    "Ptprc",
+    cluster_col = "SCT_snn_res.10",
+    method = "boxplot",
+    # plot_colors = c("lightblue", "red"),
+  )
+
+dat %>%
+  plot_scatter(
+    "Ptprc",
+    group_col = "fov",
+    size = 0.0001,
+    plot_colors = c("lightblue", "red")
+  )
+
+dat %>%
+  ggplot(aes(Ptprc)) +
+  geom_histogram() +
+  facet_wrap(~ fov)
+
+```
+
+```{r "XENIUM 3WK 6WK SIGNAL", eval = FALSE}
+
+bar_dat <- xen@meta.data %>%
+  group_by(fov, cell_type) %>%
+  summarize(
+    ag_pct_1 = (sum(Ag_tag_1 > 0) / n()) * 100,
+    ag_pct_2 = (sum(Ag_tag_2 > 0) / n()) * 100,
+    .groups  = "drop"
+  )
+
+# Filter to exclude cell types with < 100 cells
+bar_dat %>%
+  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
+  
+  group_by(fov) %>%
+  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
+  
+  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
+  geom_tile() +
+  scale_fill_gradientn(colours = c("white", "#E7301F")) +
+  base_theme +
+  theme(
+    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov)
+  )
+
+
 ```
 
 <br>
