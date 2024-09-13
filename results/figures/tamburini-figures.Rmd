@@ -12,23 +12,57 @@ output:
     self_contained: true
     highlight:      "kate"
 params:
-  template_dir: "src"                                                                # Rmd templates
-  so_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-07-01"  # Seurat objects
-  mod_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-17" # RF models
-  abe_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/abe"               # Abe et al objects
-  geomx_dir:    "results/geomx"                                                      # GeoMx objects
+  template_dir: "src"                                                                 # Rmd templates
+  so_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-07-01"   # Seurat objects
+  mod_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-17"  # RF models
+  abe_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/abe"                # Abe et al objects
+  geomx_dir:    "results/geomx"                                                       # GeoMx objects
+  chikv_dir:    "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"                 # CHIKV objects
   xen_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/xenium/2024-03-22"  # Xenium objects
-  chikv_dir:    "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"                # CHIKV objects
-  ref_dir:      "ref"                                                                # clustifyr references
-  table_dir:    "results/tables/2024-07-17"                                          # tables
-  sample_info:  "sample_info.xlsx"                                                   # samples names/info
+  ref_dir:      "ref"                                                                 # clustifyr references
+  table_dir:    "results/tables/2024-07-17"                                           # tables
+  sample_info:  "sample_info.xlsx"                                                    # samples names/info
   res_dir:
     value:
       exp-0: "~/Projects/antigen-tracking/results"
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
-editor_options:
-  chunk_output_type: console
+      
+  xen_res_dir: "results/xenium/20240322__194506__032224_Tamburini_Run_1"
+  xen_regex:   "output-XETG00230__0022624__[A-Z]__"
+  # Sample identity with 6wk and 3wk barcode identity (listed in this order)
+  # * `1` indicates GeoMx-Barcode01
+  xen_samples: 
+    value:
+      A: ["6wk", 1, 2]
+      B: ["6wk", 2, 1]
+      C: ["6wk-3wk", 1, 2]
+      D: ["6wk-3wk", 2, 1]
+      E: ["3wk", 2, 1]
+      F: ["3wk", 1, 2]
+  xen_ag_targets:
+    value:
+      Ag_tag_1: "GeoMx-Barcode01-ERCC00142"
+      Ag_tag_2: "GeoMx-Barcode02-ERCC00144"
+  xen_custom_targets:
+    - "Ag-tag-A-(ERCC2)"
+    - "Ag-tag-B-(ERCC3)"
+    - "Ag-tag-C-(ERCC4)"
+    - "T2-Sensitive-Ag-tag-(ERCC9)"
+    - "T2-Resistant-Ag-tag-(ERCC12)"
+    - "DNA-only-T2-Control-Ag-tag-(ERCC16)"
+    - "GeoMx-Barcode01-ERCC00142"
+    - "GeoMx-Barcode02-ERCC00144"
+    - "CHIKV-5-(0-7566)"
+    - "CHIKV-sgRNA-(7566-12036)"
+    - "CHIKV-negative-(0-12036)"
+    - "LCMV-(Armstrong)-Segment"
+    - "Listeria-monocytogenes-10403S-gyrase-B-CP002002-1"
+    - "Vaccinia-(Western-Reserve)-J6R"
+    - "mRNA-vaccine-(3-UTR)"
+    - "mRNA-vaccine-(ovalbumin)"
+    - "mRNA-vaccine-(FLAG-3x)"
+    - "mRNA-vaccine-(eGFP)"
 ---
 
 ```{r "setup", include = FALSE}
@@ -42,47 +76,59 @@ knitr::opts_chunk$set(
 
 options(java.parameters = "-Xmx12000m")
 
+# Set environment for running UMAP
+reticulate::use_condaenv("umap")
+
+# Main setup
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
-knitr::knit(here::here(params$template_dir, "setup-ml.Rmd"), "")
-knitr::knit(here::here(params$template_dir, "setup-geomx.Rmd"), "")
-knitr::knit(here::here(params$template_dir, "setup-abe.Rmd"), "")
 
-# Plot parameters
-min_cells <- 5
-rf_typs   <- c("cLEC", "fLEC", "Collecting")
-rf_tms    <- c(14, 21, 42)
+# Process Xenium slides 1 and 2
+chunks <- c(1, 2) %>%
+  map_chr(~ knit_expand(here(params$template_dir, "setup-xenium.Rmd")))
 
-ag_modules <- rf_typs %>%
-  map(str_c, c("_high", "_low")) %>%
-  unlist()
+knit(text = chunks, output = "")
 
-# Keys for naming labels
-ag_clmns <- c("Ag_3wk_score", "Ag_6wk_score")
-
-ag_labs <- set_names(
-  c("Ag-score (21 day)", "Ag-score (42 day)"),
-  ag_clmns
-)
-
-ag_labs_2 <- set_names(
-  c("Ag-score\n21 day", "Ag-score\n42 day"),
-  ag_clmns
-)
-
-# Mouse key
-m_key <- c(
-  d2        = "2 day",
-  d14       = "14 day",
-  `3wk`     = "21 day",
-  `6wk`     = "42 day",
-  `6wk-3wk` = "dual"
-)
-
-# Experiment to show in main figures
-ag_exps <- list(LEC = "exp-1", DC = "exp-2")
-
-# LEC/DC subset colors
-subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
+# # Process other datasets
+# knit(here(params$template_dir, "setup-ml.Rmd"), "")
+# knit(here(params$template_dir, "setup-geomx.Rmd"), "")
+# knit(here(params$template_dir, "setup-abe.Rmd"), "")
+# 
+# # Plot parameters
+# min_cells <- 5
+# rf_typs   <- c("cLEC", "fLEC", "Collecting")
+# rf_tms    <- c(14, 21, 42)
+# 
+# ag_modules <- rf_typs %>%
+#   map(str_c, c("_high", "_low")) %>%
+#   unlist()
+# 
+# # Keys for naming labels
+# ag_clmns <- c("Ag_3wk_score", "Ag_6wk_score")
+# 
+# ag_labs <- set_names(
+#   c("Ag-score (21 day)", "Ag-score (42 day)"),
+#   ag_clmns
+# )
+# 
+# ag_labs_2 <- set_names(
+#   c("Ag-score\n21 day", "Ag-score\n42 day"),
+#   ag_clmns
+# )
+# 
+# # Mouse key
+# m_key <- c(
+#   d2        = "2 day",
+#   d14       = "14 day",
+#   `3wk`     = "21 day",
+#   `6wk`     = "42 day",
+#   `6wk-3wk` = "dual"
+# )
+# 
+# # Experiment to show in main figures
+# ag_exps <- list(LEC = "exp-1", DC = "exp-2")
+# 
+# # LEC/DC subset colors
+# subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
 ```
 
 ```{r "load naive data", include = FALSE}
@@ -2501,7 +2547,7 @@ ag_sig_fig <- dat %>%
   )
 ```
 
-```{r "XENIUM PROXIMITY", fig.width = 18, fig.height = 13}
+```{r "XENIUM PROXIMITY", fig.width = 18, fig.height = 13, eval = FALSE}
 # Ag class labels
 ag_classes <- c(
   `Ag-low`  = "Ag-",
@@ -2611,7 +2657,7 @@ hist <- hist_dat %>%
 hist
 ```
 
-```{r "XENIUM AG TYPE HEAT", eval = FALSE, fig.width = 14, fig.height = 6}
+```{r "XENIUM AG TYPE HEAT", eval = FALSE, fig.width = 14, fig.height = 6, eval = FALSE}
 bar_dat <- xen@meta.data %>%
   mutate(Ag_counts = Ag_tag_1 + Ag_tag_2) %>%
   group_by(fov, cell_type) %>%
@@ -2638,7 +2684,7 @@ bar_dat %>%
   )
 ```
 
-```{r "XENIUM AG TYPE BARS", eval = FALSE, fig.width = 14, fig.height = 6}
+```{r "XENIUM AG TYPE BARS", eval = FALSE, fig.width = 14, fig.height = 6, eval = FALSE}
 bar_dat <- xen@meta.data %>%
   mutate(Ag_counts = Ag_tag_1 + Ag_tag_2) %>%
   group_by(fov, cell_type) %>%
