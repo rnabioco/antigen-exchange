@@ -167,7 +167,7 @@ create_sobjs <- !file.exists(here(params$xen_dir, str_c("xen", sffx)))
 # Identify samples to load
 xen_dirs <- dir(
   here(params$xen_res_dir),
-  pattern = params$xen_regex,
+  pattern = params$xen_regex[[slide]],
   full.names = TRUE
 )
 
@@ -269,14 +269,14 @@ if (!file.exists(ref_file)) {
       file.path(params$so_dir, str_c("cd45", .x, "_so.qs")) %>%
         qread() %>%
         subset(mouse == "6wk") %>%
-        DietSeurat(assays = "RNA", dimreducs = FALSE) %>%
-        SCTransform(vst.flavor = "v2")
+        DietSeurat(assays = "RNA", dimreducs = FALSE)
     })
   
   ref_so <- merge(ref_so[[1]], ref_so[-1])
   
   ref_so <- ref_so %>%
-    PrepSCTFindMarkers(assay = "SCT")
+    SCTransform(vst.flavor = "v2")
+    # PrepSCTFindMarkers(assay = "SCT")
   
   ref_so <- ref_so %>%
     RunPCA(
@@ -287,7 +287,7 @@ if (!file.exists(ref_file)) {
     RunUMAP(
       assay       = "SCT",
       reduction   = "pca",
-      dims        = dims,
+      dims        = 1:40,
       umap.method = "umap-learn"
     )
   
@@ -296,7 +296,7 @@ if (!file.exists(ref_file)) {
     AddMetaData(FetchData(., c("UMAP_1", "UMAP_2"))) %>%
     DietSeurat(assays = c("SCT", "RNA"))
   
-  ref_so@assays$SCT@counts <- matrix(nrow = 0, ncol = 0)
+  # ref_so@assays$SCT@counts <- matrix(nrow = 0, ncol = 0)
   
   ref_so %>%
     qsave(ref_file)
@@ -361,8 +361,8 @@ xen <- xen %>%
 # Merge objects
 xen <- merge(xen[[1]], xen[-1], add.cell.ids = names(xen))
 
-xen %>%
-  qsave(here(params$xen_dir, str_c("xen", sffx)))
+rm(ref_so)
+gc()
 ```
 
 ```{r "{{.x}} xen create lec/frc objects", include = FALSE, eval = create_sobjs}
@@ -494,16 +494,6 @@ names(ann) <- colnames(lec)
 lec <- lec %>%
   AddMetaData(ann, col.name = "lec_type")
 
-# # Refine fLEC annotations
-# lec <- lec %>%
-#   classify_markers(
-#     Madcam1 > 0.25,
-#     feats      = "Madcam1",
-#     type_label = "fLEC",
-#     clst_col   = lec_clst_clmn,
-#     type_col   = "lec_type"
-#   )
-
 # Add annotations to meta.data
 lec <- lec %>%
   mutate_meta(
@@ -520,10 +510,13 @@ xen <- xen %>%
 
 # Save objects
 lec %>%
-  qsave(here(params$xen_dir, str_c("lec", sffx)))
+  save_objs(str_c("lec_s", slide), params$xen_dir)
 
 frc %>%
-  qsave(here(params$xen_dir, str_c("frc", sffx)))
+  save_objs(str_c("frc_s", slide), params$xen_dir)
+
+rm(lec, frc)
+gc()
 ```
 
 ```{r "{{.x}} xen small object", eval = create_sobjs}
@@ -574,58 +567,26 @@ small <- xen %>%
 
 # Save objects
 xen %>%
-  qsave(here(params$xen_dir, str_c("xen", sffx)))
+  save_objs(
+    prfx   = str_c("xen_s", slide),
+    ob_dir = params$xen_dir
+  )
 
 small %>%
-  qsave(here(params$xen_dir, str_c("small", sffx)))
+  save_objs(
+    prfx   = str_c("small_s", slide),
+    ob_dir = params$xen_dir
+  )
+
+rm(xen, small)
+gc()
 ```
 
-```{r "{{.x}} xen load objects", eval = FALSE}
+```{r "{{.x}} xen load objects"}
 # Load objects
-xen   <- qread(here(params$xen_dir, str_c("xen", sffx)))
-small <- qread(here(params$xen_dir, str_c("small", sffx)))
-# lec   <- qread(here(params$xen_dir, str_c("lec", sffx)))
+xen <- read_tsv(here(params$xen_dir, str_c("xen_s", slide, ".tsv.gz")))
 
-# Top cell types to plot
-dcs <- xen$cell_type %>%
-  unique() %>%
-  grep("DC", ., value = TRUE) %>%
-  sort()
+assign(str_c("xen_s", slide), xen)
 
-ag_dcs <- xen@meta.data %>%
-  filter(cell_type %in% dcs) %>%
-  group_by(cell_type) %>%
-  filter(all(table(Ag_class) > 15)) %>%
-  pull(cell_type) %>%
-  unique()
-
-top_types <- c("LEC", dcs)
-
-# Cells to plot for sections
-plt_cells <- colnames(small)
-
-# FOVs to plot
-fovs      <- sort(unique(xen$fov))
-top_fov   <- "D"
-top_fov_2 <- "B"
-```
-
-```{r "{{.x}} xen format data", eval = FALSE}
-# Format plotting data
-clmns <- c(
-  ".cell_id", "fov", "cell_type",
-  "Ag_class", "Ag_type", "lec_Ag_type",
-  "lec_type", "lec_dc_type", "lec_dc_Ag_type",
-  "lec_id", "lec_dist"
-)
-
-xen_dat <- xen@meta.data %>%
-  as_tibble(rownames = ".cell_id") %>%
-  dplyr::select(all_of(clmns), matches("^[xy]_"))
-
-small_dat <- small@meta.data %>%
-  as_tibble(rownames = ".cell_id") %>%
-  dplyr::select(all_of(clmns), matches("^[xy]_")) %>%
-  mutate(Ag_class = fct_relevel(Ag_class, c("Ag-low", "Ag-high"))) %>%
-  arrange(Ag_class)
+rm(xen)
 ```

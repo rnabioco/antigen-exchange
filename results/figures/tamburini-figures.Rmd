@@ -28,14 +28,12 @@ params:
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
       
-  xen_res_dir: "results/xenium/20240322__194506__032224_Tamburini_Run_1"
-  xen_regex:   "output-XETG00230__0022624__[A-Z]__"
-  # Sample identity with 6wk and 3wk barcode identity (listed in this order)
-  # * `1` indicates GeoMx-Barcode01
+  xen_res_dir: "results/xenium/20240322__194506__032224_Tamburini_Run_1"                     # Directory with Xenium data
+  xen_regex:   ["output-XETG00230__0022624__[A-Z]__", "output-XETG00230__0022841__[A-Z]__"]  # Regex to pull samples for Xenium slides
   xen_samples: 
     value:
-      A: ["6wk", 1, 2]
-      B: ["6wk", 2, 1]
+      A: ["6wk", 1, 2]      # Sample identity and 6wk and 3wk barcode identity (in this order)
+      B: ["6wk", 2, 1]      # e.g. `1` indicates GeoMx-Barcode01
       C: ["6wk-3wk", 1, 2]
       D: ["6wk-3wk", 2, 1]
       E: ["3wk", 2, 1]
@@ -77,58 +75,58 @@ knitr::opts_chunk$set(
 options(java.parameters = "-Xmx12000m")
 
 # Set environment for running UMAP
-reticulate::use_condaenv("umap")
+reticulate::use_condaenv("umap", conda = "~/.local/bin/micromamba")
 
 # Main setup
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 
 # Process Xenium slides 1 and 2
-chunks <- c(1, 2) %>%
+chunks <- seq_along(params$xen_regex) %>%
   map_chr(~ knit_expand(here(params$template_dir, "setup-xenium.Rmd")))
 
 knit(text = chunks, output = "")
 
-# # Process other datasets
-# knit(here(params$template_dir, "setup-ml.Rmd"), "")
-# knit(here(params$template_dir, "setup-geomx.Rmd"), "")
-# knit(here(params$template_dir, "setup-abe.Rmd"), "")
-# 
-# # Plot parameters
-# min_cells <- 5
-# rf_typs   <- c("cLEC", "fLEC", "Collecting")
-# rf_tms    <- c(14, 21, 42)
-# 
-# ag_modules <- rf_typs %>%
-#   map(str_c, c("_high", "_low")) %>%
-#   unlist()
-# 
-# # Keys for naming labels
-# ag_clmns <- c("Ag_3wk_score", "Ag_6wk_score")
-# 
-# ag_labs <- set_names(
-#   c("Ag-score (21 day)", "Ag-score (42 day)"),
-#   ag_clmns
-# )
-# 
-# ag_labs_2 <- set_names(
-#   c("Ag-score\n21 day", "Ag-score\n42 day"),
-#   ag_clmns
-# )
-# 
-# # Mouse key
-# m_key <- c(
-#   d2        = "2 day",
-#   d14       = "14 day",
-#   `3wk`     = "21 day",
-#   `6wk`     = "42 day",
-#   `6wk-3wk` = "dual"
-# )
-# 
-# # Experiment to show in main figures
-# ag_exps <- list(LEC = "exp-1", DC = "exp-2")
-# 
-# # LEC/DC subset colors
-# subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
+# Process other datasets
+knit(here(params$template_dir, "setup-ml.Rmd"), "")
+knit(here(params$template_dir, "setup-geomx.Rmd"), "")
+knit(here(params$template_dir, "setup-abe.Rmd"), "")
+
+# Plot parameters
+min_cells <- 5
+rf_typs   <- c("cLEC", "fLEC", "Collecting")
+rf_tms    <- c(14, 21, 42)
+
+ag_modules <- rf_typs %>%
+  map(str_c, c("_high", "_low")) %>%
+  unlist()
+
+# Keys for naming labels
+ag_clmns <- c("Ag_3wk_score", "Ag_6wk_score")
+
+ag_labs <- set_names(
+  c("Ag-score (21 day)", "Ag-score (42 day)"),
+  ag_clmns
+)
+
+ag_labs_2 <- set_names(
+  c("Ag-score\n21 day", "Ag-score\n42 day"),
+  ag_clmns
+)
+
+# Mouse key
+m_key <- c(
+  d2        = "2 day",
+  d14       = "14 day",
+  `3wk`     = "21 day",
+  `6wk`     = "42 day",
+  `6wk-3wk` = "dual"
+)
+
+# Experiment to show in main figures
+ag_exps <- list(LEC = "exp-1", DC = "exp-2")
+
+# LEC/DC subset colors
+subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
 ```
 
 ```{r "load naive data", include = FALSE}
@@ -2272,8 +2270,6 @@ fig4
 
 
 ```{r "XENIUM FUNCTIONS, eval = FALSE}
-library(ggspruce, lib.loc = "/home/rmsheridan/.cache/R/renv/library/ggspruce-c2135e66/R-4.3/x86_64-pc-linux-gnu")
-
 .plot_full_fov <- function(df_in, fov_in, color, trace = list(), clrs,
                            size = 0.3, trace_size = 1, trace_clr = "black") {
   
