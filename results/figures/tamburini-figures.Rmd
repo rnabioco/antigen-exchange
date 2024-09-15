@@ -27,7 +27,6 @@ params:
       exp-0: "~/Projects/antigen-tracking/results"
       exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
       exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
-      
   xen_res_dir: "results/xenium/20240322__194506__032224_Tamburini_Run_1"                     # Directory with Xenium data
   xen_regex:   ["output-XETG00230__0022624__[A-Z]__", "output-XETG00230__0022841__[A-Z]__"]  # Regex to pull samples for Xenium slides
   xen_samples: 
@@ -61,6 +60,8 @@ params:
     - "mRNA-vaccine-(ovalbumin)"
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
+editor_options: 
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -81,10 +82,20 @@ reticulate::use_condaenv("umap", conda = "~/.local/bin/micromamba")
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 
 # Process Xenium slides 1 and 2
-chunks <- seq_along(params$xen_regex) %>%
+slides <- seq_along(params$xen_regex)
+
+chunks <- slides %>%
   map_chr(~ knit_expand(here(params$template_dir, "setup-xenium.Rmd")))
 
 knit(text = chunks, output = "")
+
+# Load Xenium data
+xen <- slides %>%
+  map(~ {
+    read_tsv(here(params$xen_dir, str_c("xen_s", .x, ".tsv.gz"))) %>%
+      mutate(slide = .x)
+  }) %>%
+  bind_rows()
 
 # Process other datasets
 knit(here(params$template_dir, "setup-ml.Rmd"), "")
@@ -2267,71 +2278,22 @@ fig4 <- plot_grid(
 fig4
 ```
 
+<br>
 
+<br>
 
-```{r "XENIUM FUNCTIONS, eval = FALSE}
-.plot_full_fov <- function(df_in, fov_in, color, trace = list(), clrs,
-                           size = 0.3, trace_size = 1, trace_clr = "black") {
-  
-  # Format input data
-  plt_theme <- umap_theme +
-    theme(
-      legend.title = element_blank(),
-      legend.text  = element_text(size = 28)
-    )
-  
-  dat <- df_in %>%
-    filter(fov == fov_in)
-  
-  n_dat <- dat %>%
-    group_by(!!sym(color)) %>%
-    summarize(n = n(), .groups = "drop") %>%
-    mutate(
-      n_lab = str_c(!!sym(color), "\nn = ", label_comma()(n))
-    )
-  
-  # Plot highlighted cells
-  res <- trace %>%
-    map(~ {
-      n_dat <- n_dat %>%
-        arrange(desc(!!sym(color) %in% .x), desc(n))
-      
-      n_labs <- set_names(n_dat$n_lab, n_dat[[color]])
-      
-      dat %>%
-        mutate(!!sym(color) := fct_relevel(!!sym(color), names(n_labs))) %>%
-        arrange(!!sym(color)) %>%
-        ggplot(aes(y_cell, x_cell, fill = !!sym(color))) +
-        geom_point_trace(
-          trace_position    = !!sym(color) %in% .x,
-          background_params = list(size = size, color = NA),
-          size  = trace_size,
-          color = trace_clr
-        ) +
-        scale_fill_manual(values = clrs, labels = n_labs) +
-        guides(fill = guide_legend(override.aes = list(size = 10, color = NA))) +
-        coord_fixed() +
-        plt_theme
-    })
-  
-  if (length(trace) == 1) res <- res[[1]]
-  
-  res
-}
-```
+### Xenium figures
 
-```{r "XENIUM DATA", eval = FALSE}
-# Load objects
-xen   <- qread(here(params$xen_dir, "xen_s1.qs"))
-small <- qread(here(params$xen_dir, "small_s1.qs"))
+This figure could replace the GeoMx data shown in Figure 4A-E.
 
+```{r "XENIUM DATA"}
 # Top cell types to plot
 dcs <- xen$cell_type %>%
   unique() %>%
   grep("DC", ., value = TRUE) %>%
   sort()
 
-ag_dcs <- xen@meta.data %>%
+ag_dcs <- xen %>%
   filter(cell_type %in% dcs) %>%
   group_by(cell_type) %>%
   filter(all(table(Ag_class) > 15)) %>%
@@ -2340,29 +2302,13 @@ ag_dcs <- xen@meta.data %>%
 
 top_types <- c("LEC", dcs)
 
-# Cells to plot for sections
-plt_cells <- colnames(small)
-
 # FOVs to plot
 fovs      <- sort(unique(xen$fov))
 top_fov   <- "D"
 top_fov_2 <- "B"
 
 # Format plotting data
-clmns <- c(
-  ".cell_id", "fov", "cell_type",
-  "Ag_class", "Ag_type", "lec_Ag_type",
-  "lec_type", "lec_dc_type", "lec_dc_Ag_type",
-  "lec_id", "lec_dist"
-)
-
-xen_dat <- xen@meta.data %>%
-  as_tibble(rownames = ".cell_id") %>%
-  dplyr::select(all_of(clmns), matches("^[xy]_"))
-
-small_dat <- small@meta.data %>%
-  as_tibble(rownames = ".cell_id") %>%
-  dplyr::select(all_of(clmns), matches("^[xy]_")) %>%
+xen <- xen %>%
   mutate(Ag_class = fct_relevel(Ag_class, c("Ag-low", "Ag-high"))) %>%
   arrange(Ag_class)
 
@@ -2374,51 +2320,19 @@ xen_clrs["unassigned"] <- "grey65"
 xen_clrs <- xen_clrs %>%
   spruce_up_colors(
     adjust_colors = "Neutrophils",
-    filter     = c("deutan", "protan", "tritan"),
-    difference = 10,
-    property   = "lightness",
-    range      = c(10, 85)
+    filter        = c("deutan", "protan", "tritan"),
+    difference    = 10,
+    property      = "lightness",
+    range         = c(10, 85)
   )
 
-xen_clrs <- xen_clrs[names(xen_clrs) %in% xen_dat$cell_type]
-# xen_clrs <- c(xen_clrs, dc_clrs)
+xen_clrs <- xen_clrs[names(xen_clrs) %in% xen$cell_type]
 ```
 
-```{r "XENIUM BAD", eval = FALSE}
-library(ggspruce)
-
-typ_clrs["unassigned"] <- "grey65"
-
-typ_clrs <- typ_clrs %>%
-  spruce_up_colors(
-    adjust_colors = "Neutrophils",
-    adjust        = "b",
-    difference    = 10
-  )
-
-xen_clrs <- typ_clrs[names(typ_clrs) %in% xen_dat$cell_type]
-xen_clrs <- c(xen_clrs, dc_clrs)
-
-xen_clrs <- xen_clrs %>%
-  spruce_up_colors(
-    adjust_colors = "Siglec-H DC",
-    difference    = 30
-  )
-
-# Plot all cells for tissue section
-full_fig <- xen_dat %>%
-  .plot_full_fov(
-    fov   = "D",
-    color = "cell_type",
-    trace = list(c("LEC", dcs)),
-    clrs  = xen_clrs
-  )
-```
-
-```{r "XENIUM AG CLASS", eval = FALSE}
+```{r "XENIUM AG CLASS"}
 # Format plot data
-dat <- xen@meta.data %>%
-  filter(fov == top_fov) %>%
+dat <- xen %>%
+  filter(fov %in% top_fov) %>%
   mutate(
     broad_type = if_else(cell_type %in% dcs, "DC", cell_type),
     broad_type = if_else(
@@ -2427,13 +2341,16 @@ dat <- xen@meta.data %>%
       "other"
     ),
     broad_type = fct_relevel(broad_type, c("LEC", "DC", "other")),
-    Ag_class  = fct_relevel(Ag_class, c("Ag-high", "Ag-low")),
-    type_ag   = if_else(
+    
+    Ag_class = recode(Ag_class, `Ag-high` = "Ag+", `Ag-low` = "Ag-"),
+    Ag_class = fct_relevel(Ag_class, c("Ag+", "Ag-")),
+    
+    type_ag = if_else(
       broad_type %in% c("LEC", "DC"),
       str_c(broad_type, " (", Ag_class, ")"),
       broad_type
     ),
-    Ag_counts = Ag_tag_1 + Ag_tag_2
+    slide = str_c("r", slide)
   ) %>%
   arrange(broad_type, Ag_class) %>%
   mutate(type_ag = fct_inorder(type_ag))
@@ -2451,8 +2368,8 @@ new_clrs <- c("#E7301F", "#56B4E9", "white") %>%
   )
 
 names(new_clrs) <- c(
-  "LEC (Ag-low)", "LEC (Ag-high)",
-  "DC (Ag-low)", "DC (Ag-high)",
+  "LEC (Ag-)", "LEC (Ag+)",
+  "DC (Ag-)", "DC (Ag+)",
   "other"
 )
 
@@ -2477,14 +2394,14 @@ ag_pos_fig <- dat %>%
   
   ggplot(aes(y_cell, x_cell, fill = type_ag)) +
   geom_point_trace(
-    size = 1,
+    size = 0.5,
     color = NA,
     trace_position = type_ag != "other",
-    background_params = list(color = "black", size = 0.5)
+    background_params = list(color = "black", size = 0.25)
   ) +
+  facet_wrap(~ slide) +
   guides(fill = guide_legend(
     nrow = 2,
-    # title = "Ag+ LECs/DCs",
     title.position = "top",
     override.aes = list(size = 4, color = "black")
   )) +
@@ -2495,24 +2412,24 @@ ag_pos_fig <- dat %>%
     drop   = FALSE
   ) +
   coord_fixed() +
-  umap_theme +
+  umap_theme_2 +
   theme(
+    legend.position   = "bottom",
     legend.key.height = unit(35, "pt"),
     legend.title      = element_blank(),
-    legend.text       = element_text(size = txt_pt2),
-    plot.tag.position = c(0.05, 0.95),
-    plot.tag          = element_text(size = ttl_pt2, face = "bold"),
-    legend.position   = "bottom"
+    legend.text       = element_text(size = ttl_pt2),
+    strip.text        = element_text(size = ttl_pt2)
   )
 ```
 
-```{r "XENIUM AG SIGNAL", eval = FALSE}
+```{r "XENIUM AG SIGNAL"}
 # Plot Ag+ cells
 ag_sig_fig <- dat %>%
   arrange(Ag_counts) %>%
   
   ggplot(aes(y_cell, x_cell, fill = Ag_counts + 1)) +
   geom_point_trace(size = 0.5, trace_position = "bottom") +
+  facet_wrap(~ slide) +
   scale_fill_gradientn(colours = c("white", "#E7301F"), trans = "log10") +
 
   guides(fill = guide_colorbar(
@@ -2520,30 +2437,19 @@ ag_sig_fig <- dat %>%
     title.position = "top",
     title = "Ag counts + 1"
   )) +
-  # guides(fill = guide_legend(
-  #   title = "Ag+ LECs/DCs",
-  #   title.position = "top",
-  #   override.aes = list(size = 4)
-  # )) +
-  # scale_fill_manual(
-  #   values = new_clrs,
-  #   # labels = lec_dc_ag_labs,
-  #   drop   = FALSE
-  # ) +
   coord_fixed() +
-  umap_theme +
+  umap_theme_2 +
   theme(
+    legend.position   = "bottom",
     legend.key.width  = unit(35, "pt"),
     legend.key.height = unit(7, "pt"),
-    legend.title      = element_text(hjust = 0.5),
+    legend.title      = element_text(size = ttl_pt2, hjust = 0.5),
     legend.text       = element_text(size = txt_pt2),
-    plot.tag.position = c(0.05, 0.95),
-    plot.tag          = element_text(size = ttl_pt2, face = "bold"),
-    legend.position   = "bottom"
+    strip.text        = element_text(size = ttl_pt2)
   )
 ```
 
-```{r "XENIUM PROXIMITY", fig.width = 18, fig.height = 13, eval = FALSE}
+```{r "XENIUM LEC PROXIMITY", fig.width = 18, fig.height = 13}
 # Ag class labels
 ag_classes <- c(
   `Ag-low`  = "Ag-",
@@ -2552,21 +2458,23 @@ ag_classes <- c(
 
 # Format data for histograms
 # only include cell types that have both Ag-low/high cells
-hist_dat <- xen@meta.data %>%
-  as_tibble(rownames = ".cell_id") %>%
-  dplyr::select(.cell_id, fov, cell_type, lec_type, Ag_class, lec_id, lec_dist) %>%
-  filter(cell_type != "LEC") %>%
-  group_by(fov, cell_type) %>%
+hist_dat <- xen %>%
+  dplyr::select(cell_id, slide, fov, cell_type, lec_type, Ag_class, lec_id, lec_dist) %>%
   filter(
-    cell_type == "DC",
+    fov %in% top_fov,
+    cell_type == "DC"
+  ) %>%
+  group_by(slide, fov, cell_type) %>%
+  filter(
     all(names(ag_classes) %in% Ag_class),
     all(table(Ag_class) > 5)
   ) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(slide = str_c("r", slide))
   
 # Format data for median lines
 ln_dat <- hist_dat %>%
-  group_by(fov, cell_type, Ag_class) %>%
+  group_by(slide, fov, cell_type, Ag_class) %>%
   summarize(
     lec_dist = median(lec_dist),
     n        = n(),
@@ -2575,9 +2483,9 @@ ln_dat <- hist_dat %>%
 
 # Format data for n labels
 n_dat <- ln_dat %>%
-  group_by(fov, cell_type) %>%
+  group_by(slide, fov, cell_type) %>%
   mutate(
-    n_lab = str_c(ag_classes[Ag_class], " (", label_comma()(n), " cells)")
+    n_lab = str_c(ag_classes[Ag_class], " ", label_comma()(n), " cells")
   ) %>%
   summarize(
     n_lab = str_c(n_lab, collapse = "\n"),
@@ -2586,7 +2494,7 @@ n_dat <- ln_dat %>%
 
 # Format data for p-values
 p_dat <- hist_dat %>%
-  group_by(fov, cell_type) %>%
+  group_by(slide, fov, cell_type) %>%
   summarize(
     p = wilcox.test(
       lec_dist[Ag_class == "Ag-high"],
@@ -2599,16 +2507,20 @@ p_dat <- hist_dat %>%
   rowwise() %>%
   mutate(
     p_lab = .format_pvalue(p_adj),
-    p_lab = str_c("italic(p) == ", p_lab)
+    p_lab = ifelse(
+      p_adj != 0,
+      str_c("italic(p) == ", p_lab),
+      p_lab
+    )
   ) %>%
   ungroup()
 
 # Plot distance from nearest Ag+ LEC
 hist <- hist_dat %>%
-  
   mutate(lec_dist = lec_dist + 1) %>%  # ADD 1
-  
   ggplot(aes(lec_dist, fill = Ag_class, alpha = Ag_class)) +
+  
+  geom_density(aes(color = Ag_class)) +
   geom_vline(
     aes(xintercept = lec_dist, color = Ag_class, alpha = NULL),
     data      = ln_dat,
@@ -2616,14 +2528,13 @@ hist <- hist_dat %>%
     linewidth = 0.75,
     show.legend = FALSE
   ) +
-  geom_density(aes(color = Ag_class)) +
   
   geom_text(
-    aes(x = 3, y = Inf, label = n_lab, fill = NULL, alpha = NULL),
+    aes(x = 1, y = Inf, label = n_lab, fill = NULL, alpha = NULL),
     data = n_dat,
     hjust = 0,
     vjust = 1.2,
-    size  = (txt_pt1 * 0.8) / .pt,
+    size  = txt_pt2 / .pt,
     show.legend = FALSE
   ) +
   
@@ -2633,36 +2544,250 @@ hist <- hist_dat %>%
     parse = TRUE,
     hjust = 1.1,
     vjust = 1.2,
-    size  = (txt_pt1 * 0.8) / .pt,
+    size  = txt_pt2 / .pt,
     show.legend = FALSE
   ) +
   
-  facet_grid(cell_type ~ fov, scales = "free_y") +
+  facet_wrap(~ slide, nrow = 1) +
   labs(x = "distance from nearest Ag+ LEC", y = "density") +
   scale_fill_manual(values = c(`Ag-low` = "grey85", `Ag-high` = "#D7301F"), labels = ag_classes) +
   scale_color_manual(values = c(`Ag-low` = "black", `Ag-high` = "#D7301F"), labels = ag_classes) +
   scale_alpha_manual(values = c(`Ag-low` = 0.5, `Ag-high` = 0.85), labels = ag_classes) +
   scale_x_log10() +
+  scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
   base_theme +
   theme(
     aspect.ratio    = 0.5,
-    legend.position = "bottom",
-    legend.title    = element_blank()
+    legend.position = "right",
+    legend.title    = element_blank(),
+    strip.text      = element_text(size = ttl_pt2),
+    legend.text     = element_text(size = ttl_pt2),
+    axis.title      = element_text(size = ttl_pt2)
   )
-
-hist
 ```
 
-```{r "XENIUM AG TYPE HEAT", eval = FALSE, fig.width = 14, fig.height = 6, eval = FALSE}
-bar_dat <- xen@meta.data %>%
-  mutate(Ag_counts = Ag_tag_1 + Ag_tag_2) %>%
-  group_by(fov, cell_type) %>%
+```{r "XENIUM MAIN FIGURE", fig.width = 14, fig.height = 8.5}
+top <- wrap_plots(
+  ag_sig_fig + labs(tag = "A"),
+  ag_pos_fig + labs(tag = "B"),
+  nrow = 1
+)
+
+bot <- wrap_plots(
+  plot_spacer(), hist + labs(tag = "C"), plot_spacer(),
+  nrow = 1,
+  widths = c(0.2, 1, 0.2)
+)
+
+xen_fig <- wrap_plots(
+  top, bot,
+  ncol = 1,
+  heights = c(1, 0.65)
+) &
+  theme(
+    plot.tag = element_text(
+      size  = ttl_pt2 * 1.5,
+      face  = "bold",
+      hjust = 2,
+      vjust = -0.2
+    )
+  )
+
+xen_fig
+```
+
+<br>
+
+Ag-tag barcodes used for each mouse are shown below.
+
+```{r}
+params$xen_samples %>%
+  imap_dfr(~ {
+    tibble(
+      fov       = .y,
+      mouse     = .x[[1]],
+      `6wk tag` = params$xen_ag_targets[[.x[[2]]]],
+      `3wk tag` = params$xen_ag_targets[[.x[[3]]]]
+    ) %>%
+      mutate(
+        across(ends_with(" tag"), ~ {
+          .x %>%
+            str_remove("-ERCC[0-9]+$") %>%
+            str_remove("^GeoMx-")
+        })
+      )
+  })
+```
+
+<br>
+
+The fraction of total counts assigned to each custom target is shown below for
+each tissue section.
+The GeoMx-Barcode02 probes produced very sparse signals regardless of sample
+identity.
+Values are labeled for targets assigned >0.01% of total counts.
+
+```{r "fraction custom counts", fig.height = 6, fig.width = 12}
+# Format plotting data
+feats <- c(
+  "mouse", "fov", "cell_type",
+  "nCount_Xenium", "nCount_Xenium_custom"
+)
+
+# NEED TO REPROCESS SLIDE 2
+qc_dat <- seq_along(slides)[1] %>%
+  map(~ {
+    s <- qread(here(params$xen_dir, str_c("xen_s", .x, ".qs")))
+    
+    DefaultAssay(s) <- "Xenium_custom"
+    
+    s %>%
+      FetchData(c(feats, params$xen_custom_targets), slot = "counts") %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(all_of(params$xen_custom_targets)) %>%
+      mutate(
+        slide  = .x,
+        sample = str_c(mouse, "-", fov)
+      )
+  })
+
+qc_dat <- bind_rows(qc_dat)
+
+# Format heatmap data
+heat_dat <- qc_dat %>%
+  group_by(slide, fov, mouse, name) %>%
+  mutate(
+    tot_counts = sum(nCount_Xenium + nCount_Xenium_custom)
+  ) %>%
+  group_by(name, slide, fov, mouse, sample, tot_counts) %>%
+  summarize(
+    value   = sum(value),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    frac   = value / tot_counts,
+    fov    = fct_relevel(fov, fovs),
+    name   = fct_reorder(name, value),
+    mouse  = fct_relevel(mouse, c("6wk", "3wk", "6wk-3wk"))
+  )
+
+# Tiles to outline
+min_frac <- 0.0001
+
+top_dat <- heat_dat %>%
+  filter(frac >= min_frac)
+
+# Tiles to label
+lab_dat <- heat_dat %>%
+  filter(frac >= min_frac) %>%
+  mutate(
+    lab = round(frac * 100, 2),
+    lab = str_c(lab, "%")
+  )
+
+# Create heatmap
+custom_counts_heat <- heat_dat %>%
+  ggplot(aes(fov, name, fill = frac + min_frac)) +
+  geom_tile() +
+  geom_tile(
+    data = top_dat,
+    color = "black"
+  ) +
+  geom_text(
+    aes(color = NULL, fill = NULL, label = lab),
+    data = lab_dat
+  ) +
+  facet_grid(~ mouse, scales = "free") +
+  scale_fill_gradientn(
+    colours = c("white", "#D7301F"),
+    labels  = label_percent(),
+    trans   = "log10",
+    name    = str_c("fraction of\ntotal counts\n(+", min_frac * 100, "%)")
+  ) +
+  base_theme +
+  theme(
+    aspect.ratio       = 5,
+    strip.clip         = "off",
+    strip.text.y.right = element_text(angle = 0, hjust = 0),
+    axis.title.y       = element_blank()
+  )
+
+custom_counts_heat
+```
+
+<br>
+
+Cells were identified as Ag+ if they have at least 1 Ag-tag count.
+The fraction of Ag+ cells is shown below for each Ag-tag for
+each tissue section.
+
+```{r "fraction 3wk/6wk Ag+ cells", fig.height = 3.5, fig.width = 6}
+bar_dat <- xen %>%
+  group_by(fov, mouse) %>%
+  summarize(
+    `3wk tag` = (sum(Ag_3wk_counts > 0) / n()) * 100,
+    `6wk tag` = (sum(Ag_6wk_counts > 0) / n()) * 100,
+    .groups   = "drop"
+  )
+
+bar_dat %>%
+  pivot_longer(ends_with("wk tag")) %>%
+  mutate(mouse = fct_relevel(mouse, c("6wk", "3wk", "6wk-3wk"))) %>%
+  
+  ggplot(aes(fov, value, fill = name)) +
+  geom_col(position = position_dodge2()) +
+  facet_wrap(~ mouse, nrow = 1, scales = "free_x") +
+  scale_fill_brewer() +
+  scale_fill_spruce(difference = 30, range = c(25, 75)) +
+  
+  labs(y = "% Ag+ cells") +
+  base_theme +
+  theme(
+    aspect.ratio = 1.5,
+    legend.title = element_blank(),
+    axis.title.x = element_blank()
+  )
+```
+
+
+
+```{r "XENIUM AG TYPE HEAT ALL SUPPLEMENTAL", fig.width = 14, fig.height = 6, eval = FALSE}
+bar_dat <- xen %>%
+  group_by(fov, slide, cell_type) %>%
   summarize(
     n = n(),
-    pct_ag_pos = (sum(Ag_counts > 0) / n) * 100,
+    pct_ag_pos = (sum(Ag_class == "Ag-high") / n) * 100,
     .groups = "drop"
   ) %>%
   filter(n > 100)
+
+# Filter to exclude cell types with < 100 cells
+bar_dat %>%
+  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
+  
+  group_by(fov, slide) %>%
+  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
+  
+  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
+  geom_tile() +
+  facet_wrap(~ slide) +
+  scale_fill_gradientn(colours = c("white", "#E7301F"), name = "relative %\nAg+ cells") +
+  base_theme +
+  theme(
+    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov),
+    axis.title.y = element_blank()
+  )
+```
+
+```{r "XENIUM 3WK 6WK SIGNAL", eval = FALSE}
+
+bar_dat <- xen@meta.data %>%
+  group_by(fov, cell_type) %>%
+  summarize(
+    ag_pct_1 = (sum(Ag_tag_1 > 0) / n()) * 100,
+    ag_pct_2 = (sum(Ag_tag_2 > 0) / n()) * 100,
+    .groups  = "drop"
+  )
 
 # Filter to exclude cell types with < 100 cells
 bar_dat %>%
@@ -2678,58 +2803,8 @@ bar_dat %>%
   theme(
     aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov)
   )
-```
 
-```{r "XENIUM AG TYPE BARS", eval = FALSE, fig.width = 14, fig.height = 6, eval = FALSE}
-bar_dat <- xen@meta.data %>%
-  mutate(Ag_counts = Ag_tag_1 + Ag_tag_2) %>%
-  group_by(fov, cell_type) %>%
-  summarize(
-    n = n(),
-    pct_ag_pos = (sum(Ag_counts > 0) / n) * 100,
-    .groups = "drop"
-  )
 
-# Ag+ bars
-bar_dat <- dat %>%
-  group_by(fov, cell_type) %>%
-  summarize(
-    n = n(),
-    pct_ag_pos = (sum(Ag_counts > 0) / n) * 100,
-    .groups = "drop"
-  )
-
-# Filter to exclude cell types with < 100 cells
-br <- bar_dat %>%
-  filter(
-    n > 100,
-    fov == top_fov
-  ) %>%
-  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
-  ggplot(aes(cell_type, pct_ag_pos, fill = cell_type)) +
-  geom_col() +
-  # facet_wrap(~ fov, scales = "free_x") +
-  scale_fill_manual(values = xen_clrs) +
-  scale_y_continuous(expand = expansion(c(0.01, 0.05))) +
-  labs(y = "% Ag+ cells") +
-  coord_flip() +
-  base_theme +
-  theme(
-    aspect.ratio    = 2,
-    legend.position = "none",
-    axis.title.y    = element_blank()
-  )
-
-# Create final figure
-fig <- plot_grid(
-  ag_sig_fig, ag_pos_fig, br,
-  nrow  = 1,
-  align = "h",
-  axis  = "tb",
-  rel_widths = c(1, 1, 0.5)
-)
-
-fig
 ```
 
 ```{r "XENIUM UMAPS", eval = FALSE}
@@ -2825,32 +2900,36 @@ dat %>%
 
 ```
 
-```{r "XENIUM 3WK 6WK SIGNAL", eval = FALSE}
+```{r "XENIUM AG TYPE HEAT 1", fig.width = 14, fig.height = 6, eval = FALSE}
+bar_dat <- xen %>%
+  filter(fov %in% c("C", "D")) %>%
+  group_by(cell_type, fov, slide) %>%
+  filter(n() > 100) %>%
 
-bar_dat <- xen@meta.data %>%
-  group_by(fov, cell_type) %>%
+  group_by(cell_type) %>%
+  # group_by(slide, fov, cell_type) %>%
   summarize(
-    ag_pct_1 = (sum(Ag_tag_1 > 0) / n()) * 100,
-    ag_pct_2 = (sum(Ag_tag_2 > 0) / n()) * 100,
-    .groups  = "drop"
+    n = n(),
+    pct_ag_pos = (sum(Ag_class == "Ag-high") / n) * 100,
+    .groups = "drop"
   )
-
+    
 # Filter to exclude cell types with < 100 cells
 bar_dat %>%
   mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
   
-  group_by(fov) %>%
-  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
+  # group_by(fov) %>%
+  # mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
   
-  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
-  geom_tile() +
-  scale_fill_gradientn(colours = c("white", "#E7301F")) +
-  base_theme +
-  theme(
-    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov)
-  )
-
-
+  ggplot(aes(pct_ag_pos, cell_type, fill = cell_type)) +
+  geom_col() +
+  # facet_wrap(~ slide, nrow = 1) +
+  # scale_fill_gradientn(colours = c("white", "#E7301F")) +
+  scale_fill_manual(values = xen_clrs) +
+  base_theme
+  # theme(
+  #   aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov)
+  # )
 ```
 
 <br>

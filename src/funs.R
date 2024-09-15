@@ -210,6 +210,12 @@ get_cell_types <- function(so_in, type_clmn, sample_clmn, n_cells = 3) {
 #' modified from djvdj
 .format_pvalue <- function(p, digits = 1, cutoffs = NULL, show_decimal = 0.1) {
   
+  if (p == 0) {
+    p <- str_c("italic(p) < 1*x*10^-16")
+    
+    return(p)
+  }
+  
   # Set p label based on vector of cutoffs
   if (!is.finite(p)) return(as.character(NA))
   

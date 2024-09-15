@@ -581,12 +581,3 @@ small %>%
 rm(xen, small)
 gc()
 ```
-
-```{r "{{.x}} xen load objects"}
-# Load objects
-xen <- read_tsv(here(params$xen_dir, str_c("xen_s", slide, ".tsv.gz")))
-
-assign(str_c("xen_s", slide), xen)
-
-rm(xen)
-```
