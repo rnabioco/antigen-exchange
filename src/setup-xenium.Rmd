@@ -365,6 +365,37 @@ rm(ref_so)
 gc()
 ```
 
+```{r "{{.x}} xen refine annotations", eval = create_sobjs}
+xen <- xen %>%
+  mutate_meta(
+    mutate,
+    cell_type  = if_else(pred_conf > 0.5, cell_type, "unassigned"),
+    cd45_class = "other"
+  ) %>%
+  classify_markers(
+    feats      = "Ptprc",
+    filt       = Ptprc > 1,
+    clst_col   = clst_clmn,
+    type_label = "CD45+",
+    type_col   = "cd45_class"
+  ) %>%
+  classify_markers(
+    feats      = "Ptprc",
+    filt       = Ptprc <= 1,
+    clst_col   = clst_clmn,
+    type_label = "CD45-",
+    type_col   = "cd45_class"
+  ) %>%
+  mutate_meta(
+    mutate,
+    cell_type = if_else(
+      cell_type %in% c("unassigned", "Epithelial cells"),
+      str_c("other ", cd45_class),
+      cell_type
+    )
+  )
+```
+
 ```{r "{{.x}} xen create lec/frc objects", include = FALSE, eval = create_sobjs}
 # Process data
 type_key <- c(lec = "LEC", frc = "Fibroblasts")

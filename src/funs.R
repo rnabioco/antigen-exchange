@@ -291,8 +291,12 @@ get_cell_types <- function(so_in, type_clmn, sample_clmn, n_cells = 3) {
 classify_markers <- function(so_in, feats, filt, type_label, clst_col, type_col,
                              summary_fn = mean) {
   
-  clsts <- so_in %>%
-    FetchData(unique(c(feats, clst_col, type_col)))
+  clsts <- so_in
+  
+  if (is(so_in, "Seurat")) {
+    clsts <- so_in %>%
+      FetchData(unique(c(feats, clst_col, type_col)))
+  }
   
   num_feats <- clsts %>%
     keep(is.numeric) %>%
@@ -317,7 +321,7 @@ classify_markers <- function(so_in, feats, filt, type_label, clst_col, type_col,
     as.character()
   
   if (n_distinct(so_in[[clst_col]]) != n_clsts) {
-    warning("multiple values of a one of the `feats` of type character are present for some clusters")
+    warning("multiple values of one of the `feats` of type character are present for some clusters")
   }
   
   res <- so_in %>%

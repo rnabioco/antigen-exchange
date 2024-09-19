@@ -450,8 +450,8 @@ geomx_imgs <- slides %>%
   })
 
 # Add variables to plot to image objects
-# need to include data for all segments regardless of QC or will get an error
-# when cropping image
+# * need to include data for all segments regardless of QC or will get an error
+#   when cropping image
 img_dat <- geomx_raw %>%
   pData() %>%
   mutate(Sample_ID = str_remove(rownames(.), "\\.dcc$")) %>%

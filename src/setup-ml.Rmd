@@ -530,13 +530,28 @@ create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
 create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
                             lvls = c("Ag-competent", "Ag-low", "Ag-high", "other"),
                             ...) {
+
+  # Format n labels  
+  n_labs <- so_in %>%
+    filter(!is.na(!!sym(dat_col))) %>%
+    group_by(!!sym(dat_col)) %>%
+    summarize(n = n()) %>%
+    mutate(
+      n_lab = str_c(!!sym(dat_col), "\nn = ", n)
+    )
   
+  n_labs <- set_names(n_labs$n_lab, n_labs[[dat_col]])
+  
+  lvls <- lvls[lvls %in% names(n_labs)]
+  
+  # Create UMAPs
+  # * add colors separately since ggplot2 3.5.1 automatically includes `NA` in
+  #   plot legend
   res <- so_in %>%
     plot_scatter(
       dat_col,
       "hUMAP_1", "hUMAP_2",
       group_col    = grp_col,
-      plot_colors  = clrs,
       plot_lvls    = lvls,
       panel_nrow   = 1,
       label_params = list(size = ttl_pt2),
@@ -546,6 +561,15 @@ create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
       label.position = "bottom", reverse = TRUE,
       override.aes = list(size = 4)
     )) +
+    
+    scale_color_manual(
+      values   = clrs,
+      limits   = lvls,
+      breaks   = lvls,
+      labels   = n_labs,
+      na.value = "grey80"
+    ) +
+    
     base_theme +
     theme(
       plot.margin     = margin(),
