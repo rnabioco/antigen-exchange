@@ -11,6 +11,9 @@ knitr::opts_chunk$set(
   dpi     = 250
 )
 
+# Clustering resolution
+clst_rsln <- 10
+
 sffx <- str_c("_s", slide, ".qs")
 
 create_sobjs <- !file.exists(here(params$xen_dir, str_c("xen", sffx)))
@@ -215,7 +218,7 @@ xen <- xen %>%
       mutate_meta(mutate, fov = .y) %>%
       .process_xenium(
         dims = 1:40,
-        resolution = 10
+        resolution = clst_rsln
       )
   })
 
@@ -366,12 +369,19 @@ gc()
 ```
 
 ```{r "{{.x}} xen refine annotations", eval = create_sobjs}
+# Each FOV was clustered separately, so add FOV ID to cluster ID
+clst_clmn <- str_c("SCT_snn_res.", clst_rsln)
+
 xen <- xen %>%
-  mutate_meta(
-    mutate,
-    cell_type  = if_else(pred_conf > 0.5, cell_type, "unassigned"),
-    cd45_class = "other"
-  ) %>%
+  mutate_meta(~ {
+    .x %>%
+      rename(rough_type = cell_type) %>%
+      mutate(!!sym(clst_clmn) := str_c(fov, "_", !!sym(clst_clmn)))
+  })
+
+# Identify CD45+/- cells
+xen <- xen %>%
+  mutate_meta(mutate, cd45_class = "other") %>%
   classify_markers(
     feats      = "Ptprc",
     filt       = Ptprc > 1,
@@ -385,6 +395,22 @@ xen <- xen %>%
     clst_col   = clst_clmn,
     type_label = "CD45-",
     type_col   = "cd45_class"
+  )
+
+# Refine cell types based on prediction confidence
+# * set adipose tissue as unassigned based on Car3 expression
+# * set epithelial cells as unassigned since they appear to express CD45
+xen <- xen %>%
+  mutate_meta(
+    mutate,
+    cell_type = if_else(pred_conf > 0.5, rough_type, "unassigned")
+  ) %>%
+  classify_markers(
+    feats      = "Car3",
+    filt       = Car3 > 0.75,
+    clst_col   = clst_clmn,
+    type_label = "unassigned",
+    type_col   = "cell_type"
   ) %>%
   mutate_meta(
     mutate,
@@ -392,7 +418,8 @@ xen <- xen %>%
       cell_type %in% c("unassigned", "Epithelial cells"),
       str_c("other ", cd45_class),
       cell_type
-    )
+    ),
+    Ag_type = ifelse(Ag_class == "Ag-high", cell_type, "Ag-low")
   )
 ```
 
@@ -422,6 +449,8 @@ gc()
 
 ```{r "{{.x}} xen calculate distance from Ag+ LEC", eval = create_sobjs}
 # Calculate distance from closest Ag+ LEC
+# * this will only return cell coordinates for FOVs with Ag+ LECs
+# * FOV F will not have cell coordinates, this column will be all `NA`s
 fovs <- sort(unique(xen$fov))
 
 dists <- fovs %>%
@@ -440,9 +469,9 @@ dists <- fovs %>%
       left_join(cell_coords, by = ".cell_id")
     
     # Convert to sf object (sp package is deprecated)
-    # first convert to sp::SpatialPolygonsDataFrame
-    # mol <- obj@images$A@molecules$molecules$GeoMx_Barcode01_ERCC00142
-    # Ensure geometries are valid
+    # * first convert to sp::SpatialPolygonsDataFrame
+    # * mol <- obj@images$A@molecules$molecules$GeoMx_Barcode01_ERCC00142
+    # * ensure geometries are valid
     cells <- xen@images[[.x]]@boundaries$segmentation@polygons
     plys  <- SpatialPolygons(cells)
     
@@ -463,6 +492,8 @@ dists <- fovs %>%
     # Pull cell types
     lecs <- cell_meta %>%
       filter(cell_type == "LEC" & Ag_class == "Ag-high")
+    
+    if (nrow(lecs) == 0) return(NULL)
     
     # Calculate distances between each LEC and all other cells
     dists <- st_distance(plys[lecs$.cell_id, ], plys)
@@ -579,7 +610,9 @@ xen <- xen %>%
   )
 
 # Select subset of cells to plot
-# too many points to plot, downsample when plotting sections
+# * too many points to plot, downsample when plotting sections
+set.seed(42)
+
 plt_cells <- sample(colnames(xen), 50000)
 
 plt_cells <- xen@meta.data %>%

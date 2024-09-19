@@ -1378,6 +1378,7 @@ stopifnot(identical(rownames(ref_lymphnodestromal), rownames(ref_frc)))
 ref_frc <- cbind(ref_lymphnodestromal, ref_frc)
 
 # Combined Immgen/DC reference
+# * DC reference from Brown et al. Cell 2019
 rownames(ref_mousespleenDC) <- str_to_title(rownames(ref_mousespleenDC))
 
 shared_gns    <- intersect(rownames(ref_immgen), rownames(ref_mousespleenDC))
@@ -1520,7 +1521,7 @@ cd45neg_so <- cd45neg_so %>%
   mutate_meta(mutate, rough_type = type)
 
 # Adjust B and T cells
-# adjust stem cells based on Cd79a, these appear to be B cells
+# * adjust stem cells based on Cd79a, these appear to be B cells
 cd45neg_so <- cd45neg_so %>%
   classify_markers(
     feats    = c("Ptprc", "Cd79a", "Cd19"),
@@ -1548,7 +1549,7 @@ cd45neg_so <- cd45neg_so %>%
   )
 
 # Adjust epithelial cells based on E-cadherin and cytokeratin-8
-# some unassigned cells appear to be epithelial cells
+# * some unassigned cells appear to be epithelial cells
 cd45neg_so <- cd45neg_so %>%
   classify_markers(
     feats    = c("Cdh1", "Krt8"),
@@ -1559,7 +1560,7 @@ cd45neg_so <- cd45neg_so %>%
   )
 
 # Adjust cell type labels
-# fibroblasts also include DN stromal cells
+# * fibroblasts also include DN stromal cells
 cd45neg_so <- cd45neg_so %>%
   mutate_meta(
     mutate,

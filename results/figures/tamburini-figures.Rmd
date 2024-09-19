@@ -61,7 +61,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -81,21 +81,13 @@ reticulate::use_condaenv("umap", conda = "~/.local/bin/micromamba")
 # Main setup
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 
-# Process Xenium slides 1 and 2
-slides <- seq_along(params$xen_regex)
+# Xenium setup
+xen_slides <- seq_along(params$xen_regex)
 
-chunks <- slides %>%
+chunks <- xen_slides %>%
   map_chr(~ knit_expand(here(params$template_dir, "setup-xenium.Rmd")))
 
 knit(text = chunks, output = "")
-
-# Load Xenium data
-xen <- slides %>%
-  map(~ {
-    read_tsv(here(params$xen_dir, str_c("xen_s", .x, ".tsv.gz"))) %>%
-      mutate(slide = .x)
-  }) %>%
-  bind_rows()
 
 # Process other datasets
 knit(here(params$template_dir, "setup-ml.Rmd"), "")
@@ -138,6 +130,68 @@ ag_exps <- list(LEC = "exp-1", DC = "exp-2")
 
 # LEC/DC subset colors
 subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
+```
+
+```{r "load xenium data"}
+# Load Xenium data
+xen <- xen_slides %>%
+  map(~ {
+    read_tsv(here(params$xen_dir, str_c("xen_s", .x, ".tsv.gz"))) %>%
+      mutate(slide = .x)
+  }) %>%
+  bind_rows()
+
+# Top cell types to plot
+dcs <- xen$cell_type %>%
+  unique() %>%
+  grep("DC", ., value = TRUE) %>%
+  sort()
+
+ag_dcs <- xen %>%
+  filter(cell_type %in% dcs) %>%
+  group_by(cell_type) %>%
+  filter(all(table(Ag_class) > 15)) %>%
+  pull(cell_type) %>%
+  unique()
+
+top_types <- c("LEC", dcs)
+
+# FOVs to plot
+fovs      <- sort(unique(xen$fov))
+top_fov   <- "D"
+top_fov_2 <- "B"
+
+# Format plotting data
+xen_ag_classes <- c(
+  `Ag-low`  = "Ag-",
+  `Ag-high` = "Ag+"
+)
+
+xen <- xen %>%
+  mutate(
+    Ag_class = recode(Ag_class, !!!xen_ag_classes),
+    Ag_class = fct_relevel(Ag_class, unname(xen_ag_classes)),
+    slide    = str_c("section ", slide)
+  ) %>%
+  arrange(Ag_class)
+
+# Xenium colors
+xen_clrs <- typ_clrs
+
+xen_clrs["unassigned"]  <- "white"
+xen_clrs["other CD45+"] <- "white"
+xen_clrs["other CD45-"] <- "white"
+
+xen_clrs <- xen_clrs %>%
+  spruce_up_colors(
+    adjust_colors = "Neutrophils",
+    filter        = c("deutan", "protan", "tritan"),
+    difference    = 10,
+    property      = "lightness",
+    range         = c(10, 85)
+  )
+
+xen_clrs <- xen_clrs[names(xen_clrs) %in% xen$cell_type]
 ```
 
 ```{r "load naive data", include = FALSE}
@@ -234,7 +288,9 @@ rf_feats %>%
 Mean expression is shown for key marker genes for CD45+ datasets.
 
 ```{r "CD45+ markers 1", fig.width = 10, fig.height = 4}
-cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
 
 gns <- c(
   "Ptprc",
@@ -244,7 +300,7 @@ gns <- c(
   "Ly6c2",
   "Fcgr1",  # CD64
   "Itgam",  # cDC2
-  "Klrk1",
+  "Nkg7",
   "Tbx21",
   "Il7r"
 )
@@ -256,7 +312,7 @@ lvls <- c(
 )
 
 # Calculate mean expression
-dat <- cd45pos_so %>%
+dat <- cd45_so %>%
   FetchData(c("cell_type", "mouse", gns)) %>%
   as_tibble(rownames = ".cell_id") %>%
   pivot_longer(all_of(gns)) %>%
@@ -273,7 +329,7 @@ heat_dat <- dat %>%
   mutate(value = as.numeric(scale(value))) %>%
   ungroup()
 
-rm(cd45pos_so)
+rm(cd45_so)
 gc()
 
 # Create heatmap
@@ -339,7 +395,9 @@ gns %>%
 Mean expression is shown for key marker genes for CD45- datasets.
 
 ```{r "CD45- markers 1", fig.width = 10, fig.height = 4}
-cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
 
 gns <- c(
   "Ptprc",
@@ -347,11 +405,11 @@ gns <- c(
   "Pdpn", "Pecam1",
   "Cd3d", "Cd19",
   "Ly6c2",
-  "Klrk1",
+  "Nkg7",
   "Tbx21",
-  "Itgax",           # DCs
+  "Itgax",  # DCs
   "Fcgr1",  # CD64
-  "Itgam"   # cDC2
+  "Itgam"
 )
 
 lvls <- c(
@@ -361,7 +419,7 @@ lvls <- c(
 )
 
 # Calculate mean expression
-dat <- cd45neg_so %>%
+dat <- cd45_so %>%
   FetchData(c("cell_type", "mouse", gns)) %>%
   as_tibble(rownames = ".cell_id") %>%
   pivot_longer(all_of(gns)) %>%
@@ -378,7 +436,7 @@ heat_dat <- dat %>%
   mutate(value = as.numeric(scale(value))) %>%
   ungroup()
 
-rm(cd45neg_so)
+rm(cd45_so)
 gc()
 
 # Create heatmap
@@ -2128,505 +2186,96 @@ H.  Mean 42 day Ag-score is shown for DCs from mice that received single or
 I.  Ag-score is shown for single and dual vaccinations for the 42 day timepoint
     as described in G.
 
-```{r "geomx cropped images", fig.width = 14, fig.height = 7}
-plot_geomx_image <- function(obj_in, color, clrs = NULL, labs = NULL,
-                             legend_values = names(labs) %||% names(clrs),
-                             ttl = NULL, line_size = 0.5, scale_size = 8,
-                             scale_dist = 1.5, ...) {
-  
-  # `NA`s will get plotted since all segements must be included in the object
-  #  to plot. `NA`s are segments that did pass QC.
-  
-  labs <- labs %||% waiver()
-  ttl  <- ttl %||% color
-  
-  res <- obj_in %>%
-    plotSpatialOverlay(
-      colorBy          = color,
-      scaleBar         = TRUE,
-      corner           = "bottomleft",
-      textDistance     = scale_dist,
-      scaleBarLineSize = line_size,
-      scaleBarFontSize = scale_size / .pt,
-      ...
-    ) +
-    ggtitle(ttl) +
-    theme(
-      plot.margin  = margin(r = 15, l = 15),
-      plot.title   = element_text(hjust = 0.5, size = ttl_pt2 * 1.5),
-      legend.title = element_blank()
-    )
-  
-  if (!is.null(legend_values)) {
-    all_sams_df <- tibble(x = 1, y = 1, colorBy = legend_values)
-    
-    res <- res +
-      geom_blank(aes(x, y, fill = colorBy), data = all_sams_df)
-  }
-  
-  if (!is.null(clrs)) {
-    if (is.numeric(obj_in@plottingFactors[[color]])) {
-      res <- res +
-        scale_fill_gradientn(colours = clrs) +
-        guides(fill = guide_colorbar(ticks = FALSE)) +
-        theme(
-          legend.position   = "bottom",
-          legend.key.width  = unit(50, "pt"),
-          legend.key.height = unit(7, "pt"),
-          legend.text       = element_text(size = txt_pt2)
-        )
-      
-    } else {
-      res <- res +
-        scale_fill_manual(
-          values = clrs,
-          labels = labs,
-          limits = names(labs) %||% names(clrs),
-          drop   = FALSE
-        ) +
-        theme(legend.text = element_text(size = ttl_pt2))
-    }
-  }
-  
-  res
-}
-
-# Select LN to plot
-sams <- geomx_dat %>%
-  filter(
-    LN == "ova-GeoMX+VV 6week and 3week LN1",
-    Segment %in% c("Lyve1", "CD11C")
-  ) %>%
-  pull(Sample_ID)
-
-img_cropped <- geomx_imgs$`Slide 1` %>%
-  cropSamples(sampleIDs = sams, sampsOnly = TRUE)
-
-img_args <- list(
-  color = c("Sample", "Region", "Segment", "Ag-score"),
-  clrs  = list(geo_m_clrs, reg_clrs, seg_clrs, c("white", "#D7301F")),
-  labs  = list(geo_m_key, NULL, geo_seg_key, NULL),
-  ttl   = list(NULL, NULL, "Segment type", "Ag signal")
-)
-
-# Plot cropped image
-img_fig <- img_args %>%
-  pmap(~ {
-    args <- list(...)
-    
-    img_cropped %>%
-      plot_geomx_image(
-        color = args$color,
-        clrs  = args$clrs,
-        ttl   = args$ttl,
-        labs  = args$labs,
-        scale_size = ttl_pt1,
-        scale_dist = 3,
-        legend_values = NULL,
-      ) +
-      theme(legend.position = "bottom")
-  })
-
-img_fig <- plot_grid(
-  plotlist = img_fig[-1],
-  nrow  = 1,
-  align = "h",
-  axis  = "tb",
-  hjust = 0.05,
-  labels     = c("A", "B", "C"),
-  label_size = ttl_pt2 * 1.5
-)
-```
-
-```{r "geomx Ag boxplots", fig.height = 4}
-# Signals to plot
-geo_clmns <- c(
-  Ag_3wk_score = "Ag signal (21 day)",
-  Ag_6wk_score = "Ag signal (42 day)"
-)
-
-# Function for strip labels
-geo_lab_fn <- function(x) {
-  keys <- list(geo_m_key, geo_seg_key)
-  
-  keys %>%
-    walk(~ {
-      idx    <- x %in% names(.x)
-      x[idx] <- .x[x[idx]]
-      x      <<- x
-    })
-  
-  x
-}
-
-# Calculate relative Ag signal
-# want to plot both Ag tags on same plot
-# this is not useful without scaling values since Ag-3wk signal is much higher
-# than Ag-6wk signal
-bx_dat <- geo_clmns %>%
-  imap_dfr(~ {
-    sam <- str_extract(.y, "(?<=Ag_)[0-9]+wk")
-    
-    geomx_dat %>%
-      filter(
-        sample %in% c(sam, "6wk-3wk"),
-        Segment %in% c("Lyve1", "CD11C")
-      ) %>%
-      mutate(
-        key = .y,
-        Ag_rel = as.numeric(scale(!!sym(.y))),
-        Segment = fct_relevel(Segment, names(seg_clrs))
-      )
-  })
-
-# Calculate p-values
-p_dat <- bx_dat %>%
-  split(.$Segment) %>%
-  imap_dfr(~ {
-    pairwise.wilcox.test(
-      .x$Ag_rel, .x$region_3,
-      p.adjust.method = "none"
-    ) %>%
-      tidy() %>%
-      mutate(Segment = .y)
-  }) %>%
-  mutate(p_adj = p.adjust(p.value, method = "BH"))
-
-# Calculate n values
-n_dat <- bx_dat %>%
-  group_by(region_3, Segment) %>%
-  summarize(n = n(), .groups = "drop") %>%
-  mutate(n = str_c("n = ", n))
-
-# Create boxplots
-geo_bxs <- bx_dat %>%  
-  ggplot(aes(region_3, Ag_rel, fill = region_3)) +
-  geom_boxplot(
-    linewidth = ln_pt * 1.5, alpha = 1, outlier.color = NA, width = 0.65,
-    key_glyph = draw_key_point
-  ) +
-  geom_jitter(size = 2, width = 0.1) +
-  geom_text(
-    aes(region_3, Inf, label = n, fill = NULL),
-    data  = n_dat,
-    vjust = 1.4,
-    size  = txt_pt2 / .pt
-  ) +
-  
-  facet_grid(~ Segment, scales = "free_y", labeller = as_labeller(geo_lab_fn)) +
-  scale_fill_manual(values = reg_clrs) +
-  scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
-  labs(y = "Relative Ag signal") +
-  base_theme +
-  theme(
-    aspect.ratio    = 1.4,
-    legend.position = "none",
-    axis.text.x     = element_text(size = ttl_pt2, angle = 45, hjust = 1),
-    axis.title.y    = element_text(size = ttl_pt2),
-    axis.title.x    = element_blank()
-  )
-```
-
-```{r "geomx Ag scatter"}
+```{r "xenium cell types"}
 # Format data
-# want to plot both Ag tags on same plot
-sct_dat <- geo_clmns %>%
-  imap_dfr(~ {
-    sam <- str_extract(.y, "(?<=Ag_)[0-9]+wk")
-    
-    geomx_dat %>%
-      filter(
-        sample %in% c(sam, "6wk-3wk"),
-        Segment %in% c("Lyve1", "CD11C")
-      ) %>%
-      mutate(
-        key      = .y,
-        Ag_score = !!sym(.y)
-      )
-  })
-
-sct_dat <- sct_dat %>%
-  dplyr::select(
-    `ROI Coordinate X`, `ROI Coordinate Y`,
-    region_3, Segment, sample, key,
-    Ag_score
-  ) %>%
-  group_by(key, `ROI Coordinate X`, `ROI Coordinate Y`) %>%
-  filter(all(c("Lyve1", "CD11C") %in% Segment)) %>%
-  ungroup() %>%
-  mutate(Segment = str_c(Segment, "+ Ag signal")) %>%
-  pivot_wider(names_from = Segment, values_from = Ag_score) %>%
-  mutate(
-    tm = str_extract(key, "[0-9+]wk"),
-    tm = as.character(tm_key[tm])
-  )
-
-# Legend labels
-sct_labs <- sct_dat %>%
-  group_by(key, tm) %>%
-  summarize(n = str_c("n = ", n()), .groups = "drop") %>%
-  mutate(n = str_c(geo_clmns[key], "\n", n))
-
-sct_labs <- set_names(sct_labs$n, sct_labs$tm)
-
-# Calculate correlation
-cor <- cor(
-  sct_dat$`CD11C+ Ag signal`,
-  sct_dat$`Lyve1+ Ag signal`,
-  method = "spearman"
-)
-cor <- round(cor, digits = 2)
-cor = str_c("italic(r[s]) == ", cor)
-
-geo_sct <- sct_dat %>%
-  ggplot(aes(`CD11C+ Ag signal`, `Lyve1+ Ag signal`, color = tm)) +
-  geom_smooth(method = "lm", color = "black", alpha = 0.1, linewidth = 0.5, linetype = 2) +
-  geom_point(size = 3) +
-  geom_text(
-    aes(x = 0, y = max(`Lyve1+ Ag signal`), label = cor),
-    parse = TRUE,
-    hjust = -0.3,
-    vjust = 0.5,
-    color = "black",
-    size  = ttl_pt1 / .pt,
-    check_overlap = TRUE
-  ) +
-  scale_color_manual(values = tm_clrs, labels = sct_labs) +
-  scale_x_continuous(trans = "log10") +
-  scale_y_continuous(trans = "log10") +
-  guides(color = guide_legend(override.aes = list(size = 4))) +
-  base_theme +
-  theme(
-    aspect.ratio = 1,
-    legend.title = element_blank(),
-    legend.text  = element_text(size = ttl_pt2),
-    axis.title   = element_text(size = ttl_pt2)
-  )
-```
-
-```{r "geomx figure", fig.width = 14, fig.height = 10}
-bot <- plot_grid(
-  geo_bxs, geo_sct,
-  nrow   = 1,
-  align  = "h",
-  axis   = "tb",
-  labels = c("D", "E"),
-  label_size = ttl_pt2 * 1.5
-)
-
-geo_fig <- plot_grid(
-  img_fig, bot,
-  ncol = 1,
-  rel_heights = c(1, 0.75)
-)
-```
-
-```{r "DC exchange heatmaps", fig.width = 16, fig.height = 4}
-# Format data for DC exchange plots
-dc_ex_dat <- dc_so@meta.data %>%
-  as_tibble(rownames = ".cell_id") %>%
-  filter(
-    exp %in% c("exp-0", ag_exps$DC),
-    subtype %in% ag_plt_typs$DC
-  ) %>%
-  mutate(
-    mouse = m_key[as.character(mouse)],
-    mouse = fct_relevel(mouse, unname(m_key))
-  )
-
-# Format data for heatmaps
-dc_heat_dat <- dc_ex_dat %>%
-  filter(exp == ag_exps$DC) %>%
-  group_by(mouse, subtype) %>%
-  summarize(across(all_of(ag_clmns), mean), .groups = "drop")
-
-# Create heatmaps
-dc_ex_heat <- ex_heat_args %>%
-  pmap(~ {
-    dc_heat_dat %>%
-      create_exchange_heats(
-        ag_clmn = .x,
-        ttl     = ag_labs_2[[.x]],
-        clr     = .y
-      )
-  })
-```
-
-```{r "DC exchange boxes", fig.width = 10, fig.height = 2}
-# Effect of successive vaccinations on antigen uptake/retention
-# use DC subsets shown in figure 1
-dc_ex_bxs <- ex_bx_args %>%
-  pmap(~ {
-    args <- list(...)
-    
-    dc_ex_dat %>%
-      create_exchange_boxes(
-        tm        = args$tm,
-        tm_clmn   = args$tm_clmn,
-        ag_clmn   = args$ag_clmn,
-        typs      = ag_plt_typs$DC[1:3],
-        clrs      = tm_clrs,
-        p_size    = 11,
-        p_hjust   = args$p_hjust,
-        p_vjust   = 0.7
-      ) +
-      theme(legend.position = "bottom")
-  })
-```
-
-```{r "Fig 4", fig.width = 14, fig.height = 18}
-bot <- list(
-  `F` = dc_ex_heat[[1]],
-  G   = dc_ex_bxs[[1]],
-  H   = dc_ex_heat[[2]],
-  I   = dc_ex_bxs[[2]]
-)
-
-bot <- bot %>%
-  imap(~ .x + labs(tag = .y))
-
-bot <- wrap_plots(
-  bot,
-  nrow = 2,
-  widths = c(0.25, 1)
-) &
-  theme(
-    plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
-    plot.tag.position = c(0, 1)
-  )
-
-fig4 <- plot_grid(
-  geo_fig, NULL, bot,
-  ncol = 1,
-  rel_heights = c(1, 0.1, 0.7)
-)
-
-fig4
-```
-
-<br>
-
-<br>
-
-### Xenium figures
-
-This figure could replace the GeoMx data shown in Figure 4A-E.
-
-```{r "XENIUM DATA"}
-# Top cell types to plot
-dcs <- xen$cell_type %>%
-  unique() %>%
-  grep("DC", ., value = TRUE) %>%
-  sort()
-
-ag_dcs <- xen %>%
-  filter(cell_type %in% dcs) %>%
-  group_by(cell_type) %>%
-  filter(all(table(Ag_class) > 15)) %>%
-  pull(cell_type) %>%
-  unique()
-
-top_types <- c("LEC", dcs)
-
-# FOVs to plot
-fovs      <- sort(unique(xen$fov))
-top_fov   <- "D"
-top_fov_2 <- "B"
-
-# Format plotting data
-xen <- xen %>%
-  mutate(Ag_class = fct_relevel(Ag_class, c("Ag-low", "Ag-high"))) %>%
-  arrange(Ag_class)
-
-# Xenium colors
-xen_clrs <- typ_clrs
-
-xen_clrs["unassigned"] <- "grey65"
-
-xen_clrs <- xen_clrs %>%
-  spruce_up_colors(
-    adjust_colors = "Neutrophils",
-    filter        = c("deutan", "protan", "tritan"),
-    difference    = 10,
-    property      = "lightness",
-    range         = c(10, 85)
-  )
-
-xen_clrs <- xen_clrs[names(xen_clrs) %in% xen$cell_type]
-```
-
-```{r "xenium cell type umaps", eval = FALSE}
-typs <- xen$cell_type %>%
-  table() %>%
-  sort(decreasing = TRUE)
-
 dat <- xen %>%
   filter(fov == top_fov)
 
-fn <- approxfun(c(last(typs), typs[[1]]), c(50, 150))
+n_labs <- dat %>%
+  group_by(cell_type) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  mutate(
+    n_lab = str_c(cell_type, "\nn = ", label_comma()(n))
+  ) %>%
+  pull(n_lab, cell_type)
 
-x <- names(typs) %>%
-  map(~ {
-    typ <- .x
-    
-    dat %>%
-      mutate(slide = str_c("section ", slide)) %>%
-      ggplot(aes(x_cell, y_cell)) +
-      geom_point_trace(fill = "white", trace_position = "bottom") +
-      
-      geom_bin2d(
-        data = ~ filter(.x, cell_type == typ),
-        # bins = 150
-        bins = floor(fn(typs[[typ]]))
-      ) +
-      
-      # stat_density_2d(
-      #   aes(fill = ..level..),
-      #   data = ~ filter(.x, cell_type == typ),
-      #   geom = "polygon",
-      #   n = 500,
-      #   contour_var = "count"
-      # ) +
-      
-      # geom_pointdensity(data = ~ filter(.x, cell_type == typ)) +
-      # geom_density_2d(geom = "raster", data = ~ filter(.x, cell_type == typ)) +
-      ggtitle(str_replace_all(typ, "_", " ")) +
-      scale_fill_gradientn(colours = c("white", typ_clrs[[typ]])) +
-      facet_wrap(~ slide, nrow = 1) +
-      umap_theme_2 +
-      theme(legend.position = "bottom")
-  })
-
-x[1:8] %>%
-  wrap_plots(ncol = 3)
+# Plot cell types
+xen_typ_fig <- dat %>%
+  ggplot(aes(y_cell, x_cell, fill = cell_type)) +
+  geom_point_trace(
+    size = 0.1,
+    color = NA,
+    trace_position = !grepl("^other", cell_type),
+    background_params = list(color = "black", size = 0.5)
+  ) +
+  facet_wrap(~ slide) +
+  guides(fill = guide_legend(
+    nrow = 2,
+    title.position = "top",
+    override.aes = list(size = 4)
+  )) +
+  scale_fill_manual(values = xen_clrs, labels = n_labs) +
+  coord_fixed() +
+  umap_theme_2 +
+  theme(
+    legend.position   = "bottom",
+    legend.key.height = unit(35, "pt"),
+    legend.title      = element_blank(),
+    legend.text       = element_text(size = ttl_pt2),
+    strip.text        = element_text(size = ttl_pt2)
+  )
 ```
 
-```{r "XENIUM AG CLASS"}
+```{r "xenium Ag counts"}
 # Format plot data
 dat <- xen %>%
   filter(fov %in% top_fov) %>%
   mutate(
-    broad_type = if_else(cell_type %in% dcs, "DC", cell_type),
-    broad_type = if_else(
-      broad_type %in% c("LEC", "DC"),
-      broad_type,
+    cell_type = if_else(
+      cell_type %in% c("LEC", "DC"),
+      cell_type,
       "other"
     ),
-    broad_type = fct_relevel(broad_type, c("LEC", "DC", "other")),
+    cell_type = fct_relevel(cell_type, c("LEC", "DC", "other")),
     
-    Ag_class = recode(Ag_class, `Ag-high` = "Ag+", `Ag-low` = "Ag-"),
-    Ag_class = fct_relevel(Ag_class, c("Ag+", "Ag-")),
+    Ag_class = fct_relevel(Ag_class, rev(unname(xen_ag_classes))),
     
     type_ag = if_else(
-      broad_type %in% c("LEC", "DC"),
-      str_c(broad_type, " (", Ag_class, ")"),
-      broad_type
-    ),
-    slide = str_c("r", slide)
+      cell_type %in% c("LEC", "DC"),
+      str_c(cell_type, " (", Ag_class, ")"),
+      cell_type
+    )
   ) %>%
-  arrange(broad_type, Ag_class) %>%
+  arrange(cell_type, Ag_class) %>%
   mutate(type_ag = fct_inorder(type_ag))
 
+# Plot Ag+ cells
+ag_sig_fig <- dat %>%
+  arrange(Ag_counts) %>%
+  
+  ggplot(aes(y_cell, x_cell, fill = Ag_counts + 1)) +
+  geom_point_trace(size = 0.5, trace_position = "bottom") +
+  facet_wrap(~ slide) +
+  scale_fill_gradientn(colours = c("white", "#E7301F"), trans = "log10") +
+
+  guides(fill = guide_colorbar(
+    ticks = FALSE,
+    title.position = "top",
+    title = "Ag counts + 1"
+  )) +
+  coord_fixed() +
+  umap_theme_2 +
+  theme(
+    legend.position   = "bottom",
+    legend.key.width  = unit(35, "pt"),
+    legend.key.height = unit(7, "pt"),
+    legend.title      = element_text(size = ttl_pt2, hjust = 0.5),
+    legend.text       = element_text(size = txt_pt2),
+    strip.text        = element_text(size = ttl_pt2)
+  )
+```
+
+```{r "xenium Ag class"}
 # Adjust color palette
 new_clrs <- c("#E7301F", "#56B4E9", "white") %>%
   expand_colors(
@@ -2694,55 +2343,14 @@ ag_pos_fig <- dat %>%
   )
 ```
 
-```{r "XENIUM AG SIGNAL"}
-# Plot Ag+ cells
-ag_sig_fig <- dat %>%
-  arrange(Ag_counts) %>%
-  
-  ggplot(aes(y_cell, x_cell, fill = Ag_counts + 1)) +
-  geom_point_trace(size = 0.5, trace_position = "bottom") +
-  facet_wrap(~ slide) +
-  scale_fill_gradientn(colours = c("white", "#E7301F"), trans = "log10") +
-
-  guides(fill = guide_colorbar(
-    ticks = FALSE,
-    title.position = "top",
-    title = "Ag counts + 1"
-  )) +
-  coord_fixed() +
-  umap_theme_2 +
-  theme(
-    legend.position   = "bottom",
-    legend.key.width  = unit(35, "pt"),
-    legend.key.height = unit(7, "pt"),
-    legend.title      = element_text(size = ttl_pt2, hjust = 0.5),
-    legend.text       = element_text(size = txt_pt2),
-    strip.text        = element_text(size = ttl_pt2)
-  )
-```
-
-```{r "XENIUM LEC PROXIMITY", fig.width = 18, fig.height = 13}
-# Ag class labels
-ag_classes <- c(
-  `Ag-low`  = "Ag-",
-  `Ag-high` = "Ag+"
-)
-
+```{r "xenium LEC proximity", fig.width = 18, fig.height = 13}
 # Format data for histograms
-# only include cell types that have both Ag-low/high cells
 hist_dat <- xen %>%
   dplyr::select(cell_id, slide, fov, cell_type, lec_type, Ag_class, lec_id, lec_dist) %>%
   filter(
     fov %in% top_fov,
     cell_type == "DC"
-  ) %>%
-  group_by(slide, fov, cell_type) %>%
-  filter(
-    all(names(ag_classes) %in% Ag_class),
-    all(table(Ag_class) > 5)
-  ) %>%
-  ungroup() %>%
-  mutate(slide = str_c("r", slide))
+  )
   
 # Format data for median lines
 ln_dat <- hist_dat %>%
@@ -2757,7 +2365,7 @@ ln_dat <- hist_dat %>%
 n_dat <- ln_dat %>%
   group_by(slide, fov, cell_type) %>%
   mutate(
-    n_lab = str_c(ag_classes[Ag_class], " ", label_comma()(n), " cells")
+    n_lab = str_c(Ag_class, " ", label_comma()(n), " cells")
   ) %>%
   summarize(
     n_lab = str_c(n_lab, collapse = "\n"),
@@ -2769,13 +2377,13 @@ p_dat <- hist_dat %>%
   group_by(slide, fov, cell_type) %>%
   summarize(
     p = wilcox.test(
-      lec_dist[Ag_class == "Ag-high"],
-      lec_dist[Ag_class == "Ag-low"],
+      lec_dist[Ag_class == "Ag+"],
+      lec_dist[Ag_class == "Ag-"],
       alternative = "less"
     )$p.value,
     .groups = "drop"
   ) %>%
-  mutate(p_adj = p.adjust(p, method = "bonferroni")) %>%
+  mutate(p_adj = p.adjust(p, method = "BH")) %>%
   rowwise() %>%
   mutate(
     p_lab = .format_pvalue(p_adj),
@@ -2820,11 +2428,11 @@ hist <- hist_dat %>%
     show.legend = FALSE
   ) +
   
-  facet_wrap(~ slide, nrow = 1) +
-  labs(x = "distance from nearest Ag+ LEC", y = "density") +
-  scale_fill_manual(values = c(`Ag-low` = "grey85", `Ag-high` = "#D7301F"), labels = ag_classes) +
-  scale_color_manual(values = c(`Ag-low` = "black", `Ag-high` = "#D7301F"), labels = ag_classes) +
-  scale_alpha_manual(values = c(`Ag-low` = 0.5, `Ag-high` = 0.85), labels = ag_classes) +
+  facet_wrap(~ slide, ncol = 1) +
+  labs(x = "distance from nearest Ag+ LEC (\U00B5m)", y = "density") +
+  scale_fill_manual(values  = c(`Ag-` = "grey85", `Ag+` = "#D7301F")) +
+  scale_color_manual(values = c(`Ag-` = "black",  `Ag+` = "#D7301F")) +
+  scale_alpha_manual(values = c(`Ag-` = 0.5,      `Ag+` = 0.85)) +
   scale_x_log10() +
   scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
   base_theme +
@@ -2838,37 +2446,180 @@ hist <- hist_dat %>%
   )
 ```
 
-```{r "XENIUM MAIN FIGURE", fig.width = 14, fig.height = 8.5}
-top <- wrap_plots(
-  ag_sig_fig + labs(tag = "A"),
-  ag_pos_fig + labs(tag = "B"),
-  nrow = 1
+```{r "xenium figure", fig.width = 14, fig.height = 8.5}
+top <- plot_grid(
+  xen_typ_fig + labs(tag = "A"),
+  ag_sig_fig  + labs(tag = "A"),
+  ag_pos_fig  + labs(tag = "B"),
+  hist        + labs(tag = "C"),
+  nrow = 2
 )
 
-bot <- wrap_plots(
-  plot_spacer(), hist + labs(tag = "C"), plot_spacer(),
-  nrow = 1,
-  widths = c(0.2, 1, 0.2)
-)
+top
 
-xen_fig <- wrap_plots(
-  top, bot,
-  ncol = 1,
-  heights = c(1, 0.65)
-) &
-  theme(
-    plot.tag = element_text(
-      size  = ttl_pt2 * 1.5,
-      face  = "bold",
-      hjust = 2,
-      vjust = -0.2
-    )
+# top <- wrap_plots(
+#   xen_typ_fig + labs(tag = "A"),
+#   ag_sig_fig  + labs(tag = "A"),
+#   ag_pos_fig  + labs(tag = "B"),
+#   hist        + labs(tag = "C"),
+#   nrow = 2
+# )
+# 
+# bot <- wrap_plots(
+#   plot_spacer(), hist + labs(tag = "C"), plot_spacer(),
+#   nrow = 1,
+#   widths = c(0.2, 1, 0.2)
+# )
+# 
+# xen_fig <- wrap_plots(
+#   top, bot,
+#   ncol = 1,
+#   heights = c(1, 0.65)
+# ) &
+#   theme(
+#     plot.tag = element_text(
+#       size  = ttl_pt2 * 1.5,
+#       face  = "bold",
+#       hjust = 2,
+#       vjust = -0.2
+#     )
+#   )
+```
+
+```{r "DC exchange heatmaps", fig.width = 16, fig.height = 4}
+# Format data for DC exchange plots
+dc_ex_dat <- dc_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(
+    exp %in% c("exp-0", ag_exps$DC),
+    subtype %in% ag_plt_typs$DC
+  ) %>%
+  mutate(
+    mouse = m_key[as.character(mouse)],
+    mouse = fct_relevel(mouse, unname(m_key))
   )
 
-xen_fig
+# Format data for heatmaps
+dc_heat_dat <- dc_ex_dat %>%
+  filter(exp == ag_exps$DC) %>%
+  group_by(mouse, subtype) %>%
+  summarize(across(all_of(ag_clmns), mean), .groups = "drop")
+
+# Create heatmaps
+dc_ex_heat <- ex_heat_args %>%
+  pmap(~ {
+    dc_heat_dat %>%
+      create_exchange_heats(
+        ag_clmn = .x,
+        ttl     = ag_labs_2[[.x]],
+        clr     = .y
+      )
+  })
+```
+
+```{r "DC exchange boxes", fig.width = 10, fig.height = 2}
+# Effect of successive vaccinations on antigen uptake/retention
+# use DC subsets shown in figure 1
+dc_ex_bxs <- ex_bx_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    dc_ex_dat %>%
+      create_exchange_boxes(
+        tm        = args$tm,
+        tm_clmn   = args$tm_clmn,
+        ag_clmn   = args$ag_clmn,
+        typs      = ag_plt_typs$DC[1:3],
+        clrs      = tm_clrs,
+        p_size    = 11,
+        p_hjust   = args$p_hjust,
+        p_vjust   = 0.7
+      ) +
+      theme(legend.position = "bottom")
+  })
+```
+
+```{r "Fig 4", fig.width = 14, fig.height = 16}
+bot <- list(
+  E   = dc_ex_heat[[1]],
+  `F` = dc_ex_bxs[[1]],
+  G   = dc_ex_heat[[2]],
+  H   = dc_ex_bxs[[2]]
+)
+
+bot <- bot %>%
+  imap(~ .x + labs(tag = .y))
+
+bot <- wrap_plots(
+  bot,
+  nrow = 2,
+  widths = c(0.25, 1)
+) &
+  theme(
+    plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
+    plot.tag.position = c(0, 1)
+  )
+
+fig4 <- plot_grid(
+  xen_fig, NULL, bot,
+  ncol = 1,
+  rel_heights = c(1, 0.1, 1)
+)
+
+fig4
 ```
 
 <br>
+
+<br>
+
+### Xenium figures
+
+```{r "xenium cell type umaps", eval = FALSE}
+typs <- xen$cell_type %>%
+  table() %>%
+  sort(decreasing = TRUE)
+
+dat <- xen %>%
+  filter(fov == top_fov)
+
+fn <- approxfun(c(last(typs), typs[[1]]), c(50, 150))
+
+x <- names(typs) %>%
+  map(~ {
+    typ <- .x
+    
+    dat %>%
+      mutate(slide = str_c("section ", slide)) %>%
+      ggplot(aes(x_cell, y_cell)) +
+      geom_point_trace(fill = "white", trace_position = "bottom") +
+      
+      geom_bin2d(
+        data = ~ filter(.x, cell_type == typ),
+        # bins = 150
+        bins = floor(fn(typs[[typ]]))
+      ) +
+      
+      # stat_density_2d(
+      #   aes(fill = ..level..),
+      #   data = ~ filter(.x, cell_type == typ),
+      #   geom = "polygon",
+      #   n = 500,
+      #   contour_var = "count"
+      # ) +
+      
+      # geom_pointdensity(data = ~ filter(.x, cell_type == typ)) +
+      # geom_density_2d(geom = "raster", data = ~ filter(.x, cell_type == typ)) +
+      ggtitle(str_replace_all(typ, "_", " ")) +
+      scale_fill_gradientn(colours = c("white", typ_clrs[[typ]])) +
+      facet_wrap(~ slide, nrow = 1) +
+      umap_theme_2 +
+      theme(legend.position = "bottom")
+  })
+
+x[1:8] %>%
+  wrap_plots(ncol = 3)
+```
 
 Ag-tag barcodes used for each mouse are shown below.
 
@@ -2906,7 +2657,7 @@ feats <- c(
   "nCount_Xenium", "nCount_Xenium_custom"
 )
 
-qc_dat <- seq_along(slides) %>%
+qc_dat <- seq_along(xen_slides) %>%
   map(~ {
     s <- qread(here(params$xen_dir, str_c("xen_s", .x, ".qs")))
     
@@ -2945,7 +2696,7 @@ heat_dat <- qc_dat %>%
 # Tiles to outline
 min_frac <- 0.0001
 
-custom_counts_heat <- seq_along(slides) %>%
+custom_counts_heat <- seq_along(xen_slides) %>%
   map(~ {
     dat <- heat_dat %>%
       filter(slide == .x)
@@ -3098,17 +2849,16 @@ bar_dat <- xen %>%
 
   group_by(slide, fov, cell_type) %>%
   summarize(
-    n = n(),
-    n_ag = sum(Ag_class == "Ag-high"),
+    n = n_distinct(cell_id),
+    n_ag = sum(Ag_class == "Ag+"),
     .groups = "drop"
   ) %>%
   mutate(
     pct_ag_pos = (n_ag / n),
     
-    n_ag = ifelse(n_ag > 1000, str_c(round(n_ag / 1000, 1), "k"), label_comma()(n_ag)),
-    n = ifelse(n > 1000, str_c(round(n / 1000, 1), "k"), label_comma()(n)),
-    n_lab = str_c(n_ag, "/", n),
-    slide = str_c("r", slide)
+    n_ag  = ifelse(n_ag > 1000, str_c(round(n_ag / 1000, 1), "k"), label_comma()(n_ag)),
+    n     = ifelse(n > 1000, str_c(round(n / 1000, 1), "k"), label_comma()(n)),
+    n_lab = str_c(n_ag, "/", n)
   )
     
 # Filter to exclude cell types with < 100 cells
@@ -3344,7 +3094,185 @@ all_img_fig <- plot_grid(
 )
 ```
 
-```{r "geomx all Ag boxplots", fig.width = 10, fig.height = 6.5}
+```{r "geomx Ag boxplots", fig.height = 4}
+# Signals to plot
+geo_clmns <- c(
+  Ag_3wk_score = "Ag signal (21 day)",
+  Ag_6wk_score = "Ag signal (42 day)"
+)
+
+# Function for strip labels
+geo_lab_fn <- function(x) {
+  keys <- list(geo_m_key, geo_seg_key)
+  
+  keys %>%
+    walk(~ {
+      idx    <- x %in% names(.x)
+      x[idx] <- .x[x[idx]]
+      x      <<- x
+    })
+  
+  x
+}
+
+# Calculate relative Ag signal
+# want to plot both Ag tags on same plot
+# this is not useful without scaling values since Ag-3wk signal is much higher
+# than Ag-6wk signal
+bx_dat <- geo_clmns %>%
+  imap_dfr(~ {
+    sam <- str_extract(.y, "(?<=Ag_)[0-9]+wk")
+    
+    geomx_dat %>%
+      filter(
+        sample %in% c(sam, "6wk-3wk"),
+        Segment %in% c("Lyve1", "CD11C")
+      ) %>%
+      mutate(
+        key = .y,
+        Ag_rel = as.numeric(scale(!!sym(.y))),
+        Segment = fct_relevel(Segment, names(seg_clrs))
+      )
+  })
+
+# Calculate p-values
+p_dat <- bx_dat %>%
+  split(.$Segment) %>%
+  imap_dfr(~ {
+    pairwise.wilcox.test(
+      .x$Ag_rel, .x$region_3,
+      p.adjust.method = "none"
+    ) %>%
+      tidy() %>%
+      mutate(Segment = .y)
+  }) %>%
+  mutate(p_adj = p.adjust(p.value, method = "BH"))
+
+# Calculate n values
+n_dat <- bx_dat %>%
+  group_by(region_3, Segment) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  mutate(n = str_c("n = ", n))
+
+# Create boxplots
+geo_bxs <- bx_dat %>%  
+  ggplot(aes(region_3, Ag_rel, fill = region_3)) +
+  geom_boxplot(
+    linewidth = ln_pt * 1.5, alpha = 1, outlier.color = NA, width = 0.65,
+    key_glyph = draw_key_point
+  ) +
+  geom_jitter(size = 2, width = 0.1) +
+  geom_text(
+    aes(region_3, Inf, label = n, fill = NULL),
+    data  = n_dat,
+    vjust = 1.4,
+    size  = txt_pt2 / .pt
+  ) +
+  
+  facet_grid(~ Segment, scales = "free_y", labeller = as_labeller(geo_lab_fn)) +
+  scale_fill_manual(values = reg_clrs) +
+  scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
+  labs(y = "Relative Ag signal") +
+  base_theme +
+  theme(
+    aspect.ratio    = 1.4,
+    legend.position = "none",
+    axis.text.x     = element_text(size = ttl_pt2, angle = 45, hjust = 1),
+    axis.title.y    = element_text(size = ttl_pt2),
+    axis.title.x    = element_blank()
+  )
+```
+
+```{r "geomx Ag scatter"}
+# Format data
+# want to plot both Ag tags on same plot
+sct_dat <- geo_clmns %>%
+  imap_dfr(~ {
+    sam <- str_extract(.y, "(?<=Ag_)[0-9]+wk")
+    
+    geomx_dat %>%
+      filter(
+        sample %in% c(sam, "6wk-3wk"),
+        Segment %in% c("Lyve1", "CD11C")
+      ) %>%
+      mutate(
+        key      = .y,
+        Ag_score = !!sym(.y)
+      )
+  })
+
+sct_dat <- sct_dat %>%
+  dplyr::select(
+    `ROI Coordinate X`, `ROI Coordinate Y`,
+    region_3, Segment, sample, key,
+    Ag_score
+  ) %>%
+  group_by(key, `ROI Coordinate X`, `ROI Coordinate Y`) %>%
+  filter(all(c("Lyve1", "CD11C") %in% Segment)) %>%
+  ungroup() %>%
+  mutate(Segment = str_c(Segment, "+ Ag signal")) %>%
+  pivot_wider(names_from = Segment, values_from = Ag_score) %>%
+  mutate(
+    tm = str_extract(key, "[0-9+]wk"),
+    tm = as.character(tm_key[tm])
+  )
+
+# Legend labels
+sct_labs <- sct_dat %>%
+  group_by(key, tm) %>%
+  summarize(n = str_c("n = ", n()), .groups = "drop") %>%
+  mutate(n = str_c(geo_clmns[key], "\n", n))
+
+sct_labs <- set_names(sct_labs$n, sct_labs$tm)
+
+# Calculate correlation
+cor <- cor(
+  sct_dat$`CD11C+ Ag signal`,
+  sct_dat$`Lyve1+ Ag signal`,
+  method = "spearman"
+)
+cor <- round(cor, digits = 2)
+cor = str_c("italic(r[s]) == ", cor)
+
+geo_sct <- sct_dat %>%
+  ggplot(aes(`CD11C+ Ag signal`, `Lyve1+ Ag signal`, color = tm)) +
+  geom_smooth(method = "lm", color = "black", alpha = 0.1, linewidth = 0.5, linetype = 2) +
+  geom_point(size = 3) +
+  geom_text(
+    aes(x = 0, y = max(`Lyve1+ Ag signal`), label = cor),
+    parse = TRUE,
+    hjust = -0.3,
+    vjust = 0.5,
+    color = "black",
+    size  = ttl_pt1 / .pt,
+    check_overlap = TRUE
+  ) +
+  scale_color_manual(values = tm_clrs, labels = sct_labs) +
+  scale_x_continuous(trans = "log10") +
+  scale_y_continuous(trans = "log10") +
+  guides(color = guide_legend(override.aes = list(size = 4))) +
+  base_theme +
+  theme(
+    aspect.ratio = 1,
+    legend.title = element_blank(),
+    legend.text  = element_text(size = ttl_pt2),
+    axis.title   = element_text(size = ttl_pt2)
+  )
+```
+
+
+```{r "Fig S5", fig.width = 14, fig.height = 12}
+figS5 <- plot_grid(
+  all_img_fig, NULL, all_geo_bxs,
+  ncol = 1,
+  rel_heights = c(1, 0.1, 1)
+)
+
+figS5
+```
+
+
+```{r "geomx all Ag boxplots", fig.width = 10, fig.height = 6.5, eval = FALSE}
 # Create boxplot
 all_geo_bxs <- geo_clmns %>%
   imap(~ {
@@ -3389,14 +3317,131 @@ all_geo_bxs <- geo_clmns %>%
   )
 ```
 
-```{r "Fig S5", fig.width = 14, fig.height = 12}
-figS5 <- plot_grid(
-  all_img_fig, NULL, all_geo_bxs,
-  ncol = 1,
-  rel_heights = c(1, 0.1, 1)
+```{r "geomx cropped images", fig.width = 14, fig.height = 7, eval = FALSE}
+plot_geomx_image <- function(obj_in, color, clrs = NULL, labs = NULL,
+                             legend_values = names(labs) %||% names(clrs),
+                             ttl = NULL, line_size = 0.5, scale_size = 8,
+                             scale_dist = 1.5, ...) {
+  
+  # `NA`s will get plotted since all segements must be included in the object
+  #  to plot. `NA`s are segments that did pass QC.
+  
+  labs <- labs %||% waiver()
+  ttl  <- ttl %||% color
+  
+  res <- obj_in %>%
+    plotSpatialOverlay(
+      colorBy          = color,
+      scaleBar         = TRUE,
+      corner           = "bottomleft",
+      textDistance     = scale_dist,
+      scaleBarLineSize = line_size,
+      scaleBarFontSize = scale_size / .pt,
+      ...
+    ) +
+    ggtitle(ttl) +
+    theme(
+      plot.margin  = margin(r = 15, l = 15),
+      plot.title   = element_text(hjust = 0.5, size = ttl_pt2 * 1.5),
+      legend.title = element_blank()
+    )
+  
+  if (!is.null(legend_values)) {
+    all_sams_df <- tibble(x = 1, y = 1, colorBy = legend_values)
+    
+    res <- res +
+      geom_blank(aes(x, y, fill = colorBy), data = all_sams_df)
+  }
+  
+  if (!is.null(clrs)) {
+    if (is.numeric(obj_in@plottingFactors[[color]])) {
+      res <- res +
+        scale_fill_gradientn(colours = clrs) +
+        guides(fill = guide_colorbar(ticks = FALSE)) +
+        theme(
+          legend.position   = "bottom",
+          legend.key.width  = unit(50, "pt"),
+          legend.key.height = unit(7, "pt"),
+          legend.text       = element_text(size = txt_pt2)
+        )
+      
+    } else {
+      res <- res +
+        scale_fill_manual(
+          values = clrs,
+          labels = labs,
+          limits = names(labs) %||% names(clrs),
+          drop   = FALSE
+        ) +
+        theme(legend.text = element_text(size = ttl_pt2))
+    }
+  }
+  
+  res
+}
+
+# Select LN to plot
+sams <- geomx_dat %>%
+  filter(
+    LN == "ova-GeoMX+VV 6week and 3week LN1",
+    Segment %in% c("Lyve1", "CD11C")
+  ) %>%
+  pull(Sample_ID)
+
+img_cropped <- geomx_imgs$`Slide 1` %>%
+  cropSamples(sampleIDs = sams, sampsOnly = TRUE)
+
+img_args <- list(
+  color = c("Sample", "Region", "Segment", "Ag-score"),
+  clrs  = list(geo_m_clrs, reg_clrs, seg_clrs, c("white", "#D7301F")),
+  labs  = list(geo_m_key, NULL, geo_seg_key, NULL),
+  ttl   = list(NULL, NULL, "Segment type", "Ag signal")
 )
 
-figS5
+# Plot cropped image
+img_fig <- img_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    img_cropped %>%
+      plot_geomx_image(
+        color = args$color,
+        clrs  = args$clrs,
+        ttl   = args$ttl,
+        labs  = args$labs,
+        scale_size = ttl_pt1,
+        scale_dist = 3,
+        legend_values = NULL,
+      ) +
+      theme(legend.position = "bottom")
+  })
+
+img_fig <- plot_grid(
+  plotlist = img_fig[-1],
+  nrow  = 1,
+  align = "h",
+  axis  = "tb",
+  hjust = 0.05,
+  labels     = c("A", "B", "C"),
+  label_size = ttl_pt2 * 1.5
+)
+```
+
+```{r "geomx figure", fig.width = 14, fig.height = 10, eval = FALSE}
+bot <- plot_grid(
+  geo_bxs, geo_sct,
+  nrow   = 1,
+  align  = "h",
+  axis   = "tb",
+  labels = c("D", "E"),
+  label_size = ttl_pt2 * 1.5
+)
+
+geo_fig <- plot_grid(
+  img_fig, bot,
+  ncol = 1,
+  rel_heights = c(1, 0.75)
+)
 ```
 
 ---
