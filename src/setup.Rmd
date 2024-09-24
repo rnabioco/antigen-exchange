@@ -2006,17 +2006,11 @@ ito_cols <- c(
 )
 
 clrs <- ito_cols %>%
-  spruce_colors(difference = 15) %>%
   interp_colors(n = 15) %>%
   spruce_colors(
     difference = 15,
-    filter = "colorblind"
-  ) %>%
-  spruce_colors(
-    difference = 15,
-    filter = "colorblind",
-    property = "lightness",
-    adjust_colors = 7
+    filter = "deutan",
+    order = TRUE
   )
 
 # Cell type colors
@@ -2028,34 +2022,64 @@ other_clr <- "grey80"
 typ_clrs <- clrs %>%
   assign_colors(typs, filter = "colorblind")
 
-typ_clrs[c("LEC", "DC", "Fibroblasts")] <- c("#CD3D30", "#56B4E9", "#BF73A6")
+set_typs <- c(
+  "LEC", "DC", "Fibroblasts",
+  "BEC", "B cells", "unassigned"
+)
 
-typ_clrs["unassigned"] <- other_clr
+typ_clrs[set_typs] <- c(
+  "#E7301F", "#56B4E9", "#BF73A6",
+  "#0072B2", "#F0E442", other_clr
+)
 
 typ_clrs <- typ_clrs %>%
-  spruce_colors(filter = "colorblind", difference = 15)
+  spruce_colors(
+    difference = 15,
+    exclude_colors = set_typs
+  )
 
-# Subtype colors
+# LEC colors
 lec_clrs <- lec_so@meta.data %>%
   pull(subtype) %>%
   unique()
 
-lec_clrs <- clrs[-7] %>%
+lec_clrs <- typ_clrs %>%
   assign_colors(lec_clrs)
 
-lec_clrs["fLEC"]       <- "#E69F00"
-lec_clrs["Ptx3_LEC"]   <- "#F0E442"
-lec_clrs["tzLEC"]      <- "black"
-lec_clrs["unassigned"] <- other_clr
+set_typs <- c(
+  "cLEC", "fLEC", "Ptx3_LEC",
+  "Collecting", "tzLEC", "BEC",
+  "unassigned"
+)
 
+lec_clrs[set_typs] <- c(
+  "#E69F00", "#56B4E9", "#F0E442",
+  "#E7301F", "#000000", typ_clrs[["BEC"]],
+  other_clr
+)
+
+lec_clrs <- lec_clrs %>%
+  spruce_colors(
+    difference = 15,
+    exclude_colors = set_typs,
+    filter = "deutan"
+  )
+
+# DC colors
 dc_clrs <- dc_so@meta.data %>%
   pull(subtype) %>%
   unique()
 
-dc_clrs <- clrs[!clrs %in% lec_clrs] %>%
+dc_clrs <- typ_clrs[!typ_clrs %in% lec_clrs] %>%
   assign_colors(dc_clrs)
 
 dc_clrs["unassigned"] <- other_clr
+
+dc_clrs <- dc_clrs %>%
+  spruce_colors(
+    difference = 22,
+    adjust_colors = "cDC1"
+  )
 
 # Mouse colors
 m_clrs <- set_names(clrs[seq_along(mice)], mice)
@@ -2067,7 +2091,7 @@ tm_clrs <- set_names(
 )
 
 tm_clrs[3] <- "#6A51A3"
-tm_clrs[4] <- "#D7301F"
+tm_clrs[4] <- "#E7301F"
 
 # Sample keys
 mouse_key <- lec_so@meta.data %>%
