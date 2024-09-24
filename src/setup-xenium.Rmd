@@ -12,7 +12,7 @@ knitr::opts_chunk$set(
 )
 
 # Clustering resolution
-clst_rsln <- 10
+xen_clst_rsln <- 10
 
 sffx <- str_c("_s", slide, ".qs")
 
@@ -218,7 +218,7 @@ xen <- xen %>%
       mutate_meta(mutate, fov = .y) %>%
       .process_xenium(
         dims = 1:40,
-        resolution = clst_rsln
+        resolution = xen_clst_rsln
       )
   })
 
@@ -370,7 +370,7 @@ gc()
 
 ```{r "{{.x}} xen refine annotations", eval = create_sobjs}
 # Each FOV was clustered separately, so add FOV ID to cluster ID
-clst_clmn <- str_c("SCT_snn_res.", clst_rsln)
+xen_clst_clmn <- str_c("SCT_snn_res.", xen_clst_rsln)
 
 xen <- xen %>%
   mutate_meta(~ {
@@ -381,18 +381,22 @@ xen <- xen %>%
 
 # Identify CD45+/- cells
 xen <- xen %>%
-  mutate_meta(mutate, cd45_class = "other") %>%
+  mutate_meta(
+    mutate,
+    cd45_class = "other",
+    cell_type  = rough_type
+  ) %>%
   classify_markers(
     feats      = "Ptprc",
     filt       = Ptprc > 1,
-    clst_col   = clst_clmn,
+    clst_col   = xen_clst_clmn,
     type_label = "CD45+",
     type_col   = "cd45_class"
   ) %>%
   classify_markers(
     feats      = "Ptprc",
     filt       = Ptprc <= 1,
-    clst_col   = clst_clmn,
+    clst_col   = xen_clst_clmn,
     type_label = "CD45-",
     type_col   = "cd45_class"
   )
@@ -408,7 +412,7 @@ xen <- xen %>%
   classify_markers(
     feats      = "Car3",
     filt       = Car3 > 0.75,
-    clst_col   = clst_clmn,
+    clst_col   = xen_clst_clmn,
     type_label = "unassigned",
     type_col   = "cell_type"
   ) %>%
@@ -420,6 +424,23 @@ xen <- xen %>%
       cell_type
     ),
     Ag_type = ifelse(Ag_class == "Ag-high", cell_type, "Ag-low")
+  )
+
+# Refine B/T cell annotations based on CD19 and CD3 expression
+xen <- xen %>%
+  classify_markers(
+    feats      = "Cd19",
+    filt       = Cd19 > 1.1,
+    type_label = "B cells",
+    clst_col   = xen_clst_clmn,
+    type_col   = "cell_type"
+  ) %>%
+  classify_markers(
+    feats      = "Cd3d",
+    filt       = Cd3d > 0.6,
+    type_label = "T cells",
+    clst_col   = xen_clst_clmn,
+    type_col   = "cell_type"
   )
 ```
 

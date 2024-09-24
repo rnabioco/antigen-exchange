@@ -61,7 +61,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -133,13 +133,39 @@ subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
 ```
 
 ```{r "load xenium data"}
+# Key Xenium marker genes
+xen_gns <- c(
+  "Ptprc",
+  "Cd3d", "Cd19",
+  "Cd8a",
+  "Itgax",  # DCs
+  "Sirpa",
+  "Xcr1",
+  "Siglech",
+  "Itgam",  # cDC2
+  "Tbx21",
+  "Prox1", "Lyve1",
+  "Pdpn", "Pecam1"
+)
+
 # Load Xenium data
 xen <- xen_slides %>%
   map(~ {
-    read_tsv(here(params$xen_dir, str_c("xen_s", .x, ".tsv.gz"))) %>%
+    here(params$xen_dir, str_c("xen_s", .x, ".qs")) %>%
+      qread() %>%
+      FetchData(c(colnames(.@meta.data), xen_gns)) %>%
+      as_tibble(rownames = "cell_id") %>%
       mutate(slide = .x)
   }) %>%
-  bind_rows()
+  bind_rows() %>%
+  mutate(
+    cell_type = if_else(grepl("^other", cell_type), "unassigned", cell_type),
+    cell_type = if_else(
+      cell_type %in% c("Macrophages", "Monocytes"),
+      "Mon/Mac",
+      cell_type
+    )
+  )
 
 # Top cell types to plot
 dcs <- xen$cell_type %>%
@@ -178,18 +204,7 @@ xen <- xen %>%
 # Xenium colors
 xen_clrs <- typ_clrs
 
-xen_clrs["unassigned"]  <- "grey80"
-xen_clrs["other CD45+"] <- "grey80"
-xen_clrs["other CD45-"] <- "grey80"
-
-xen_clrs <- xen_clrs %>%
-  spruce_up_colors(
-    adjust_colors = "Neutrophils",
-    filter        = c("deutan", "protan", "tritan"),
-    difference    = 10,
-    property      = "lightness",
-    range         = c(10, 85)
-  )
+xen_clrs["Mon/Mac"] <- typ_clrs["Macrophages"]
 
 xen_clrs <- xen_clrs[names(xen_clrs) %in% xen$cell_type]
 ```
@@ -2798,12 +2813,12 @@ The color scale is log10-transformed.
 ```{r "XENIUM AG TYPE HEAT ALL", fig.width = 14, fig.height = 6}
 bar_dat <- xen %>%
   group_by(cell_type, fov, slide) %>%
-  filter(n() > 100) %>%
+  # filter(n() > 100) %>%
 
   group_by(slide, fov, cell_type) %>%
   summarize(
     n = n(),
-    pct_ag_pos = (sum(Ag_class == "Ag-high") / n) * 100,
+    pct_ag_pos = (sum(Ag_class == "Ag+") / n) * 100,
     .groups = "drop"
   ) %>%
   mutate(slide = str_c("r", slide))
@@ -2837,56 +2852,6 @@ bar_dat %>%
 The percent of cells that are Ag+ is shown for each cell type for tissue section
 D.
 Only cell types with >100 cells identified for the tissue section are shown.
-
-```{r "XENIUM AG TYPE HEAT D", fig.width = 14, fig.height = 6}
-bar_dat <- xen %>%
-  filter(fov == "D") %>%
-  group_by(cell_type, fov, slide) %>%
-  filter(n() > 100) %>%
-
-  group_by(slide, fov, cell_type) %>%
-  summarize(
-    n = n_distinct(cell_id),
-    n_ag = sum(Ag_class == "Ag+"),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    pct_ag_pos = (n_ag / n),
-    
-    n_ag  = ifelse(n_ag > 1000, str_c(round(n_ag / 1000, 1), "k"), label_comma()(n_ag)),
-    n     = ifelse(n > 1000, str_c(round(n / 1000, 1), "k"), label_comma()(n)),
-    n_lab = str_c(n_ag, "/", n)
-  )
-    
-# Filter to exclude cell types with < 100 cells
-bar_dat %>%
-  mutate(
-    cell_type = fct_reorder(cell_type, pct_ag_pos),
-    fov       = fct_reorder(fov, pct_ag_pos, .fun = max)
-  ) %>%
-  group_by(fov, slide) %>%
-  
-  ggplot(aes(pct_ag_pos, cell_type, fill = cell_type)) +
-  geom_col() +
-  geom_text(
-    aes(label = n_lab),
-    hjust = -0.25
-  ) +
-  facet_wrap(~ slide, nrow = 1) +
-  scale_fill_manual(values = xen_clrs) +
-  scale_x_continuous(
-    labels = label_percent(),
-    name   = "% Ag+ cells",
-    expand = expansion(c(0.05, 0.2))
-  ) +
-  base_theme +
-  theme(
-    aspect.ratio = 1,
-    legend.position = "none",
-    axis.title.y = element_blank()
-  )
-```
-
 
 ```{r "XENIUM AG TYPE HEAT ALL SUPPLEMENTAL", fig.width = 14, fig.height = 6, eval = FALSE}
 bar_dat <- xen %>%
@@ -3054,20 +3019,23 @@ D.  Normalized 42 day antigen tag signal is shown as described in C.
 ```{r "xenium cell type umaps", fig.width = 14, fig.height = 10, eval = FALSE}
 # Format data for plots
 dat <- xen %>%
-  filter(fov == top_fov)
+  filter(fov == top_fov) %>%
+  
+  filter(pred_conf <= 0.5 & pred_conf > 0.4) %>%
+  mutate(cell_type = rough_type)
 
 typs <- dat$cell_type %>%
   table() %>%
   sort(decreasing = TRUE)
 
-typs <- typs[typs > 1000]
+typs <- typs[typs > 100]
 typs <- typs[!grepl("^other ", names(typs))]
 
 # Function to set number of bins based on number of cells
-fn <- approxfun(c(last(typs), typs[[1]]), c(50, 100))
+fn <- approxfun(c(last(typs), typs[[1]]), c(45, 100))
 
 # Create plots
-x <- names(typs) %>%
+typ_plts <- names(typs) %>%
   map(~ {
     typ <- .x
     
@@ -3097,7 +3065,7 @@ x <- names(typs) %>%
       guides(fill = guide_colorbar(ticks = FALSE)) +
       scale_fill_gradientn(
         colours = c("white", xen_clrs[[typ]]),
-        name = "number\nof cells"
+        name = "number of cells"
       ) +
       facet_wrap(~ slide, nrow = 1) +
       umap_theme_2 +
@@ -3105,12 +3073,72 @@ x <- names(typs) %>%
         plot.title        = element_text(hjust = 0.5),
         legend.position   = "bottom",
         legend.key.height = unit(7, "pt"),
-        legend.key.width  = unit(20, "pt")
+        legend.key.width  = unit(20, "pt"),
+        legend.title      = element_text(size = 10, hjust = 0.5),
+        legend.text       = element_text(size = 10),
+        legend.title.position = "top"
       )
   })
 
-x %>%
+typ_plts <- typ_plts %>%
   wrap_plots(ncol = 3)
+```
+
+```{r "XENIUM AG TYPE HEAT D", fig.width = 14, fig.height = 6}
+bar_dat <- xen@meta.data %>%
+  as_tibble(rownames = "cell_id") %>%
+  mutate(
+    cell_type = new_type,
+    cell_type = ifelse(grepl("^other", cell_type), "unassigned", cell_type),
+    slide = "1"
+  ) %>%
+  
+  filter(fov == top_fov) %>%
+  group_by(cell_type, fov, slide) %>%
+
+  group_by(slide, fov, cell_type) %>%
+  summarize(
+    n = n_distinct(cell_id),
+    n_ag = sum(Ag_class == "Ag-high"),
+    # n_ag = sum(Ag_class == "Ag+"),
+    .groups = "drop"
+  ) %>%
+  filter(n_ag > 0) %>%
+  mutate(
+    pct_ag_pos = (n_ag / n),
+    
+    n_ag  = ifelse(n_ag > 1000, str_c(round(n_ag / 1000, 1), "k"), label_comma()(n_ag)),
+    n     = ifelse(n > 1000, str_c(round(n / 1000, 1), "k"), label_comma()(n)),
+    n_lab = str_c(n_ag, "/", n)
+  )
+    
+# Create bargraphs
+xen_typ_bars <- bar_dat %>%
+  mutate(
+    cell_type = fct_reorder(cell_type, pct_ag_pos),
+    fov       = fct_reorder(fov, pct_ag_pos, .fun = max)
+  ) %>%
+  group_by(fov, slide) %>%
+  
+  ggplot(aes(pct_ag_pos, cell_type, fill = cell_type)) +
+  geom_col() +
+  geom_text(
+    aes(label = n_lab),
+    hjust = -0.25
+  ) +
+  facet_wrap(~ slide, nrow = 1) +
+  scale_fill_manual(values = xen_clrs) +
+  scale_x_continuous(
+    labels = label_percent(),
+    name   = "% Ag+ cells",
+    expand = expansion(c(0.05, 0.2))
+  ) +
+  base_theme +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "none",
+    axis.title.y = element_blank()
+  )
 ```
 
 ```{r "geomx uncropped images", fig.width = 10, fig.height = 8}
@@ -3570,6 +3598,85 @@ geo_fig <- plot_grid(
   ncol = 1,
   rel_heights = c(1, 0.75)
 )
+```
+
+```{r "XENIUM MARKER TEST"}
+# Adjust B and T cell annotations
+xen <- xen %>%
+  mutate_meta(mutate, new_type = cell_type) %>%
+  classify_markers(
+    feats      = c("Cd19", "Cd3d"),
+    filt       = Cd19 > 1.1,
+    type_label = "B cells",
+    clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
+    type_col   = "new_type"
+  ) %>%
+  classify_markers(
+    feats      = c("Cd19", "Cd3d"),
+    filt       = Cd3d > 0.6,
+    type_label = "T cells",
+    clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
+    type_col   = "new_type"
+  )
+
+xen_gns %>%
+  map(~ {
+    xen %>%
+      filter(fov == top_fov) %>%
+      plot_violin(
+        .x,
+        cluster_col = "new_type",
+        method = "boxplot"
+      ) +
+      base_theme +
+      theme(
+        legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1)
+      )
+  }) %>%
+  plot_grid(plotlist = .)
+  
+  
+  # mutate(
+  #   new_type = if_else(Cd3d > 0.5, "T cells", new_type),
+  #   new_type = if_else(Cd19 > 1.5, "B cells", new_type)
+  # ) %>%
+  
+  filter(
+    (new_type == "DC" & Sirpa > 0) | new_type != "DC"
+  ) %>%
+  
+  pivot_longer(any_of(gns)) %>%
+  ggplot(aes(new_type, value, fill = new_type)) +
+  geom_boxplot() +
+  facet_wrap(~ name) +
+  base_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+test_dat %>%
+  plot_scatter(
+    "rough_type",
+    x = "Cd19",
+    y = "Cd3d",
+    size = 0.001
+  )
+
+test_dat %>%
+  filter(
+    fov == top_fov,
+    pred_conf > 0.5
+  ) %>%
+  plot_violin(
+    gn, "SCT_snn_res.10",
+    group_col = "rough_type",
+    panel_scales = "free_x",
+    method = "boxplot",
+    top = Inf
+  ) +
+  geom_hline(yintercept = 1.2)
+  
+
 ```
 
 ---
