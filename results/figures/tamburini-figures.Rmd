@@ -138,14 +138,15 @@ xen_gns <- c(
   "Ptprc",
   "Cd3d", "Cd19",
   "Cd8a",
+  "Prox1", "Lyve1",
+  "Pdpn", "Pecam1",
+  "Itgam",  # cDC2
   "Itgax",  # DCs
+  "Zbtb46", # DCs
   "Sirpa",
   "Xcr1",
   "Siglech",
-  "Itgam",  # cDC2
-  "Tbx21",
-  "Prox1", "Lyve1",
-  "Pdpn", "Pecam1"
+  "Tbx21"
 )
 
 # Load Xenium data
@@ -153,7 +154,7 @@ xen <- xen_slides %>%
   map(~ {
     here(params$xen_dir, str_c("xen_s", .x, ".qs")) %>%
       qread() %>%
-      FetchData(c(colnames(.@meta.data), xen_gns)) %>%
+      FetchData(c(colnames(.@meta.data), xen_gns, "Car3")) %>%
       as_tibble(rownames = "cell_id") %>%
       mutate(slide = .x)
   }) %>%
@@ -292,31 +293,24 @@ rf_feats %>%
   })
 ```
 
----
-
-<br>
-
-## QC
-
-### CD45+ markers {.tabset .tabset-pills}
-
-Mean expression is shown for key marker genes for CD45+ datasets.
-
-```{r "CD45+ markers 1", fig.width = 10, fig.height = 4}
+```{r "format CD45+ marker data", include = FALSE}
 cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
 
 DefaultAssay(cd45_so) <- "RNA"
 
-gns <- c(
+cd45pos_gns <- c(
   "Ptprc",
   "Cd3d", "Cd19",
   "H2-Aa",
   "Itgax",  # DCs
+  "Zbtb46", # DCs
   "Ly6c2",
-  "Fcgr1",  # CD64
+  "Fcgr1",  # CD64, mon/mac
   "Itgam",  # cDC2
-  "Nkg7",
-  "Tbx21",
+  "Cd14",   # mon/mac/neutrophils
+  "Ly6g",   # neutrophils
+  "Nkg7",   # NK cells
+  "Tbx21",  # NK cells
   "Il7r"
 )
 
@@ -327,96 +321,26 @@ lvls <- c(
 )
 
 # Calculate mean expression
-dat <- cd45_so %>%
-  FetchData(c("cell_type", "mouse", gns)) %>%
+cd45pos_marks <- cd45_so %>%
+  FetchData(c("cell_type", "mouse", cd45pos_gns)) %>%
   as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(gns)) %>%
+  pivot_longer(all_of(cd45pos_gns)) %>%
   mutate(
     cell_type = fct_relevel(cell_type, lvls),
     mouse     = fct_relevel(mouse, mice),
-    name      = fct_relevel(name, rev(gns))
+    name      = fct_relevel(name, rev(cd45pos_gns))
   )
 
-heat_dat <- dat %>%
-  group_by(cell_type, mouse, name) %>%
-  summarize(value = mean(value), .groups = "drop") %>%
-  group_by(name, mouse) %>%
-  mutate(value = as.numeric(scale(value))) %>%
-  ungroup()
-
-# Create heatmap
-heat_dat %>%
-  ggplot(aes(cell_type, name, fill = value)) +
-  geom_tile() +
-  facet_wrap(~ mouse, nrow = 1) +
-  scale_fill_gradientn(colours = c("white", "red")) +
-  base_theme +
-  theme(
-    legend.title = element_blank(),
-    aspect.ratio = length(gns) / n_distinct(dat$cell_type),
-    axis.title   = element_blank(),
-    axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5)
-  )
-```
-
-```{r, include = FALSE}
 rm(cd45_so)
 gc()
 ```
 
-```{r "CD45+ markers 2", fig.width = 10, fig.height = 4, results = "asis"}
-gns %>%
-  walk(~ {
-    cat("\n\n####", .x, "\n\n")
-    
-    dat <- dat %>%
-      filter(name == .x) %>%
-      group_by(cell_type, mouse) %>%
-      mutate(
-        n = n_distinct(.cell_id),
-        n_lab = str_c(cell_type, " (", label_comma()(n), ")")
-      ) %>%
-      group_by(cell_type) %>%
-      mutate(
-        med = median(value),
-        q3  = boxplot.stats(value)$stats[4],
-        q4  = boxplot.stats(value)$stats[5],
-        max = max(value)
-      ) %>%
-      ungroup() %>%
-      arrange(desc(med), desc(q3), desc(q4), desc(max)) %>%
-      mutate(n_lab = fct_inorder(n_lab))
-    
-    plt <- dat %>%
-      ggplot(aes(n_lab, value, fill = cell_type, color = cell_type)) +
-      geom_boxplot(alpha = 0.5, outlier.size = 0.25) +
-      facet_wrap(~ mouse, nrow = 1, scales = "free_x") +
-      scale_fill_manual(values = typ_clrs) +
-      scale_color_manual(values = typ_clrs) +
-      labs(y = str_c(.x, " expression")) +
-      base_theme +
-      theme(
-        aspect.ratio    = 1,
-        axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5),
-        axis.title.x    = element_blank(),
-        legend.position = "none"
-      )
-    
-    print(plt)
-    cat("\n\n<br>\n\n")
-  })
-```
-
-### CD45- markers {.tabset .tabset-pills}
-
-Mean expression is shown for key marker genes for CD45- datasets.
-
-```{r "CD45- markers 1", fig.width = 10, fig.height = 4}
+```{r "format CD45- marker data", include = FALSE}
 cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
 
 DefaultAssay(cd45_so) <- "RNA"
 
-gns <- c(
+cd45neg_gns <- c(
   "Ptprc",
   "Prox1", "Lyve1",
   "Pdpn", "Pecam1",
@@ -425,6 +349,7 @@ gns <- c(
   "Nkg7",
   "Tbx21",
   "Itgax",  # DCs
+  "Zbtb46", # DCs
   "Fcgr1",  # CD64
   "Itgam"
 )
@@ -436,85 +361,23 @@ lvls <- c(
 )
 
 # Calculate mean expression
-dat <- cd45_so %>%
-  FetchData(c("cell_type", "mouse", gns)) %>%
+cd45neg_marks <- cd45_so %>%
+  FetchData(c("cell_type", "mouse", cd45neg_gns)) %>%
   as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(gns)) %>%
+  pivot_longer(all_of(cd45neg_gns)) %>%
   mutate(
     cell_type = fct_relevel(cell_type, lvls),
     mouse     = fct_relevel(mouse, mice),
-    name      = fct_relevel(name, rev(gns))
+    name      = fct_relevel(name, rev(cd45neg_gns))
   )
 
-heat_dat <- dat %>%
-  group_by(cell_type, mouse, name) %>%
-  summarize(value = mean(value), .groups = "drop") %>%
-  group_by(name, mouse) %>%
-  mutate(value = as.numeric(scale(value))) %>%
-  ungroup()
-
-# Create heatmap
-heat_dat %>%
-  ggplot(aes(cell_type, name, fill = value)) +
-  geom_tile() +
-  facet_wrap(~ mouse, nrow = 1) +
-  scale_fill_gradientn(colours = c("white", "red"), na.value = "grey80") +
-  base_theme +
-  theme(
-    legend.title = element_blank(),
-    aspect.ratio = length(gns) / n_distinct(dat$cell_type),
-    axis.title   = element_blank(),
-    axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5)
-  )
-```
-
-```{r, include = FALSE}
 rm(cd45_so)
 gc()
 ```
 
-```{r "CD45- markers 2", fig.width = 10, fig.height = 4, results = "asis"}
-gns %>%
-  walk(~ {
-    cat("\n\n####", .x, "\n\n")
-    
-    dat <- dat %>%
-      filter(name == .x) %>%
-      group_by(cell_type, mouse) %>%
-      mutate(
-        n = n_distinct(.cell_id),
-        n_lab = str_c(cell_type, " (", label_comma()(n), ")")
-      ) %>%
-      group_by(cell_type) %>%
-      mutate(
-        med = median(value),
-        q3  = boxplot.stats(value)$stats[4],
-        q4  = boxplot.stats(value)$stats[5],
-        max = max(value)
-      ) %>%
-      ungroup() %>%
-      arrange(desc(med), desc(q3), desc(q4), desc(max)) %>%
-      mutate(n_lab = fct_inorder(n_lab))
-    
-    plt <- dat %>%
-      ggplot(aes(n_lab, value, fill = cell_type, color = cell_type)) +
-      geom_boxplot(alpha = 0.5, outlier.size = 0.25) +
-      facet_wrap(~ mouse, nrow = 1, scales = "free_x") +
-      scale_fill_manual(values = typ_clrs) +
-      scale_color_manual(values = typ_clrs) +
-      labs(y = str_c(.x, " expression")) +
-      base_theme +
-      theme(
-        aspect.ratio    = 1,
-        axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5),
-        axis.title.x    = element_blank(),
-        legend.position = "none"
-      )
-    
-    print(plt)
-    cat("\n\n---\n\n<br>\n\n<br>\n\n")
-  })
-```
+---
+
+<br>
 
 ## Figure 1
 
@@ -3190,490 +3053,6 @@ geo_fig <- plot_grid(
 )
 ```
 
-<br>
-
-<br>
-
-### More Xenium
-
-These are extra Xenium plots that are not going to be included in the paper.
-Ag-tag barcodes used for each mouse are shown below.
-
-```{r}
-params$xen_samples %>%
-  imap_dfr(~ {
-    tibble(
-      fov       = .y,
-      mouse     = .x[[1]],
-      `6wk tag` = params$xen_ag_targets[[.x[[2]]]],
-      `3wk tag` = params$xen_ag_targets[[.x[[3]]]]
-    ) %>%
-      mutate(
-        across(ends_with(" tag"), ~ {
-          .x %>%
-            str_remove("-ERCC[0-9]+$") %>%
-            str_remove("^GeoMx-")
-        })
-      )
-  })
-```
-
-<br>
-
-The fraction of total counts assigned to each custom target is shown below for
-each tissue section.
-The GeoMx-Barcode02 probes produced very sparse signals regardless of sample
-identity.
-Values are labeled for targets assigned >0.01% of total counts.
-
-```{r "fraction custom counts", fig.height = 6, fig.width = 20, include = FALSE}
-# Format plotting data
-feats <- c(
-  "mouse", "fov", "cell_type",
-  "nCount_Xenium", "nCount_Xenium_custom"
-)
-
-qc_dat <- seq_along(xen_slides) %>%
-  map(~ {
-    s <- qread(here(params$xen_dir, str_c("xen_s", .x, ".qs")))
-    
-    DefaultAssay(s) <- "Xenium_custom"
-    
-    s %>%
-      FetchData(c(feats, params$xen_custom_targets), slot = "counts") %>%
-      as_tibble(rownames = ".cell_id") %>%
-      pivot_longer(all_of(params$xen_custom_targets)) %>%
-      mutate(
-        slide  = .x,
-        sample = str_c(mouse, "-", fov)
-      )
-  })
-
-qc_dat <- bind_rows(qc_dat)
-
-# Format heatmap data
-heat_dat <- qc_dat %>%
-  group_by(slide, fov, mouse, name) %>%
-  mutate(
-    tot_counts = sum(nCount_Xenium + nCount_Xenium_custom)
-  ) %>%
-  group_by(name, slide, fov, mouse, sample, tot_counts) %>%
-  summarize(
-    value   = sum(value),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    frac   = value / tot_counts,
-    fov    = fct_relevel(fov, fovs),
-    name   = fct_reorder(name, value),
-    mouse  = fct_relevel(mouse, c("6wk", "3wk", "6wk-3wk"))
-  )
-
-# Tiles to outline
-min_frac <- 0.0001
-
-custom_counts_heat <- seq_along(xen_slides) %>%
-  map(~ {
-    dat <- heat_dat %>%
-      filter(slide == .x)
-    
-    top_dat <- dat %>%
-      filter(frac >= min_frac)
-    
-    # Tiles to label
-    lab_dat <- dat %>%
-      filter(frac >= min_frac) %>%
-      mutate(
-        lab = round(frac * 100, 2),
-        lab = str_c(lab, "%")
-      )
-    
-    # Create heatmap
-    heat <- dat %>%
-      ggplot(aes(fov, name, fill = frac + min_frac)) +
-      geom_tile() +
-      geom_tile(
-        data = top_dat,
-        color = "black"
-      ) +
-      geom_text(
-        aes(color = NULL, fill = NULL, label = lab),
-        data = lab_dat
-      ) +
-      facet_grid(~ mouse, scales = "free") +
-      scale_fill_gradientn(
-        colours = c("white", "#D7301F"),
-        labels  = label_percent(),
-        trans   = "log10",
-        name    = str_c("fraction of\ntotal counts\n(+", min_frac * 100, "%)")
-      ) +
-      ggtitle(str_c("r", .x)) +
-      base_theme +
-      theme(
-        aspect.ratio       = 5,
-        plot.title         = element_text(hjust = 0.5),
-        strip.clip         = "off",
-        strip.text.y.right = element_text(angle = 0, hjust = 0),
-        axis.title         = element_blank()
-      )
-    
-    heat
-  })
-
-rm(qc_dat, heat_dat)
-gc()
-```
-
-```{r "fraction custom counts heatmap", fig.height = 6, fig.width = 20}
-plot_grid(
-  plotlist = custom_counts_heat,
-  nrow  = 1,
-  align = "h",
-  axis  = "tb"
-)
-```
-
-<br>
-
-Cells were identified as Ag+ if they have at least 1 Ag-tag count.
-The fraction of Ag+ cells is shown below for each Ag-tag for
-each tissue section.
-
-```{r "fraction 3wk/6wk Ag+ cells", fig.height = 3.5, fig.width = 12}
-bar_dat <- xen %>%
-  group_by(slide, fov, mouse) %>%
-  summarize(
-    `3wk tag` = (sum(Ag_3wk_counts > 0) / n()) * 100,
-    `6wk tag` = (sum(Ag_6wk_counts > 0) / n()) * 100,
-    .groups   = "drop"
-  )
-
-bar_dat %>%
-  pivot_longer(ends_with("wk tag")) %>%
-  mutate(mouse = fct_relevel(mouse, c("6wk", "3wk", "6wk-3wk"))) %>%
-  
-  ggplot(aes(fov, value, fill = name)) +
-  geom_col(position = position_dodge2()) +
-  facet_grid(slide ~ mouse, scales = "free_x") +
-  scale_fill_brewer() +
-  scale_fill_spruce(difference = 30, range = c(25, 75)) +
-  
-  labs(y = "% Ag+ cells") +
-  base_theme +
-  theme(
-    aspect.ratio = 1.5,
-    legend.title = element_blank(),
-    axis.title.x = element_blank()
-  )
-```
-
-<br>
-
-The percent of cells that are Ag+ is shown for each cell type for each tissue
-section.
-Only cell types with >100 cells identified for the tissue section are shown.
-The color scale is log10-transformed.
-
-```{r "XENIUM AG TYPE HEAT ALL", fig.width = 14, fig.height = 4.5}
-bar_dat <- xen %>%
-  group_by(cell_type, fov, slide) %>%
-  # filter(n() > 100) %>%
-
-  group_by(slide, fov, cell_type) %>%
-  summarize(
-    n = n(),
-    pct_ag_pos = (sum(Ag_class == "Ag+") / n) * 100,
-    .groups = "drop"
-  ) %>%
-  mutate(slide = str_c("r", slide))
-    
-# Filter to exclude cell types with < 100 cells
-bar_dat %>%
-  mutate(
-    cell_type = fct_reorder(cell_type, pct_ag_pos),
-    fov       = fct_reorder(fov, pct_ag_pos, .fun = max)
-  ) %>%
-  group_by(fov, slide) %>%
-  mutate(pct_ag_pos = pct_ag_pos + 1) %>%
-  
-  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
-  geom_tile() +
-  facet_wrap(~ slide, nrow = 1) +
-  scale_fill_gradientn(
-    colours = c("white", "#E7301F"),
-    name    = "fraction Ag+ cells\n(+1%)",
-    trans   = "log10"
-  ) +
-  base_theme +  
-  theme(
-    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov),
-    axis.title = element_blank()
-  )
-```
-
-```{r "XENIUM AG TYPE HEAT ALL SUPPLEMENTAL", fig.width = 14, fig.height = 6, eval = FALSE}
-bar_dat <- xen %>%
-  group_by(fov, slide, cell_type) %>%
-  summarize(
-    n = n(),
-    pct_ag_pos = (sum(Ag_class == "Ag-high") / n) * 100,
-    .groups = "drop"
-  ) %>%
-  filter(n > 100)
-
-# Filter to exclude cell types with < 100 cells
-bar_dat %>%
-  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
-  
-  group_by(fov, slide) %>%
-  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
-  
-  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
-  geom_tile() +
-  facet_wrap(~ slide) +
-  scale_fill_gradientn(colours = c("white", "#E7301F"), name = "relative %\nAg+ cells") +
-  base_theme +
-  theme(
-    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov),
-    axis.title.y = element_blank()
-  )
-```
-
-```{r "XENIUM 3WK 6WK SIGNAL", eval = FALSE}
-
-bar_dat <- xen@meta.data %>%
-  group_by(fov, cell_type) %>%
-  summarize(
-    ag_pct_1 = (sum(Ag_tag_1 > 0) / n()) * 100,
-    ag_pct_2 = (sum(Ag_tag_2 > 0) / n()) * 100,
-    .groups  = "drop"
-  )
-
-# Filter to exclude cell types with < 100 cells
-bar_dat %>%
-  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
-  
-  group_by(fov) %>%
-  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
-  
-  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
-  geom_tile() +
-  scale_fill_gradientn(colours = c("white", "#E7301F")) +
-  base_theme +
-  theme(
-    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov)
-  )
-```
-
-```{r "XENIUM UMAPS", eval = FALSE}
-top <- c("LEC", "other CD45-", "BEC")
-
-xen@meta.data %>%
-  plot_scatter(
-    "cell_type",
-    group_col = "fov",
-    size      = 0.00001
-    # top       = top
-  ) +
-  scale_color_spruce(difference = 20) +
-  theme(aspect.ratio = 0.9)
-
-xen@meta.data %>%
-  mutate(Ag_counts = Ag_tag_1 + Ag_tag_2 + 1) %>%
-  plot_scatter(
-    "Ag_counts",
-    outline     = TRUE,
-    plot_colors = c("white", "red"),
-    group_col   = "fov",
-    size        = 0.00001,
-    trans       = "log10"
-  ) +
-  theme(aspect.ratio = 0.9)
-
-xen@meta.data %>%
-  filter(cell_type %in% top) %>%
-  plot_scatter(
-    "SCT_snn_res.10",
-    group_col = "fov",
-    size      = 0.00001
-  ) +
-  scale_color_spruce(difference = 20) +
-  theme(aspect.ratio = 0.9)
-
-# Boxplots
-gns <- c(
-  "Ptprc", "Pdpn", "Pecam1",
-  "Cd3d", "Cd19",
-  "Prox1", "Lyve1",
-  "Itgax",           # DCs
-  "Xcr1",            # cDC1
-  "Sirpa", "Itgam",  # cDC2
-  "Siglech",         # Siglech DCs
-  "Ccr7"
-)
-
-dat <- xen %>%
-  FetchData(c(
-    "fov", "cell_type",
-    "UMAP_1", "UMAP_2",
-    "SCT_snn_res.10", gns
-  ))
-
-gns %>%
-  map(~ {
-    dat %>%
-      # filter(cell_type %in% top) %>%
-      plot_violin(
-        .x,
-        cluster_col = "SCT_snn_res.10",
-        method = "boxplot",
-        top = 20
-      ) +
-      scale_fill_spruce() +
-      scale_color_spruce()
-  }) %>%
-  plot_grid(plotlist = .)
-
-dat %>%
-  filter(cell_type %in% top) %>%
-  plot_violin(
-    "Ptprc",
-    cluster_col = "SCT_snn_res.10",
-    method = "boxplot",
-    # plot_colors = c("lightblue", "red"),
-  )
-
-dat %>%
-  plot_scatter(
-    "Ptprc",
-    group_col = "fov",
-    size = 0.0001,
-    plot_colors = c("lightblue", "red")
-  )
-
-dat %>%
-  ggplot(aes(Ptprc)) +
-  geom_histogram() +
-  facet_wrap(~ fov)
-
-```
-
-```{r "XENIUM MARKER TEST", eval = FALSE}
-# Adjust B and T cell annotations
-xen <- xen %>%
-  mutate_meta(mutate, new_type = cell_type) %>%
-  classify_markers(
-    feats      = c("Cd19", "Cd3d"),
-    filt       = Cd19 > 1.1,
-    type_label = "B cells",
-    clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
-    type_col   = "new_type"
-  ) %>%
-  classify_markers(
-    feats      = c("Cd19", "Cd3d"),
-    filt       = Cd3d > 0.6,
-    type_label = "T cells",
-    clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
-    type_col   = "new_type"
-  )
-
-xen_gns %>%
-  map(~ {
-    xen %>%
-      filter(fov == top_fov) %>%
-      plot_violin(
-        .x,
-        cluster_col = "new_type",
-        method = "boxplot"
-      ) +
-      base_theme +
-      theme(
-        legend.position = "none",
-        axis.text.x = element_text(angle = 45, hjust = 1)
-      )
-  }) %>%
-  plot_grid(plotlist = .)
-  
-  
-  # mutate(
-  #   new_type = if_else(Cd3d > 0.5, "T cells", new_type),
-  #   new_type = if_else(Cd19 > 1.5, "B cells", new_type)
-  # ) %>%
-  
-  filter(
-    (new_type == "DC" & Sirpa > 0) | new_type != "DC"
-  ) %>%
-  
-  pivot_longer(any_of(gns)) %>%
-  ggplot(aes(new_type, value, fill = new_type)) +
-  geom_boxplot() +
-  facet_wrap(~ name) +
-  base_theme +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-test_dat %>%
-  plot_scatter(
-    "rough_type",
-    x = "Cd19",
-    y = "Cd3d",
-    size = 0.001
-  )
-
-test_dat %>%
-  filter(
-    fov == top_fov,
-    pred_conf > 0.5
-  ) %>%
-  plot_violin(
-    gn, "SCT_snn_res.10",
-    group_col = "rough_type",
-    panel_scales = "free_x",
-    method = "boxplot",
-    top = Inf
-  ) +
-  geom_hline(yintercept = 1.2)
-```
-
-```{r "XENIUM CELL TYPES", eval = FALSE}
-# Format data
-xen_dat <- xen %>%
-  filter(fov == top_fov)
-
-n_labs <- xen_dat %>%
-  group_by(cell_type) %>%
-  summarize(n = n(), .groups = "drop") %>%
-  mutate(
-    n_lab = str_c(cell_type, "\nn = ", label_comma()(n))
-  ) %>%
-  pull(n_lab, cell_type)
-
-# Plot cell types
-xen_typ_fig <- xen_dat %>%
-  ggplot(aes(y_cell, x_cell, fill = cell_type)) +
-  geom_point_trace(
-    size = 0.1,
-    color = NA,
-    trace_position = !grepl("^other", cell_type),
-    background_params = list(color = "black", size = 0.5)
-  ) +
-  facet_wrap(~ slide) +
-  guides(fill = guide_legend(
-    nrow = 2,
-    title.position = "top",
-    override.aes = list(size = 4)
-  )) +
-  scale_fill_manual(values = xen_clrs, labels = n_labs) +
-  coord_fixed() +
-  umap_theme_2 +
-  theme(
-    legend.position   = "bottom",
-    legend.key.height = unit(35, "pt"),
-    legend.title      = element_blank(),
-    legend.text       = element_text(size = ttl_pt2),
-    strip.text        = element_text(size = ttl_pt2)
-  )
-```
-
 ---
 
 <br>
@@ -3698,7 +3077,7 @@ E.  cLEC Ag-high module scores are shown for mock and CHIKV-infected mice for
 F.  Expression of the cLEC Ag-high gene module is shown for mock and CHIKV-infected
     mice for cLECs from each biological replicate.
 
-```{r "CHIKV data"}
+```{r "CHIKV data", include = FALSE}
 # CHIKV theme
 chikv_clrs <- c(
   `Ag-low`       = "#56B4E9",
@@ -3712,7 +3091,8 @@ chikv_u_theme <- umap_theme_2 +
   theme(aspect.ratio = 0.7)
 
 # Load CHIKV data
-rm(lec_so, dc_so)
+rm(ag_objs)
+gc()
 
 chikv_so <- qread(here(params$chikv_dir, "so_lec.qs"))
 
@@ -3757,7 +3137,7 @@ chikv_dat <- chikv_so@meta.data %>%
 
 ```{r "CHIKV subsets"}
 # LEC subsets
-top <- chikv_so %>%
+top <- chikv_dat %>%
   plot_scatter(
     "lec_subtype",
     x            = "hUMAP_1",
@@ -4120,7 +3500,12 @@ A.  The fraction of cLECs predicted to be Ag-competent is shown for
     from Abe et al.
 B.  The total fraction of cLECs predicated to be Ag-competent is shown for
     pooled MFLN and FL samples shown in A.
-    P values were calculated using Fisher's exact test.
+    P values were calculated using a two-sided Wilcoxon rank sum test.
+    
+<u>Notes</u>
+
+* Samples with >20 cLECs are included in the analysis
+* Most FL samples have <100 cLECs
 
 ```{r "Fig S9", fig.width = 10, fig.height = 4.5, out.width = "75%"}
 # Plot fraction Ag-competent cLECs
@@ -4155,6 +3540,9 @@ abe_bars_1 <- abe_bar_dat %>%
   )
 
 # Bargraphs for combined samples
+# * use wilcox test instead of fisher's exact test since there is a large
+#   difference in the number of cells for each sample
+# * this will cause one sample to disproportionately influence the results
 p_dat <- abe_bar_dat %>%
   mutate(
     p = wilcox.test(
@@ -4208,6 +3596,690 @@ plot_grid(
   align      = "h",
   axis       = "tb"
 )
+
+rm(abe_lec_so)
+```
+
+---
+
+<br>
+
+<br>
+
+## Cell type markers
+
+### CD45+ markers {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for CD45+ scRNA-seq datasets.
+
+```{r "CD45+ markers 1", fig.width = 10, fig.height = 4}
+heat_dat <- cd45pos_marks %>%
+  group_by(cell_type, mouse, name) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  group_by(name, mouse) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup()
+
+# Create heatmap
+heat_dat %>%
+  ggplot(aes(cell_type, name, fill = value)) +
+  geom_tile() +
+  facet_wrap(~ mouse, nrow = 1) +
+  scale_fill_gradientn(colours = c("white", "red")) +
+  base_theme +
+  theme(
+    legend.title = element_blank(),
+    aspect.ratio = length(cd45pos_gns) / n_distinct(dat$cell_type),
+    axis.title   = element_blank(),
+    axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  )
+```
+
+```{r "CD45+ markers 2", fig.width = 10, fig.height = 4, results = "asis"}
+cd45pos_gns %>%
+  walk(~ {
+    cat("\n\n####", .x, "\n\n")
+    
+    dat <- cd45pos_marks %>%
+      filter(name == .x) %>%
+      group_by(cell_type, mouse) %>%
+      mutate(
+        n = n_distinct(.cell_id),
+        n_lab = str_c(cell_type, " (", label_comma()(n), ")")
+      ) %>%
+      group_by(cell_type) %>%
+      mutate(
+        med = median(value),
+        q3  = boxplot.stats(value)$stats[4],
+        q4  = boxplot.stats(value)$stats[5],
+        max = max(value)
+      ) %>%
+      ungroup() %>%
+      arrange(desc(med), desc(q3), desc(q4), desc(max)) %>%
+      mutate(n_lab = fct_inorder(n_lab))
+    
+    plt <- dat %>%
+      ggplot(aes(n_lab, value, fill = cell_type, color = cell_type)) +
+      geom_boxplot(alpha = 0.5, outlier.size = 0.25) +
+      facet_wrap(~ mouse, nrow = 1, scales = "free_x") +
+      scale_fill_manual(values = typ_clrs) +
+      scale_color_manual(values = typ_clrs) +
+      labs(y = str_c(.x, " expression")) +
+      base_theme +
+      theme(
+        aspect.ratio    = 1,
+        axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        axis.title.x    = element_blank(),
+        legend.position = "none"
+      )
+    
+    print(plt)
+    cat("\n\n<br>\n\n")
+  })
+```
+
+### CD45- markers {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for CD45- scRNA-seq datasets.
+
+```{r "CD45- markers 1", fig.width = 10, fig.height = 4}
+heat_dat <- cd45neg_marks %>%
+  group_by(cell_type, mouse, name) %>%
+  summarize(value = mean(value), .groups = "drop") %>%
+  group_by(name, mouse) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup()
+
+# Create heatmap
+heat_dat %>%
+  ggplot(aes(cell_type, name, fill = value)) +
+  geom_tile() +
+  facet_wrap(~ mouse, nrow = 1) +
+  scale_fill_gradientn(colours = c("white", "red"), na.value = "grey80") +
+  base_theme +
+  theme(
+    legend.title = element_blank(),
+    aspect.ratio = length(cd45neg_gns) / n_distinct(dat$cell_type),
+    axis.title   = element_blank(),
+    axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  )
+```
+
+```{r "CD45- markers 2", fig.width = 10, fig.height = 4, results = "asis"}
+cd45neg_gns %>%
+  walk(~ {
+    cat("\n\n####", .x, "\n\n")
+    
+    dat <- cd45neg_marks %>%
+      filter(name == .x) %>%
+      group_by(cell_type, mouse) %>%
+      mutate(
+        n = n_distinct(.cell_id),
+        n_lab = str_c(cell_type, " (", label_comma()(n), ")")
+      ) %>%
+      group_by(cell_type) %>%
+      mutate(
+        med = median(value),
+        q3  = boxplot.stats(value)$stats[4],
+        q4  = boxplot.stats(value)$stats[5],
+        max = max(value)
+      ) %>%
+      ungroup() %>%
+      arrange(desc(med), desc(q3), desc(q4), desc(max)) %>%
+      mutate(n_lab = fct_inorder(n_lab))
+    
+    plt <- dat %>%
+      ggplot(aes(n_lab, value, fill = cell_type, color = cell_type)) +
+      geom_boxplot(alpha = 0.5, outlier.size = 0.25) +
+      facet_wrap(~ mouse, nrow = 1, scales = "free_x") +
+      scale_fill_manual(values = typ_clrs) +
+      scale_color_manual(values = typ_clrs) +
+      labs(y = str_c(.x, " expression")) +
+      base_theme +
+      theme(
+        aspect.ratio    = 1,
+        axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        axis.title.x    = element_blank(),
+        legend.position = "none"
+      )
+    
+    print(plt)
+    cat("\n\n---\n\n<br>\n\n<br>\n\n")
+  })
+```
+
+<br>
+
+<br>
+
+## Xenium
+
+These are extra Xenium plots that currently are not included in the paper.
+Ag-tag barcodes used for each mouse are shown below.
+
+```{r}
+params$xen_samples %>%
+  imap_dfr(~ {
+    tibble(
+      fov       = .y,
+      mouse     = .x[[1]],
+      `6wk tag` = params$xen_ag_targets[[.x[[2]]]],
+      `3wk tag` = params$xen_ag_targets[[.x[[3]]]]
+    ) %>%
+      mutate(
+        across(ends_with(" tag"), ~ {
+          .x %>%
+            str_remove("-ERCC[0-9]+$") %>%
+            str_remove("^GeoMx-")
+        })
+      )
+  })
+```
+
+<br>
+
+The expression of key marker genes is shown below for each cell type.
+
+```{r "xenium marker genes", fig.width = 24, fig.height = 14}
+xen_marker_plt <- xen_gns %>%
+  map(~ {
+    xen %>%
+      filter(fov == top_fov) %>%
+      plot_violin(
+        .x,
+        cluster_col = "cell_type",
+        plot_colors = xen_clrs,
+        method      = "boxplot"
+      ) +
+      base_theme +
+      theme(
+        legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1)
+      )
+  }) %>%
+  plot_grid(plotlist = .)
+
+xen_marker_plt
+  
+
+# # Adjust B and T cell annotations
+# xen <- xen %>%
+#   mutate_meta(
+#     mutate,
+#     new_type = if_else(pred_conf > 0.5, rough_type, "unassigned")
+#   ) %>%
+#   classify_markers(
+#     feats      = "Car3",
+#     filt       = Car3 > 0.75,
+#     clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
+#     type_label = "unassigned",
+#     type_col   = "new_type"
+#   ) %>%
+#   mutate_meta(
+#     mutate,
+#     new_type = if_else(
+#       new_type %in% c("unassigned", "Epithelial cells"),
+#       str_c("other ", cd45_class),
+#       new_type
+#     ),
+#     Ag_type = ifelse(Ag_class == "Ag-high", new_type, "Ag-low")
+#   ) %>%
+# 
+#   mutate(
+#     new_type = if_else(
+#       Cd19 > 1.1,
+#       "B cells",
+#       new_type
+#     ),
+#     new_type = if_else(
+#       Cd3d > 0.5,
+#       "T cells",
+#       new_type
+#     )
+#   )
+# 
+# xen <- xen %>%
+#   mutate(cell_type = new_type)
+#   
+# xen %>%
+#   # filter(fov == top_fov) %>%
+#   filter(fov == top_fov, Ag_class == "Ag+") %>%
+#   pull(new_type) %>%
+#   table()
+  
+  # mutate_meta(mutate, new_type = cell_type) %>%
+  # classify_markers(
+  #   feats      = c("Cd19", "Cd3d"),
+  #   filt       = Cd19 > 1.1,
+  #   type_label = "B cells",
+  #   clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
+  #   type_col   = "new_type"
+  # ) %>%
+  # classify_markers(
+  #   feats      = c("Cd19", "Cd3d"),
+  #   filt       = Cd3d > 0.75,
+  #   type_label = "T cells",
+  #   clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
+  #   type_col   = "new_type"
+  # )
+
+#   # mutate(
+#   #   new_type = if_else(Cd3d > 0.5, "T cells", new_type),
+#   #   new_type = if_else(Cd19 > 1.5, "B cells", new_type)
+#   # ) %>%
+#   
+#   filter(
+#     (new_type == "DC" & Sirpa > 0) | new_type != "DC"
+#   ) %>%
+#   
+#   pivot_longer(any_of(gns)) %>%
+#   ggplot(aes(new_type, value, fill = new_type)) +
+#   geom_boxplot() +
+#   facet_wrap(~ name) +
+#   base_theme +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# 
+# test_dat %>%
+#   plot_scatter(
+#     "rough_type",
+#     x = "Cd19",
+#     y = "Cd3d",
+#     size = 0.001
+#   )
+# 
+# test_dat %>%
+#   filter(
+#     fov == top_fov,
+#     pred_conf > 0.5
+#   ) %>%
+#   plot_violin(
+#     gn, "SCT_snn_res.10",
+#     group_col = "rough_type",
+#     panel_scales = "free_x",
+#     method = "boxplot",
+#     top = Inf
+#   ) +
+#   geom_hline(yintercept = 1.2)
+```
+
+<br>
+
+The fraction of total counts assigned to each custom target is shown below for
+each tissue section.
+The GeoMx-Barcode02 probes produced very sparse signals regardless of sample
+identity.
+Values are labeled for targets assigned >0.01% of total counts.
+
+```{r "fraction custom counts", fig.height = 6, fig.width = 20, include = FALSE}
+# Format plotting data
+feats <- c(
+  "mouse", "fov", "cell_type",
+  "nCount_Xenium", "nCount_Xenium_custom"
+)
+
+qc_dat <- seq_along(xen_slides) %>%
+  map(~ {
+    s <- qread(here(params$xen_dir, str_c("xen_s", .x, ".qs")))
+    
+    DefaultAssay(s) <- "Xenium_custom"
+    
+    s %>%
+      FetchData(c(feats, params$xen_custom_targets), slot = "counts") %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(all_of(params$xen_custom_targets)) %>%
+      mutate(
+        slide  = .x,
+        sample = str_c(mouse, "-", fov)
+      )
+  })
+
+qc_dat <- bind_rows(qc_dat)
+
+# Format heatmap data
+heat_dat <- qc_dat %>%
+  group_by(slide, fov, mouse, name) %>%
+  mutate(
+    tot_counts = sum(nCount_Xenium + nCount_Xenium_custom)
+  ) %>%
+  group_by(name, slide, fov, mouse, sample, tot_counts) %>%
+  summarize(
+    value   = sum(value),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    frac   = value / tot_counts,
+    fov    = fct_relevel(fov, fovs),
+    name   = fct_reorder(name, value),
+    mouse  = fct_relevel(mouse, c("6wk", "3wk", "6wk-3wk"))
+  )
+
+# Tiles to outline
+min_frac <- 0.0001
+
+custom_counts_heat <- seq_along(xen_slides) %>%
+  map(~ {
+    dat <- heat_dat %>%
+      filter(slide == .x)
+    
+    top_dat <- dat %>%
+      filter(frac >= min_frac)
+    
+    # Tiles to label
+    lab_dat <- dat %>%
+      filter(frac >= min_frac) %>%
+      mutate(
+        lab = round(frac * 100, 2),
+        lab = str_c(lab, "%")
+      )
+    
+    # Create heatmap
+    heat <- dat %>%
+      ggplot(aes(fov, name, fill = frac + min_frac)) +
+      geom_tile() +
+      geom_tile(
+        data = top_dat,
+        color = "black"
+      ) +
+      geom_text(
+        aes(color = NULL, fill = NULL, label = lab),
+        data = lab_dat
+      ) +
+      facet_grid(~ mouse, scales = "free") +
+      scale_fill_gradientn(
+        colours = c("white", "#D7301F"),
+        labels  = label_percent(),
+        trans   = "log10",
+        name    = str_c("fraction of\ntotal counts\n(+", min_frac * 100, "%)")
+      ) +
+      ggtitle(str_c("r", .x)) +
+      base_theme +
+      theme(
+        aspect.ratio       = 5,
+        plot.title         = element_text(hjust = 0.5),
+        strip.clip         = "off",
+        strip.text.y.right = element_text(angle = 0, hjust = 0),
+        axis.title         = element_blank()
+      )
+    
+    heat
+  })
+
+rm(qc_dat, heat_dat)
+gc()
+```
+
+```{r "fraction custom counts heatmap", fig.height = 6, fig.width = 20}
+plot_grid(
+  plotlist = custom_counts_heat,
+  nrow  = 1,
+  align = "h",
+  axis  = "tb"
+)
+```
+
+<br>
+
+Cells were identified as Ag+ if they have at least 1 Ag-tag count.
+The fraction of Ag+ cells is shown below for each Ag-tag for
+each tissue section.
+
+```{r "fraction 3wk/6wk Ag+ cells", fig.height = 3.5, fig.width = 12}
+bar_dat <- xen %>%
+  group_by(slide, fov, mouse) %>%
+  summarize(
+    `3wk tag` = (sum(Ag_3wk_counts > 0) / n()) * 100,
+    `6wk tag` = (sum(Ag_6wk_counts > 0) / n()) * 100,
+    .groups   = "drop"
+  )
+
+bar_dat %>%
+  pivot_longer(ends_with("wk tag")) %>%
+  mutate(mouse = fct_relevel(mouse, c("6wk", "3wk", "6wk-3wk"))) %>%
+  
+  ggplot(aes(fov, value, fill = name)) +
+  geom_col(position = position_dodge2()) +
+  facet_grid(slide ~ mouse, scales = "free_x") +
+  scale_fill_brewer() +
+  scale_fill_spruce(difference = 30, range = c(25, 75)) +
+  
+  labs(y = "% Ag+ cells") +
+  base_theme +
+  theme(
+    aspect.ratio = 1.5,
+    legend.title = element_blank(),
+    axis.title.x = element_blank()
+  )
+```
+
+<br>
+
+The percent of cells that are Ag+ is shown for each cell type for each tissue
+section.
+Only cell types with >100 cells identified for the tissue section are shown.
+The color scale is log10-transformed.
+
+```{r "XENIUM AG TYPE HEAT ALL", fig.width = 14, fig.height = 4.5}
+bar_dat <- xen %>%
+  group_by(cell_type, fov, slide) %>%
+  # filter(n() > 100) %>%
+
+  group_by(slide, fov, cell_type) %>%
+  summarize(
+    n = n(),
+    pct_ag_pos = (sum(Ag_class == "Ag+") / n) * 100,
+    .groups = "drop"
+  ) %>%
+  mutate(slide = str_c("r", slide))
+    
+# Filter to exclude cell types with < 100 cells
+bar_dat %>%
+  mutate(
+    cell_type = fct_reorder(cell_type, pct_ag_pos),
+    fov       = fct_reorder(fov, pct_ag_pos, .fun = max)
+  ) %>%
+  group_by(fov, slide) %>%
+  mutate(pct_ag_pos = pct_ag_pos + 1) %>%
+  
+  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
+  geom_tile() +
+  facet_wrap(~ slide, nrow = 1) +
+  scale_fill_gradientn(
+    colours = c("white", "#E7301F"),
+    name    = "fraction Ag+ cells\n(+1%)",
+    trans   = "log10"
+  ) +
+  base_theme +  
+  theme(
+    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov),
+    axis.title = element_blank()
+  )
+```
+
+```{r "XENIUM AG TYPE HEAT ALL SUPPLEMENTAL", fig.width = 14, fig.height = 6, eval = FALSE}
+bar_dat <- xen %>%
+  group_by(fov, slide, cell_type) %>%
+  summarize(
+    n = n(),
+    pct_ag_pos = (sum(Ag_class == "Ag-high") / n) * 100,
+    .groups = "drop"
+  ) %>%
+  filter(n > 100)
+
+# Filter to exclude cell types with < 100 cells
+bar_dat %>%
+  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
+  
+  group_by(fov, slide) %>%
+  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
+  
+  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
+  geom_tile() +
+  facet_wrap(~ slide) +
+  scale_fill_gradientn(colours = c("white", "#E7301F"), name = "relative %\nAg+ cells") +
+  base_theme +
+  theme(
+    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov),
+    axis.title.y = element_blank()
+  )
+```
+
+```{r "XENIUM 3WK 6WK SIGNAL", eval = FALSE}
+
+bar_dat <- xen@meta.data %>%
+  group_by(fov, cell_type) %>%
+  summarize(
+    ag_pct_1 = (sum(Ag_tag_1 > 0) / n()) * 100,
+    ag_pct_2 = (sum(Ag_tag_2 > 0) / n()) * 100,
+    .groups  = "drop"
+  )
+
+# Filter to exclude cell types with < 100 cells
+bar_dat %>%
+  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
+  
+  group_by(fov) %>%
+  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
+  
+  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
+  geom_tile() +
+  scale_fill_gradientn(colours = c("white", "#E7301F")) +
+  base_theme +
+  theme(
+    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov)
+  )
+```
+
+```{r "XENIUM UMAPS", eval = FALSE}
+top <- c("LEC", "other CD45-", "BEC")
+
+xen@meta.data %>%
+  plot_scatter(
+    "cell_type",
+    group_col = "fov",
+    size      = 0.00001
+    # top       = top
+  ) +
+  scale_color_spruce(difference = 20) +
+  theme(aspect.ratio = 0.9)
+
+xen@meta.data %>%
+  mutate(Ag_counts = Ag_tag_1 + Ag_tag_2 + 1) %>%
+  plot_scatter(
+    "Ag_counts",
+    outline     = TRUE,
+    plot_colors = c("white", "red"),
+    group_col   = "fov",
+    size        = 0.00001,
+    trans       = "log10"
+  ) +
+  theme(aspect.ratio = 0.9)
+
+xen@meta.data %>%
+  filter(cell_type %in% top) %>%
+  plot_scatter(
+    "SCT_snn_res.10",
+    group_col = "fov",
+    size      = 0.00001
+  ) +
+  scale_color_spruce(difference = 20) +
+  theme(aspect.ratio = 0.9)
+
+# Boxplots
+gns <- c(
+  "Ptprc", "Pdpn", "Pecam1",
+  "Cd3d", "Cd19",
+  "Prox1", "Lyve1",
+  "Itgax",           # DCs
+  "Xcr1",            # cDC1
+  "Sirpa", "Itgam",  # cDC2
+  "Siglech",         # Siglech DCs
+  "Ccr7"
+)
+
+dat <- xen %>%
+  FetchData(c(
+    "fov", "cell_type",
+    "UMAP_1", "UMAP_2",
+    "SCT_snn_res.10", gns
+  ))
+
+gns %>%
+  map(~ {
+    dat %>%
+      # filter(cell_type %in% top) %>%
+      plot_violin(
+        .x,
+        cluster_col = "SCT_snn_res.10",
+        method = "boxplot",
+        top = 20
+      ) +
+      scale_fill_spruce() +
+      scale_color_spruce()
+  }) %>%
+  plot_grid(plotlist = .)
+
+dat %>%
+  filter(cell_type %in% top) %>%
+  plot_violin(
+    "Ptprc",
+    cluster_col = "SCT_snn_res.10",
+    method = "boxplot",
+    # plot_colors = c("lightblue", "red"),
+  )
+
+dat %>%
+  plot_scatter(
+    "Ptprc",
+    group_col = "fov",
+    size = 0.0001,
+    plot_colors = c("lightblue", "red")
+  )
+
+dat %>%
+  ggplot(aes(Ptprc)) +
+  geom_histogram() +
+  facet_wrap(~ fov)
+
+```
+
+```{r "XENIUM CELL TYPES", eval = FALSE}
+# Format data
+xen_dat <- xen %>%
+  filter(fov == top_fov)
+
+n_labs <- xen_dat %>%
+  group_by(cell_type) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  mutate(
+    n_lab = str_c(cell_type, "\nn = ", label_comma()(n))
+  ) %>%
+  pull(n_lab, cell_type)
+
+# Plot cell types
+xen_typ_fig <- xen_dat %>%
+  ggplot(aes(y_cell, x_cell, fill = cell_type)) +
+  geom_point_trace(
+    size = 0.1,
+    color = NA,
+    trace_position = !grepl("^other", cell_type),
+    background_params = list(color = "black", size = 0.5)
+  ) +
+  facet_wrap(~ slide) +
+  guides(fill = guide_legend(
+    nrow = 2,
+    title.position = "top",
+    override.aes = list(size = 4)
+  )) +
+  scale_fill_manual(values = xen_clrs, labels = n_labs) +
+  coord_fixed() +
+  umap_theme_2 +
+  theme(
+    legend.position   = "bottom",
+    legend.key.height = unit(35, "pt"),
+    legend.title      = element_blank(),
+    legend.text       = element_text(size = ttl_pt2),
+    strip.text        = element_text(size = ttl_pt2)
+  )
 ```
 
 ---
