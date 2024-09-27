@@ -61,7 +61,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -2513,6 +2513,80 @@ typ_plts <- typ_plts %>%
   wrap_plots(ncol = 3)
 ```
 
+```{r "xenium total Ag counts", fig.height = 6, fig.width = 20, include = FALSE}
+# Format plotting data
+xen_ag_clmns <- c(
+  Ag_3wk_counts = "21 day",
+  Ag_6wk_counts = "42 day"
+)
+
+feats <- c(
+  "mouse", "fov", "cell_type",
+  "nCount_Xenium", "nCount_Xenium_custom",
+  names(xen_ag_clmns), params$xen_ag_targets,
+  recursive = TRUE, use.names = FALSE
+)
+
+xen_ag_clrs <- set_names(
+  tm_clrs,
+  str_c(names(tm_clrs), " day")
+)
+
+xen_qc_dat <- seq_along(xen_slides) %>%
+  map(~ {
+    s <- qread(here(params$xen_dir, str_c("xen_s", .x, ".qs")))
+    
+    DefaultAssay(s) <- "Xenium_custom"
+    
+    s %>%
+      FetchData(feats, slot = "counts") %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(all_of(names(xen_ag_clmns)), names_to = "Ag-tag") %>%
+      mutate(slide  = .x)
+  }) %>%
+  bind_rows()
+
+# Format heatmap data
+xen_bar_dat <- xen_qc_dat %>%
+  filter(fov != "C") %>%
+  group_by(slide, fov, mouse, `Ag-tag`) %>%
+  mutate(
+    tot_counts = sum(nCount_Xenium + nCount_Xenium_custom)
+  ) %>%
+  group_by(slide, fov, mouse, `Ag-tag`, tot_counts) %>%
+  summarize(
+    value   = sum(value),
+    .groups = "drop"
+  ) %>%
+  group_by(slide, mouse, `Ag-tag`) %>%
+  mutate(
+    LN = str_c("LN-", seq_along(fov))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    slide    = str_c("section ", slide),
+    `Ag-tag` = xen_ag_clmns[`Ag-tag`],
+    tm       = str_c(tm_key[mouse], " day"),
+    tm       = replace_na(tm, "dual")
+  )
+
+# Create bar graph
+xen_bars <- xen_bar_dat %>%
+  ggplot(aes(LN, value, fill = `Ag-tag`)) +
+  geom_col(position = position_dodge2()) +
+  facet_grid(slide ~ tm, scales = "free_x", space = "free") +
+  scale_fill_manual(values = xen_ag_clrs) +
+  labs(y = "total Ag counts") +
+  base_theme +
+  theme(
+    legend.position = "bottom",
+    axis.title.x = element_blank()
+  )
+
+rm(xen_qc_dat)
+gc()
+```
+
 ```{r "xenium Ag+ cell types", fig.width = 14, fig.height = 6}
 bar_dat <- xen_dat %>%
   filter(cell_type %in% c(names(xen_typs), "unassigned")) %>%
@@ -2552,22 +2626,40 @@ xen_typ_bars <- bar_dat %>%
   scale_x_continuous(
     labels = label_percent(),
     name   = "% Ag+ cells",
-    expand = expansion(c(0.05, 0.2))
+    expand = expansion(c(0.05, 0.3))
   ) +
   base_theme +
   theme(
-    aspect.ratio = 1,
+    # aspect.ratio = 1,
     legend.position = "none",
     axis.title.y = element_blank()
   )
 ```
 
 ```{r "Fig S6", fig.width = 14, fig.height = 16}
+bot <- wrap_plots(
+  xen_bars + labs(tag = "B"),
+  xen_typ_bars + labs(tag = "C"),
+  nrow   = 1,
+  widths = c(0.7, 1)
+) &
+  theme(plot.tag = element_text(face = "bold", size = ttl_pt2 * 1.5))
+
+# bot <- plot_grid(
+#   xen_bars, xen_typ_bars,
+#   nrow   = 1,
+#   align  = "h",
+#   axis   = "tb",
+#   labels = c("B", "C"),
+#   label_size = ttl_pt2 * 1.5,
+#   rel_widths = c(0.7, 1)
+# )
+
 plot_grid(
-  typ_plts, xen_typ_bars,
+  typ_plts, bot,
   ncol = 1,
   rel_heights = c(1, 0.4),
-  labels = c("A", "B"),
+  labels = c("A", ""),
   label_size = ttl_pt2 * 1.5
 )
 ```
@@ -2935,7 +3027,7 @@ bot <- plot_grid(
   nrow   = 1,
   align  = "h",
   axis   = "tb",
-  labels = c("D", "E"),
+  labels = c("C", "D"),
   label_size = ttl_pt2 * 1.5
 )
 
@@ -3507,13 +3599,49 @@ B.  The total fraction of cLECs predicated to be Ag-competent is shown for
 * Samples with >20 cLECs are included in the analysis
 * Most FL samples have <100 cLECs
 
+```{r "abe lec subsets", eval = FALSE}
+abe_gns <- c(
+  "ACKR4",
+  "CXCL5",
+  "BMP2",
+  "MFAP4",
+  "PTX3",
+  "SERPINE1",
+  "CLDN11",
+  "GJA4",
+  "MARCO"
+)
+
+abe_lec_so %>%
+  FetchData(c("type", abe_gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  filter(grepl("^LEC[0-9]+$", type)) %>%
+  pivot_longer(all_of(abe_gns)) %>%
+  group_by(type, name) %>%
+  summarize(
+    value = mean(value),
+    .groups = "drop"
+  ) %>%
+  group_by(name) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup() %>%
+  mutate(name = fct_relevel(name, rev(abe_gns))) %>%
+  
+  ggplot(aes(type, name, fill = value)) +
+  geom_tile() +
+  base_theme
+
+```
+
 ```{r "Fig S9", fig.width = 10, fig.height = 4.5, out.width = "75%"}
 # Plot fraction Ag-competent cLECs
 # * cLECs are the LEC1 population
 # * only include samples with at least 20 cLECs
+abe_type <- "cLEC"
+
 abe_bar_dat <- abe_lec_so@meta.data %>%
   rownames_to_column(".cell_id") %>%
-  filter(type == "LEC1") %>%
+  filter(subtype == abe_type) %>%
   mutate(
     tissue = fct_relevel(tissue, names(abe_clrs)),
     sample = str_remove(sample, "_NHC$")
@@ -3531,7 +3659,7 @@ abe_bars_1 <- abe_bar_dat %>%
   facet_grid(~ tissue, scales = "free_x", space = "free_x") +
   scale_fill_manual(values = abe_clrs) +
   scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
-  labs(y = "fraction Ag-competent cLECs") +
+  labs(y = str_c("fraction Ag-competent ", abe_type)) +
   base_theme +
   theme(
     legend.position = "none",
@@ -3917,7 +4045,7 @@ feats <- c(
   "nCount_Xenium", "nCount_Xenium_custom"
 )
 
-qc_dat <- seq_along(xen_slides) %>%
+xen_qc_dat <- seq_along(xen_slides) %>%
   map(~ {
     s <- qread(here(params$xen_dir, str_c("xen_s", .x, ".qs")))
     
@@ -3933,10 +4061,10 @@ qc_dat <- seq_along(xen_slides) %>%
       )
   })
 
-qc_dat <- bind_rows(qc_dat)
+xen_qc_dat <- bind_rows(xen_qc_dat)
 
 # Format heatmap data
-heat_dat <- qc_dat %>%
+heat_dat <- xen_qc_dat %>%
   group_by(slide, fov, mouse, name) %>%
   mutate(
     tot_counts = sum(nCount_Xenium + nCount_Xenium_custom)
@@ -4004,7 +4132,7 @@ custom_counts_heat <- seq_along(xen_slides) %>%
     heat
   })
 
-rm(qc_dat, heat_dat)
+rm(xen_qc_dat, heat_dat)
 gc()
 ```
 
