@@ -212,6 +212,9 @@ xen_clrs <- xen_clrs[names(xen_clrs) %in% xen$cell_type]
 
 ```{r "load naive data", include = FALSE}
 # Load 24 hpi mock-infected data
+# * merge mock-infected with Ag LEC object
+# * to compare timepoints, need all cells used for comparison to be present when
+#   scores are calculated
 chikv_naive <- qread(here(params$chikv_dir, "so_lec.qs"))
 
 chikv_naive <- chikv_naive %>%
@@ -223,7 +226,7 @@ naive_so <- lec_so %>%
   merge(chikv_naive)
 
 # Add module scores
-# need to recalculate
+# * need to recalculate scores since we are now including the mock-infected data
 rf_feats %>%
   iwalk(~ {
     clmn_nms <- str_c(.y, "_", names(.x))
