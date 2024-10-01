@@ -100,7 +100,9 @@ create_sobjs <- !file.exists(here(params$so_dir, "lec_so.qs"))
 #' @param group_vars Variable(s) to using for grouping cells
 #' @noRd
 integrate_sobjs <- function(so_in, group_vars = "mouse", dims = 1:40,
-                            resolution = c(1, 3, 5, 10)) {
+                            resolution = c(1, 3, 5, 10),
+                            umap.method = "umap-learn") {
+  
   rm_clmns <- c(str_c("UMAP_", 1:2), str_c("hUMAP_", 1:2))
   
   res <- so_in %>%
@@ -108,7 +110,7 @@ integrate_sobjs <- function(so_in, group_vars = "mouse", dims = 1:40,
     FindVariableFeatures(nfeatures = 2000) %>%
     ScaleData() %>%
     RunPCA() %>%
-    RunUMAP(dims = dims) %>%
+    RunUMAP(dims = dims, umap.method = umap.method) %>%
     AddMetaData(FetchData(., c("UMAP_1", "UMAP_2")))
   
   res <- res %>%
@@ -1150,6 +1152,7 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
   
   # Format data for bargraphs
   df_in <- df_in %>%
+    ungroup() %>%
     mutate(
       !!sym(x) := fct_relevel(!!sym(x), names(clrs)),
       x_clmn    = str_c(subtype, "-", !!sym(x))

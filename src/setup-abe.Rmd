@@ -107,22 +107,22 @@ abe_so <- sams %>%
 abe_so <- merge(abe_so[[1]], abe_so[-1], add.cell.ids = names(abe_so))
 
 abe_so <- abe_so %>%
-  NormalizeData() %>%
-  run_m3drop(var_p = 0.001) %>%
-  ScaleData() %>%
-  RunPCA() %>%
-  RunUMAP(
-    dims = 1:40,
-    umap.method = "umap-learn"
-  ) %>%
-  cluster_RNA(
-    rerun_pca  = FALSE,
-    umap_meta  = FALSE,
-    resolution = c(1, 3, 5, 10)
+  PercentageFeatureSet(pattern = "^MT-", col.name = "pct_mito") %>%
+  subset(
+    nFeature_RNA < 5000 &
+      nFeature_RNA > 250 &
+      pct_mito < 20
   ) %>%
   mutate_meta(
     mutate,
     tissue = str_extract(orig.ident, "^[A-Z]+")
+  )
+  
+abe_so <- abe_so %>%
+  integrate_sobjs(
+    group_vars  = "orig.ident",
+    dims        = 1:40,
+    umap.method = "umap-learn"
   )
 ```
 
@@ -164,37 +164,28 @@ abe_so <- abe_so %>%
 save_objs(abe_so, ob_dir = params$abe_dir)
 ```
 
-```{r "abe lec types", eval = create_sobjs}
+```{r "abe lec types", eval = create_sobjs, include = FALSE}
 # Process LEC object
 abe_lec_so <- abe_so %>%
-  subset(cell_type == "LEC") %>%
-  NormalizeData() %>%
-  run_m3drop(var_p = 0.001) %>%
-  ScaleData() %>%
-  RunPCA() %>%
-  RunUMAP(
-    dims = 1:40,
+  subset(cell_type == "LEC")
+
+rm(abe_so)
+gc()
+
+abe_lec_so <- abe_lec_so %>%
+  integrate_sobjs(
+    group_vars  = "orig.ident",
+    dims        = 1:40,
     umap.method = "umap-learn"
-  ) %>%
-  cluster_RNA(
-    rerun_pca  = FALSE,
-    umap_meta  = FALSE,
-    resolution = c(1, 3, 5, 10)
   )
 
 # Annotate LEC subsets
 abe_lec_so <- abe_lec_so %>%
+  mutate_meta(select, -any_of(c("type", "r", "UMAP_1", "UMAP_2"))) %>%
   clustify(
     ref_mat     = ref_LEC,
-    cluster_col = "RNA_snn_res.5"
+    cluster_col = "RNA_snn_res.3"
   )
-
-# Save object
-save_objs(abe_lec_so, ob_dir = params$abe_dir)
-```
-
-```{r "abe load object"}
-abe_lec_so <- qread(here(params$abe_dir, "abe_lec_so.qs"))
 
 # Adjust LEC labels
 # * based on fig 3E from Abe et al.
@@ -213,30 +204,17 @@ abe_lec_so <- abe_lec_so %>%
     subtype = typ_key[type],
     subtype = replace_na(subtype, "unassigned")
   )
+
+# Save object
+save_objs(abe_lec_so, ob_dir = params$abe_dir)
+```
+
+```{r "abe load object"}
+abe_lec_so <- qread(here(params$abe_dir, "abe_lec_so.qs"))
 ```
 
 ```{r "abe predict Ag-competent"}
-get_abe_preds <- function(so_in, rf_type, hlogs, rf_feats = rf_feats,
-                          rf_mods = rf_mods_best) {
-  # Pull data for RF features
-  # MISSING 10/74 FEATURES
-  abe_feats <- c(rf_feats[[rf_type]], recursive = TRUE, use.names = FALSE)
-  
-  hu_feats <- hlogs %>%
-    filter(
-      gene_mm %in% abe_feats,
-      gene_hs %in% rownames(so_in)
-    ) %>%
-    distinct(gene_mm, gene_hs, .keep_all = TRUE)
-  
-  hu_feats <- set_names(hu_feats$gene_mm, hu_feats$gene_hs)
-  
-  missing_feats <- abe_feats[!abe_feats %in% hu_feats]
-  
-  cli_alert_info(
-    "{length(missing_feats)} / {length(abe_feats)}
-     ({round(length(missing_feats)/length(abe_feats)*100, 1)}%) genes missing"
-  )
+get_abe_preds <- function(so_in, rf_feats, hu_feats, rf_mod) {
   
   # Format data for predictions
   # * LEC1 == cLECs
@@ -247,18 +225,25 @@ get_abe_preds <- function(so_in, rf_type, hlogs, rf_feats = rf_feats,
   #   a number
   abe_dat <- so_in %>%
     FetchData(c("subtype", names(hu_feats))) %>%
-    filter(subtype == rf_type) %>%
     dplyr::select(-subtype) %>%
-    rownames_to_column(".cell_id") %>%
-    pivot_longer(-.cell_id) %>%
+    rownames_to_column("cell_id") %>%
+    pivot_longer(-cell_id) %>%
     mutate(name_mm = hu_feats[as.character(name)]) %>%
-    group_by(.cell_id, name_mm) %>%
+    group_by(cell_id, name_mm) %>%
     summarize(value = mean(value), .groups = "drop")
   
   abe_dat <- abe_dat %>%
-    dplyr::select(.cell_id, value, name_mm) %>%
+    dplyr::select(cell_id, value, name_mm) %>%
     pivot_wider(names_from = name_mm) %>%
-    column_to_rownames(".cell_id")
+    column_to_rownames("cell_id")
+  
+  # Add zeros for missing genes
+  missing_feats <- rf_feats[!rf_feats %in% hu_feats]
+  
+  cli_alert_info(
+    "{length(missing_feats)} / {length(rf_feats)}
+     ({round({length(missing_feats)/length(rf_feats)}, 2)*100}%) missing"
+  )
   
   abe_dat[, missing_feats] <- 0
   
@@ -270,11 +255,7 @@ get_abe_preds <- function(so_in, rf_type, hlogs, rf_feats = rf_feats,
   colnames(abe_dat) <- nms
   
   # Predict Ag-competent cLECs
-  rf_mod <- rf_mods %>%
-    filter(subtype == rf_type) %>%
-    pull(mod)
-  
-  rf_res <- rf_mod[[1]] %>%
+  rf_res <- rf_mod %>%
     predict(abe_dat)
   
   # Rename output column
@@ -292,16 +273,31 @@ get_abe_preds <- function(so_in, rf_type, hlogs, rf_feats = rf_feats,
   res
 }
 
+# Identify human homologs
+# * exclude duplicated mouse and human genes
+abe_feats <- unique(c(rf_feats, recursive = TRUE, use.names = FALSE))
+
+hu_feats <- hlogs %>%
+  filter(
+    gene_mm %in% abe_feats,
+    gene_hs %in% rownames(abe_lec_so)
+  ) %>%
+  filter(
+    !duplicated(gene_mm),
+    !duplicated(gene_hs)
+  )
+
+hu_feats <- set_names(hu_feats$gene_mm, hu_feats$gene_hs)
+
 # Predicate Ag-competent cells
 # * predictions are made only for the specific cell type
 abe_preds <- rf_typs %>%
   map(~ {
     get_abe_preds(
-      so_in    = abe_lec_so,
-      rf_type  = .x,
-      hlogs    = hlogs,
-      rf_feats = rf_feats,
-      rf_mods  = rf_mods_best
+      so_in    = subset(abe_lec_so, subtype == .x),
+      rf_feats = abe_feats,
+      hu_feats = hu_feats,
+      rf_mod   = filter(rf_mods_best, subtype == .x)$mod[[1]]
     )
   }) %>%
   bind_rows()
@@ -309,21 +305,29 @@ abe_preds <- rf_typs %>%
 abe_lec_so <- abe_lec_so %>%
   AddMetaData(abe_preds)
 
-# # Add module scores
-# module_key <- set_names(names(hu_feats), unname(hu_feats))
-# 
-# hu_modules <- rf_feats[[rf_type]] %>%
-#   map(~ as.character(na.omit(unname(module_key[.x]))))
-# 
-# module_nms <- set_names(
-#   str_c(names(hu_modules), seq_along(hu_modules)),
-#   names(hu_modules)
-# )
-# 
-# abe_lec_so <- abe_lec_so %>%
-#   mutate_meta(dplyr::select, -any_of(c("low", "high"))) %>%
-#   AddModuleScore(features = hu_modules, name = names(hu_modules)) %>%
-#   mutate_meta(rename, !!!module_nms)
+# Add module scores
+module_key <- set_names(names(hu_feats), unname(hu_feats))
+
+hu_modules <- rf_feats[rf_typs] %>%
+  imap(~ {
+    mods <- .x %>%
+      map(~ as.character(na.omit(unname(module_key[.x]))))
+    
+    names(mods) <- str_c(.y, "_", names(.x))
+    
+    mods
+  }) %>%
+  flatten()
+
+module_nms <- set_names(
+  str_c(names(hu_modules), seq_along(hu_modules)),
+  names(hu_modules)
+)
+
+abe_lec_so <- abe_lec_so %>%
+  mutate_meta(dplyr::select, -any_of(matches("_(low|high)"))) %>%
+  AddModuleScore(features = hu_modules, name = names(hu_modules)) %>%
+  mutate_meta(rename, !!!module_nms)
 ```
 
 ```{r "abe theme"}

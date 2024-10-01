@@ -61,7 +61,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -840,9 +840,13 @@ figS1
 
 ### Figure S2
 
-A.  Ag-scores are shown for each timepoint for CD45- cell types. Two biological
-    replicates are shown for the day 21 and day 42 timepoints. The number of
-    cells identified for each cell type is shown above each timepoint.
+A.  Ag-scores are shown for each timepoint for CD45- cell types.
+    Two biological replicates are shown for the day 21 and day 42 timepoints
+    (r1, r2),
+    one biological replicate is shown for the day 2 and day 14 timepoints
+    (this replicate is plotted for both r1 and r2).
+    The number of cells identified for each cell type is shown above each
+    timepoint.
 B.  Ag-scores are shown for each timepoint for CD45+ cell types,
     as described in A.
 C.  Ag-scores are shown for each timepoint for LEC subsets, as described in A.
@@ -1574,6 +1578,41 @@ figS3 <- plot_grid(
 )
 
 figS3
+```
+
+```{r "SPECIFICITY", eval = FALSE}
+progs <- rf_typs %>%
+  map(~ str_c(.x, "_", c("high", "low"))) %>%
+  c(recursive = TRUE)
+
+dat <- lec_so@meta.data %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(pred_grp = fct_relevel(pred_grp, names(pred_clrs))) %>%
+  filter(
+    tm == "14",
+    pred_grp == "Ag-high"
+  ) %>%
+  pivot_longer(all_of(progs))
+
+dat %>%
+  ggplot(aes(subtype, value, fill = subtype)) +
+  geom_boxplot() +
+  facet_wrap(~ name) +
+  guides(alpha = guide_legend(override.aes = list(fill = "black"))) +
+  base_theme +
+  theme(
+    aspect.ratio = 1
+  )
+
+# p-values
+x <- dat %>%
+  filter(name == "cLEC_low")
+
+wilcox.test(
+  (filter(x, subtype == "cLEC"))$value,
+  (filter(x, subtype == "Collecting"))$value
+)
+
 ```
 
 <br>
@@ -3587,145 +3626,270 @@ figS6
 
 ### Figure S9
 
-A.  The fraction of cLECs predicted to be Ag-competent is shown for
-    metastasis-free lymph node (MFLN) and follicular lymphoma (FL) samples
-    from Abe et al.
-B.  The total fraction of cLECs predicated to be Ag-competent is shown for
-    pooled MFLN and FL samples shown in A.
-    P values were calculated using a two-sided Wilcoxon rank sum test.
+A.  Mean expression is shown for LEC marker genes for
+    metastasis-free control lymph node (MFLN) and follicular lymphoma (FL)
+    samples from Abe et al.
+B.  The fraction of cLECs predicted to be Ag-competent is shown for each 
+    MFLN and FL sample with at least 20 identified cLECs (left).
+    P values were calculated using a two-sided Wilcoxon rank sum test with
+    Benjamini-Hochberg correction (right).
+C.  The fraction of fLECs predicted to be Ag-competent is shown as in A.
+D.  The fraction of collecting LECs predicated to be Ag-compentent is shown as
+    in A.
     
 <u>Notes</u>
 
 * Samples with >20 cLECs are included in the analysis
 * Most FL samples have <100 cLECs
 
-```{r "abe lec subsets", eval = FALSE}
+```{r "Abe marker expression"}
+# Format marker data
 abe_gns <- c(
   "ACKR4",
-  "CXCL5",
-  "BMP2",
   "MFAP4",
-  "PTX3",
   "SERPINE1",
+  "BMP2",
+  "CXCL5",
+  "MARCO",
+  "PTX3",
   "CLDN11",
-  "GJA4",
-  "MARCO"
+  "GJA4"
 )
 
-abe_lec_so %>%
-  FetchData(c("type", abe_gns)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  filter(grepl("^LEC[0-9]+$", type)) %>%
+tissue_nms <- c(
+  "MFLN" = "Metastasis-free LN",
+  "FL"   = "Follicular Lymphoma"
+)
+
+abe_gn_dat <- abe_lec_so %>%
+  FetchData(c("tissue", "orig.ident", "subtype", abe_gns)) %>%
+  as_tibble(rownames = "cell_id") %>%
+  filter(subtype != "unassigned") %>%
   pivot_longer(all_of(abe_gns)) %>%
-  group_by(type, name) %>%
+  mutate(
+    name   = fct_relevel(name, abe_gns),
+    tissue = fct_relevel(tissue, names(tissue_nms))
+  )
+
+# Create heatmap
+abe_heat_dat <- abe_gn_dat %>%
+  group_by(tissue, subtype, name) %>%
   summarize(
-    value = mean(value),
+    n       = n_distinct(cell_id),
+    value   = mean(value),
     .groups = "drop"
   ) %>%
-  group_by(name) %>%
+  group_by(tissue, name) %>%
   mutate(value = as.numeric(scale(value))) %>%
-  ungroup() %>%
-  mutate(name = fct_relevel(name, rev(abe_gns))) %>%
-  
-  ggplot(aes(type, name, fill = value)) +
-  geom_tile() +
-  base_theme
+  mutate(
+    name  = fct_relevel(name, rev(abe_gns)),
+    n_lab = str_c(subtype, "\nn = ", label_comma()(n))
+  )
 
+abe_gn_heat <- abe_heat_dat %>%
+  ggplot(aes(n_lab, name, fill = value)) +
+  geom_tile() +
+  facet_wrap(~ tissue, nrow = 1, scales = "free_x", labeller = as_labeller(tissue_nms)) +
+  scale_fill_gradientn(colours = c("white", abe_clrs[["FL"]])) +
+  guides(fill = guide_colorbar(ticks = FALSE, title = "z-score")) +
+  base_theme +
+  theme(
+    aspect.ratio = length(abe_gns) / n_distinct(abe_gn_dat$subtype) * 0.65,
+    legend.key.width = unit(7, "pt"),
+    axis.title   = element_blank(),
+    axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  )
 ```
 
-```{r "Fig S9", fig.width = 10, fig.height = 4.5, out.width = "75%"}
-# Plot fraction Ag-competent cLECs
+```{r "Abe frac Ag-competent"}
+# Format Abe data
 # * cLECs are the LEC1 population
 # * only include samples with at least 20 cLECs
-abe_type <- "cLEC"
+abe_bars <- set_names(rf_typs) %>%
+  map(~ {
+    abe_type <- .x
+    
+    y_ttl <- str_c(abe_type, "\nfraction Ag-competent")
+    
+    abe_bar_dat <- abe_lec_so@meta.data %>%
+      as_tibble(rownames = "cell_id") %>%
+      filter(subtype == abe_type) %>%
+      mutate(
+        tissue = fct_relevel(tissue, names(abe_clrs)),
+        sample = str_remove(sample, "_NHC$")
+      ) %>%
+      group_by(sample, tissue) %>%
+      mutate(n = n_distinct(cell_id)) %>%
+      filter(n > 20) %>%
+      group_by(sample, tissue, n) %>%
+      summarize(
+        frac_high = sum(pred_grp == "Ag-competent"),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        frac_high = frac_high / n,
+        n_lab     = str_c(sample, "\nn = ", label_comma()(n))
+      )
+    
+    # Create bar graph for all samples
+    abe_bars_1 <- abe_bar_dat %>%
+      ggplot(aes(n_lab, frac_high, fill = tissue)) +
+      geom_col() +
+      facet_grid(~ tissue, scales = "free_x", space = "free_x", labeller = as_labeller(tissue_nms)) +
+      scale_fill_manual(values = abe_clrs) +
+      scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
+      labs(y = y_ttl) +
+      base_theme +
+      theme(
+        legend.position = "none",
+        strip.clip      = "off",
+        axis.title.x    = element_blank(),
+        axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5)
+      )
+    
+    # Bargraphs for combined samples
+    # * use wilcox test instead of fisher's exact test since there is a large
+    #   difference in the number of cells for each sample
+    # * this will cause one sample to disproportionately influence the results
+    p_dat <- abe_bar_dat %>%
+      mutate(
+        p = wilcox.test(
+          frac_high[tissue == "FL"],
+          frac_high[tissue == "MFLN"]
+        )$p.value
+      ) %>%
+      group_by(tissue, p) %>%
+      summarize(n = n(), .groups = "drop") %>%
+      mutate(p_adj = p.adjust(p, method = "BH", n = length(rf_typs))) %>%
+      rowwise() %>%
+      mutate(
+        p_lab = str_c("italic(p) == ", .format_pvalue(p_adj)),
+        n_lab = str_c(tissue, "\nn = ", n)
+      )
+    
+    n_labs <- set_names(p_dat$n_lab, p_dat$tissue)
+    
+    set.seed(1)
+    
+    abe_bars_2 <- abe_bar_dat %>%
+      group_by(tissue) %>%
+      summarize(frac_high = median(frac_high), .groups = "drop") %>%
+      ggplot(aes(tissue, frac_high, fill = tissue)) +
+      geom_col() +
+      geom_jitter(data = abe_bar_dat, size = 1.5, width = 0.03) +
+      geom_text(
+        aes(1.5, Inf),
+        label = unique(p_dat$p_lab),
+        parse = TRUE,
+        size  = 12 / .pt,
+        vjust = 1.25,
+      ) +
+      scale_fill_manual(values = abe_clrs) +
+      scale_y_continuous(
+        breaks = c(0, 0.5, 1),
+        limits = c(0, 1)
+      ) +
+      scale_x_discrete(labels = n_labs) +
+      labs(y = y_ttl) +
+      base_theme +
+      theme(
+        aspect.ratio    = 1.75,
+        legend.position = "none",
+        axis.title      = element_blank()
+      )
+    
+    # Create final figure
+    res <- plot_grid(
+      abe_bars_1, abe_bars_2,
+      rel_widths = c(1, 0.35),
+      align      = "h",
+      axis       = "tb"
+    )
+    
+    res
+  })
 
-abe_bar_dat <- abe_lec_so@meta.data %>%
-  rownames_to_column(".cell_id") %>%
-  filter(subtype == abe_type) %>%
-  mutate(
-    tissue = fct_relevel(tissue, names(abe_clrs)),
-    sample = str_remove(sample, "_NHC$")
-  ) %>%
-  group_by(sample, tissue) %>%
-  filter(n() > 20) %>%
-  summarize(
-    frac_high = sum(pred_grp == "Ag-competent") / n(),
-    .groups = "drop"
-  )
-
-abe_bars_1 <- abe_bar_dat %>%
-  ggplot(aes(sample, frac_high, fill = tissue)) +
-  geom_col() +
-  facet_grid(~ tissue, scales = "free_x", space = "free_x") +
-  scale_fill_manual(values = abe_clrs) +
-  scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
-  labs(y = str_c("fraction Ag-competent ", abe_type)) +
-  base_theme +
-  theme(
-    legend.position = "none",
-    axis.title.x = element_blank(),
-    axis.text.x  = element_text(angle = 45, hjust = 1)
-  )
-
-# Bargraphs for combined samples
-# * use wilcox test instead of fisher's exact test since there is a large
-#   difference in the number of cells for each sample
-# * this will cause one sample to disproportionately influence the results
-p_dat <- abe_bar_dat %>%
-  mutate(
-    p = wilcox.test(
-      frac_high[tissue == "FL"],
-      frac_high[tissue == "MFLN"]
-    )$p.value
-  ) %>%
-  group_by(tissue, p) %>%
-  summarize(n = n(), .groups = "drop") %>%
-  rowwise() %>%
-  mutate(
-    p_lab = str_c("italic(p) == ", .format_pvalue(p)),
-    n_lab = str_c(tissue, "\nn = ", n)
-  )
-
-n_labs <- set_names(p_dat$n_lab, p_dat$tissue)
-
-abe_bars_2 <- abe_bar_dat %>%
-  group_by(tissue) %>%
-  summarize(frac_high = median(frac_high), .groups = "drop") %>%
-  ggplot(aes(tissue, frac_high, fill = tissue)) +
-  geom_col() +
-  geom_jitter(data = abe_bar_dat, size = 2, width = 0.03) +
-  geom_text(
-    aes(1.5, Inf),
-    label = unique(p_dat$p_lab),
-    parse = TRUE,
-    size  = 12 / .pt,
-    vjust = 1.3,
-  ) +
-  scale_fill_manual(values = abe_clrs) +
-  scale_y_continuous(
-    breaks = c(0, 0.5, 1),
-    limits = c(0, 1)
-  ) +
-  scale_x_discrete(labels = n_labs) +
-  labs(y = "fraction Ag-competent cLECs") +
-  base_theme +
-  theme(
-    aspect.ratio    = 1.5,
-    legend.position = "none",
-    axis.title.x    = element_blank()
-  )
-
-# Create final figure
-plot_grid(
-  abe_bars_1, abe_bars_2,
-  rel_widths = c(1, 0.5),
-  labels     = c("A", "B"),
+abe_bars <- plot_grid(
+  plotlist = abe_bars,
+  ncol       = 1,
+  labels     = c("B", "C", "D"),
   label_size = ttl_pt2 * 1.5,
-  align      = "h",
-  axis       = "tb"
+  label_x    = -0.01,
+  label_y    = 1.03
+)
+```
+
+```{r "Fig S9", fig.width = 9, fig.height = 12}
+plot_grid(
+  abe_gn_heat,
+  abe_bars,
+  ncol        = 1,
+  rel_heights = c(0.4, 1),
+  labels      = c("A", ""),
+  label_size  = ttl_pt2 * 1.5
 )
 
 rm(abe_lec_so)
+```
+
+```{r "ABE ALT BARGRAPHS", eval = FALSE}
+# Create Ag class bargraphs
+abe_type <- "cLEC"
+
+abe_lec_so@meta.data %>%
+  as_tibble(rownames = "cell_id") %>%
+  filter(subtype == abe_type) %>%
+  group_by(tissue) %>%
+  mutate(rep = str_extract(orig.ident, "[0-9](?=_)")) %>%
+  create_chikv_class_bars(
+    x    = "tissue",
+    n_p  = n_distinct(abe_lec_so$subtype),
+    clrs = abe_clrs,
+    ttl  = str_c("fraction Ag-competent ", abe_type, "s")
+  ) +
+  theme(strip.text = element_blank())
+```
+
+```{r "ABE MODULE SCORES", eval = FALSE}
+names(module_nms) %>%
+  map(~ {
+    abe_lec_so@meta.data %>%
+      filter(subtype %in% rf_typs) %>%
+      ggplot(aes(sample, !!sym(.x), fill = tissue)) +
+      geom_boxplot() +
+      geom_hline(yintercept = 0, linetype = 2) +
+      facet_wrap(~ subtype, nrow = 1) +
+      base_theme +
+      theme(
+        axis.title.x = element_blank(),
+        axis.text.x  = element_blank(),
+        axis.ticks.x = element_blank()
+        # axis.text.x = element_text(angle = 45, hjust = 1)
+      )
+  }) %>%
+  plot_grid(plotlist = ., ncol = 1)
+
+abe_lec_so@meta.data %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(pred_grp = fct_relevel(pred_grp, names(pred_clrs))) %>%
+  arrange(pred_grp) %>%
+  ggplot(aes(Collecting_low, Collecting_high, color = pred_grp)) +
+  # ggplot(aes(cLEC_low, cLEC_high, color = pred_grp)) +
+  geom_point(size = 0.75) +
+  facet_grid( ~ subtype) +
+  base_theme +
+  theme(aspect.ratio = 1)
+
+abe_lec_so@meta.data %>%
+  filter(subtype %in% rf_typs) %>%
+  ggplot(aes(sample, Collecting_low, fill = pred_grp)) +
+  geom_boxplot() +
+  facet_wrap(~ subtype) +
+  base_theme +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
 ```
 
 ---
