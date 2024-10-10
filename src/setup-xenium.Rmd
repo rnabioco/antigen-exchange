@@ -279,8 +279,7 @@ if (!file.exists(ref_file)) {
   
   ref_so <- ref_so %>%
     SCTransform(vst.flavor = "v2")
-    # PrepSCTFindMarkers(assay = "SCT")
-  
+
   ref_so <- ref_so %>%
     RunPCA(
       assay    = "SCT",
@@ -486,7 +485,11 @@ dists <- fovs %>%
     cell_meta <- xen@meta.data %>%
       filter(fov == .x) %>%
       as_tibble(rownames = ".cell_id") %>%
-      dplyr::select(.cell_id, cell_type, Ag_class) %>%
+      dplyr::select(.cell_id, cell_type, Ag_class)
+    
+    stopifnot(identical(cell_coords$.cell_id, cell_meta$.cell_id))
+    
+    cell_meta <- cell_meta %>%
       left_join(cell_coords, by = ".cell_id")
     
     # Convert to sf object (sp package is deprecated)
@@ -534,7 +537,10 @@ dists <- fovs %>%
         suffix = c("_cell", "_lec")
       )
     
+    stopifnot(nrow(dists) == (n_distinct(lecs$.cell_id) * n_distinct(rownames(plys))))
+    
     # Determine closest LEC
+    # * there are a very small number of ties (<50 cells)
     res <- dists %>%
       group_by(other) %>%
       mutate(

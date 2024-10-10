@@ -171,7 +171,7 @@ calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
   DefaultAssay(obj) <- assay
   
   # Normalize using norm_factors
-  # if norm_factors not provided, values are not transformed
+  # * if norm_factors not provided, values are not transformed
   norm_clmns <- clmns
     
   if (!is.null(norm_factors)) {
@@ -272,7 +272,7 @@ calc_ag_score <- function(obj, clmns, control_types = c("B cells", "T cells"),
 format_ag_data <- function(so_in, norm_factors, ag_key, ...) {
   
   # Assign labels for Ag tags (ABPS2, ABPS4)
-  # * the identify of each tag is differs depending on the experiment
+  # * the identity of each tag differs depending on the experiment
   res <- so_in %>%
     mutate_meta(~ {
       dat <- .x
@@ -1390,9 +1390,9 @@ ref_immgen_dc <- cbind(ref_immgen[shared_gns, ], ref_mousespleenDC[shared_gns, ]
 
 ```{r "Ag normalization factors", eval = create_sobjs}
 # Calculate total UMI counts for each library using raw matrix
-# do not use filtered matrix since a poor quality library would have a high
-# fraction of counts in empty drops that would not be taken into account when
-# normalizing data
+# * do not use filtered matrix since a poor quality library would have a high
+#   fraction of counts in empty drops that would not be taken into account when
+#   normalizing data
 norm_file <- here("results/norm_factors.tsv")
 
 .calc_lib_size <- function(mat_path, mat_file, factor = 1e6) {
@@ -1574,9 +1574,6 @@ cd45neg_so <- cd45neg_so %>%
 ```
 
 ```{r "CD45+ samples", eval = create_sobjs}
-# NEED TO:
-# 1. check neutrophils, they show expression of Cd14, which is not expected
-
 # Load objects
 sobjs <- qread(here(params$so_dir, "sobjs.qs"))
 
@@ -1592,7 +1589,7 @@ cd45pos_so <- cd45pos_so %>%
   integrate_sobjs(group_vars = "mouse")
 
 # Cell type annotations
-# assign broad cell types and DC subset using a combined reference
+# * assign broad cell types and DC subset using a combined reference
 clst_clmn <- "RNA_snn_res.5"
 
 cd45pos_so <- cd45pos_so %>%
@@ -1605,7 +1602,7 @@ cd45pos_so <- cd45pos_so %>%
   mutate_meta(mutate, rough_type = type)
 
 # NK cells
-# ILCs show high expression of Nkg7, label these are NK cells
+# * ILCs show high expression of Nkg7, label these are NK cells
 cd45pos_so <- cd45pos_so %>%
   classify_markers(
     feats    = c("Ptprc", "Nkg7"),
@@ -1626,7 +1623,7 @@ cd45pos_so <- cd45pos_so %>%
   )
 
 # CD45- cells
-# a cluster of B cells show poor expression of Ptprc, label as unassigned
+# * a cluster of B cells show poor expression of Ptprc, label as unassigned
 cd45pos_so <- cd45pos_so %>%
   classify_markers(
     feats    = "Ptprc",
@@ -1637,7 +1634,7 @@ cd45pos_so <- cd45pos_so %>%
   )
 
 # cDC2 Tbet+
-# evidence is lacking that these are actually Tbet+ cells, label as cDC2s
+# * evidence is lacking that these are actually Tbet+ cells, label as cDC2s
 cd45pos_so <- cd45pos_so %>%
   mutate_meta(
     mutate,
@@ -1692,7 +1689,7 @@ clst_clmn <- "RNA_snn_res.10"
 lec_so <- .annotate_lecs(lec_so, clst_clmn)
 
 # Identify contaminating B and T cells
-# label other CD45+ cells as unassigned
+# * label other CD45+ cells as unassigned
 lec_so <- lec_so %>%
   classify_markers(
     feats    = "Ptprc",
@@ -1717,7 +1714,7 @@ lec_so <- lec_so %>%
   )
 
 # Adjust cell type labels
-# this adds BEC label and fixes B and T cell labels
+# * this adds BEC label and fixes B and T cell labels
 typ_data <- FetchData(lec_so, "cell_type")
 
 cd45neg_so <- cd45neg_so %>%
@@ -2111,117 +2108,4 @@ tm_key <- sam_info %>%
   distinct(tm, mouse)
 
 tm_key <- set_names(tm_key$tm, tm_key$mouse)
-```
-
-
-
-```{r "OLD Ag class", eval = FALSE}
-# Format data for clustering based on Ag scores
-# * The strategy is to identify Ag-high/low cells for all datasets together
-# * One might expect that changes in gene expression will depend on absolute
-#   levels of Ag taken up by the cell, and so it would make the most sense to
-#   use a consistent cutoff for Ag-high cells across all cell types and
-#   datasets.
-# * This should work since Ag scores are corrected based on background T/B
-#   signal.
-all_meta <- list(cd45neg_so, cd45pos_so) %>%
-  map_dfr(~ .x@meta.data) %>%
-  as_tibble(rownames = ".cell_id")
-
-clust_dat <- all_meta %>%
-  filter(Ag_score > 0)
-
-# Downsample samples
-# * This ensures that larger samples do not skew the clustering
-sam_size <- min(table(clust_dat$mouse))
-
-set.seed(42)
-  
-clust_dat <- clust_dat %>%
-  group_by(mouse) %>%
-  slice_sample(n = sam_size) %>%
-  ungroup()
-
-# Identify threshold for Ag-high/low cells
-ag_threshold <- clust_dat %>%
-  mutate(km_class = kmeans(Ag_score, centers = 2)$cluster) %>%
-  group_by(km_class) %>%
-  summarize(Ag_score = max(Ag_score)) %>%
-  pull(Ag_score) %>%
-  min()
-
-# Set Ag-high/low classifications
-cd45neg_so <- cd45neg_so %>%
-  mutate_meta(
-    mutate,
-    Ag_class = ifelse(
-      Ag_score >= ag_threshold,
-      "high", "low"
-    )
-  )
-
-cd45pos_so <- cd45pos_so %>%
-  mutate_meta(
-    mutate,
-    Ag_class = ifelse(
-      Ag_score >= ag_threshold,
-      "high", "low"
-    )
-  )
-```
-
-```{r "MARKERS TO CHECK ANNOTATIONS", eval = FALSE}
-marks <- c(
-  "type",
-  "Ptprc", "Cd3e", "Cd19", "Nkg7", "Ccr7",
-  "Adgre1", "Itgam",                  # Mon
-  "Cd14", "Fcgr3", "Fcgr1",           # Mac            
-  "Xcr1", "Cd8a", "Cd24a", "Clec9a", "Itgae", "Irf8",   # cDC1
-  "Cd4", "Sirpa", "Itgam",                              # cDC2
-  "Tbx21", "Dtx1", "Ccr6",                              # cDC2 Tbet+
-  "Cx3cr1", "Csf1r", "Clec12a", "Lyz2",                 # cDC2 Tbet-
-  "Ly6g", "Itgam"                                       # neutrophils
-)
-
-# marks %>%
-# c("Dtx1", "Ccr6", "Runx1", "Runx2", "Runx3", "Srebf1", "Srebf2") %>%
-# c("Sirpa", "Cd4", "Itgam", "Clec12a", "Cx3cr1", "Cd14", "Il1a", "Lyz2", "Csf1r") %>%
-# "Cd3e" %>%
-# "Sirpa" %>%
-# "type" %>%
-# "Cd19" %>%
-# "Cd79a" %>%
-# "adt_ABPS4" %>%
-# "adt_ovalbumin" %>%
-"subtype" %>%
-  map(~ {
-    cd45pos_so %>%
-      mutate_meta(mutate, rough_type = str_remove(rough_type, " \\(.+$")) %>%
-      mutate_meta(mutate, type = str_remove(type, " \\(.+$")) %>%
-      plot_scatter(
-        .x,
-        "hUMAP_1", "hUMAP_2",
-        group_col = "mouse",
-        panel_nrow = 1, size = 0.1, top = Inf,
-        outline = TRUE,
-        plot_colors = c("lightblue", "white", "red"),
-        # plot_colors = c(unassigned = "black")
-      ) +
-      theme(aspect.ratio = 0.9)
-  }) %>%
-  plot_grid(plotlist = .)
-
-marks[-1] %>%
-  map(~ {
-    cd45pos_so %>%
-      mutate_meta(mutate, type = str_remove(type, " \\(.+$")) %>%
-      plot_violin(
-        .x,
-        cluster_col = "type",
-        # group_col = "mouse",
-        panel_nrow = 1,
-        method = "boxplot"
-      )
-  }) %>%
-  plot_grid(plotlist = .)
 ```

@@ -109,16 +109,18 @@ abe_so <- merge(abe_so[[1]], abe_so[-1], add.cell.ids = names(abe_so))
 abe_so <- abe_so %>%
   PercentageFeatureSet(pattern = "^MT-", col.name = "pct_mito") %>%
   subset(
-    nFeature_RNA < 5000 &
+    nFeature_RNA   < 5000 &
       nFeature_RNA > 250 &
-      pct_mito < 20
+      pct_mito     < 20
   ) %>%
   mutate_meta(
     mutate,
     tissue = str_extract(orig.ident, "^[A-Z]+")
   )
-  
+
+# Integrate samples
 abe_so <- abe_so %>%
+  norm_sobj(scale_data = FALSE) %>%
   integrate_sobjs(
     group_vars  = "orig.ident",
     dims        = 1:40,
