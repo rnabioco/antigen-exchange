@@ -20,6 +20,7 @@ params:
   chikv_dir:    "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"                 # CHIKV objects
   xen_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/xenium/2024-03-22"  # Xenium objects
   ref_dir:      "ref"                                                                 # clustifyr references
+  geo_dir:      "results/geo"                                                         # GEO submission files
   table_dir:    "results/tables/2024-07-17"                                           # tables
   sample_info:  "sample_info.xlsx"                                                    # samples names/info
   res_dir:
@@ -294,88 +295,6 @@ rf_feats %>%
       ) %>%
       mutate_meta(dplyr::rename, !!!syms(clmn_nms))
   })
-```
-
-```{r "format CD45+ marker data", include = FALSE}
-cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
-
-DefaultAssay(cd45_so) <- "RNA"
-
-cd45pos_gns <- c(
-  "Ptprc",
-  "Cd3d", "Cd19",
-  "H2-Aa",
-  "Itgax",  # DCs
-  "Zbtb46", # DCs
-  "Ly6c2",
-  "Fcgr1",  # CD64, mon/mac
-  "Itgam",  # cDC2
-  "Cd14",   # mon/mac/neutrophils
-  "Ly6g",   # neutrophils
-  "Nkg7",   # NK cells
-  "Tbx21",  # NK cells
-  "Il7r"
-)
-
-lvls <- c(
-  "T cells", "B cells",
-  "DC", "Monocytes", "Neutrophils",
-  "NK cells", "ILC"
-)
-
-# Calculate mean expression
-cd45pos_marks <- cd45_so %>%
-  FetchData(c("cell_type", "mouse", cd45pos_gns)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(cd45pos_gns)) %>%
-  mutate(
-    cell_type = fct_relevel(cell_type, lvls),
-    mouse     = fct_relevel(mouse, mice),
-    name      = fct_relevel(name, rev(cd45pos_gns))
-  )
-
-rm(cd45_so)
-gc()
-```
-
-```{r "format CD45- marker data", include = FALSE}
-cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
-
-DefaultAssay(cd45_so) <- "RNA"
-
-cd45neg_gns <- c(
-  "Ptprc",
-  "Prox1", "Lyve1",
-  "Pdpn", "Pecam1",
-  "Cd3d", "Cd19",
-  "Ly6c2",
-  "Nkg7",
-  "Tbx21",
-  "Itgax",  # DCs
-  "Zbtb46", # DCs
-  "Fcgr1",  # CD64
-  "Itgam"
-)
-
-lvls <- c(
-  "LEC", "Fibroblasts", "BEC", "Epithelial cells",
-  "T cells", "B cells",
-  "DC", "NK cells"
-)
-
-# Calculate mean expression
-cd45neg_marks <- cd45_so %>%
-  FetchData(c("cell_type", "mouse", cd45neg_gns)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(cd45neg_gns)) %>%
-  mutate(
-    cell_type = fct_relevel(cell_type, lvls),
-    mouse     = fct_relevel(mouse, mice),
-    name      = fct_relevel(name, rev(cd45neg_gns))
-  )
-
-rm(cd45_so)
-gc()
 ```
 
 ---
@@ -1581,41 +1500,6 @@ figS3 <- plot_grid(
 )
 
 figS3
-```
-
-```{r "SPECIFICITY", eval = FALSE}
-progs <- rf_typs %>%
-  map(~ str_c(.x, "_", c("high", "low"))) %>%
-  c(recursive = TRUE)
-
-dat <- lec_so@meta.data %>%
-  filter(subtype %in% rf_typs) %>%
-  mutate(pred_grp = fct_relevel(pred_grp, names(pred_clrs))) %>%
-  filter(
-    tm == "14",
-    pred_grp == "Ag-high"
-  ) %>%
-  pivot_longer(all_of(progs))
-
-dat %>%
-  ggplot(aes(subtype, value, fill = subtype)) +
-  geom_boxplot() +
-  facet_wrap(~ name) +
-  guides(alpha = guide_legend(override.aes = list(fill = "black"))) +
-  base_theme +
-  theme(
-    aspect.ratio = 1
-  )
-
-# p-values
-x <- dat %>%
-  filter(name == "cLEC_low")
-
-wilcox.test(
-  (filter(x, subtype == "cLEC"))$value,
-  (filter(x, subtype == "Collecting"))$value
-)
-
 ```
 
 <br>
@@ -3082,111 +2966,6 @@ figS6 <- plot_grid(
 figS6
 ```
 
-
-
-```{r "geomx cropped images", fig.width = 14, fig.height = 7, eval = FALSE}
-# Select LN to plot
-sams <- geomx_dat %>%
-  filter(
-    LN == "ova-GeoMX+VV 6week and 3week LN1",
-    Segment %in% c("Lyve1", "CD11C")
-  ) %>%
-  pull(Sample_ID)
-
-img_cropped <- geomx_imgs$`Slide 1` %>%
-  cropSamples(sampleIDs = sams, sampsOnly = TRUE)
-
-# Plot cropped image
-img_fig <- img_args %>%
-  pmap(~ {
-    args <- list(...)
-    
-    img_cropped %>%
-      plot_geomx_image(
-        color = args$color,
-        clrs  = args$clrs,
-        ttl   = args$ttl,
-        labs  = args$labs,
-        scale_size = ttl_pt1,
-        scale_dist = 3,
-        legend_values = NULL,
-      ) +
-      theme(legend.position = "bottom")
-  })
-
-img_fig <- plot_grid(
-  plotlist = img_fig[-1],
-  nrow  = 1,
-  align = "h",
-  axis  = "tb",
-  hjust = 0.05,
-  labels     = c("A", "B", "C"),
-  label_size = ttl_pt2 * 1.5
-)
-```
-
-```{r "geomx all Ag boxplots", fig.width = 10, fig.height = 6.5, eval = FALSE}
-# Create boxplot
-all_geo_bxs <- geo_clmns %>%
-  imap(~ {
-    dat <- geomx_dat %>%
-      filter(sample != "naive", Segment != "Other") %>%
-      mutate(Segment = fct_relevel(Segment, names(seg_clrs)))
-    
-    n_dat <- dat %>%
-      group_by(region_3, Segment, sample) %>%
-      summarize(n = n(), .groups = "drop") %>%
-      mutate(n = str_c("n = ", n))
-    
-    dat %>%  
-      ggplot(aes(region_3, !!sym(.y), fill = region_3)) +
-      geom_boxplot(key_glyph = draw_key_point, alpha = 1, outlier.size = 0.25, width = 0.65) +
-      geom_text(
-        aes(region_3, Inf, label = n, fill = NULL),
-        data  = n_dat,
-        vjust = 1.4,
-        size  = 8 / .pt
-      ) +
-      
-      facet_grid(Segment ~ sample, scales = "free_y", labeller = as_labeller(geo_lab_fn)) +
-      scale_fill_manual(values = reg_clrs) +
-      scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
-      labs(y = .x) +
-      base_theme +
-      theme(
-        aspect.ratio    = 1.4,
-        legend.position = "none",
-        axis.text.x     = element_text(angle = 45, hjust = 1),
-        axis.title.x    = element_blank()
-      )
-  }) %>%
-  plot_grid(
-    plotlist = .,
-    nrow  = 1,
-    align = "h",
-    axis  = "tb",
-    labels     = c("C", "D"),
-    label_size = ttl_pt2 * 1.5
-  )
-```
-
-```{r "geomx figure", fig.width = 14, fig.height = 10, eval = FALSE}
-bot <- plot_grid(
-  geo_bxs, geo_sct,
-  nrow   = 1,
-  align  = "h",
-  axis   = "tb",
-  labels = c("D", "E"),
-  label_size = ttl_pt2 * 1.5
-)
-
-geo_fig <- plot_grid(
-  img_fig, bot,
-  ncol = 1,
-  rel_heights = c(1, 0.75)
-)
-```
-
 ---
 
 <br>
@@ -3639,11 +3418,6 @@ B.  The fraction of cLECs predicted to be Ag-competent is shown for each
 C.  The fraction of fLECs predicted to be Ag-competent is shown as in A.
 D.  The fraction of collecting LECs predicated to be Ag-compentent is shown as
     in A.
-    
-<u>Notes</u>
-
-* Samples with >20 cLECs are included in the analysis
-* Most FL samples have <100 cLECs
 
 ```{r "Abe marker expression"}
 # Format marker data
@@ -3835,66 +3609,6 @@ plot_grid(
 rm(abe_lec_so)
 ```
 
-```{r "ABE ALT BARGRAPHS", eval = FALSE}
-# Create Ag class bargraphs
-abe_type <- "cLEC"
-
-abe_lec_so@meta.data %>%
-  as_tibble(rownames = "cell_id") %>%
-  filter(subtype == abe_type) %>%
-  group_by(tissue) %>%
-  mutate(rep = str_extract(orig.ident, "[0-9](?=_)")) %>%
-  create_chikv_class_bars(
-    x    = "tissue",
-    n_p  = n_distinct(abe_lec_so$subtype),
-    clrs = abe_clrs,
-    ttl  = str_c("fraction Ag-competent ", abe_type, "s")
-  ) +
-  theme(strip.text = element_blank())
-```
-
-```{r "ABE MODULE SCORES", eval = FALSE}
-names(module_nms) %>%
-  map(~ {
-    abe_lec_so@meta.data %>%
-      filter(subtype %in% rf_typs) %>%
-      ggplot(aes(sample, !!sym(.x), fill = tissue)) +
-      geom_boxplot() +
-      geom_hline(yintercept = 0, linetype = 2) +
-      facet_wrap(~ subtype, nrow = 1) +
-      base_theme +
-      theme(
-        axis.title.x = element_blank(),
-        axis.text.x  = element_blank(),
-        axis.ticks.x = element_blank()
-        # axis.text.x = element_text(angle = 45, hjust = 1)
-      )
-  }) %>%
-  plot_grid(plotlist = ., ncol = 1)
-
-abe_lec_so@meta.data %>%
-  filter(subtype %in% rf_typs) %>%
-  mutate(pred_grp = fct_relevel(pred_grp, names(pred_clrs))) %>%
-  arrange(pred_grp) %>%
-  ggplot(aes(Collecting_low, Collecting_high, color = pred_grp)) +
-  # ggplot(aes(cLEC_low, cLEC_high, color = pred_grp)) +
-  geom_point(size = 0.75) +
-  facet_grid( ~ subtype) +
-  base_theme +
-  theme(aspect.ratio = 1)
-
-abe_lec_so@meta.data %>%
-  filter(subtype %in% rf_typs) %>%
-  ggplot(aes(sample, Collecting_low, fill = pred_grp)) +
-  geom_boxplot() +
-  facet_wrap(~ subtype) +
-  base_theme +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1)
-  )
-
-```
-
 ---
 
 <br>
@@ -3906,6 +3620,48 @@ abe_lec_so@meta.data %>%
 ### CD45+ markers {.tabset .tabset-pills}
 
 Mean expression is shown for key marker genes for CD45+ scRNA-seq datasets.
+
+```{r "format CD45+ marker data", include = FALSE}
+cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
+
+cd45pos_gns <- c(
+  "Ptprc",
+  "Cd3d", "Cd19",
+  "H2-Aa",
+  "Itgax",  # DCs
+  "Zbtb46", # DCs
+  "Ly6c2",
+  "Fcgr1",  # CD64, mon/mac
+  "Itgam",  # cDC2
+  "Cd14",   # mon/mac/neutrophils
+  "Ly6g",   # neutrophils
+  "Nkg7",   # NK cells
+  "Tbx21",  # NK cells
+  "Il7r"
+)
+
+lvls <- c(
+  "T cells", "B cells",
+  "DC", "Monocytes", "Neutrophils",
+  "NK cells", "ILC"
+)
+
+# Calculate mean expression
+cd45pos_marks <- cd45_so %>%
+  FetchData(c("cell_type", "mouse", cd45pos_gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(cd45pos_gns)) %>%
+  mutate(
+    cell_type = fct_relevel(cell_type, lvls),
+    mouse     = fct_relevel(mouse, mice),
+    name      = fct_relevel(name, rev(cd45pos_gns))
+  )
+
+rm(cd45_so)
+gc()
+```
 
 ```{r "CD45+ markers 1", fig.width = 10, fig.height = 4}
 heat_dat <- cd45pos_marks %>%
@@ -3976,6 +3732,46 @@ cd45pos_gns %>%
 ### CD45- markers {.tabset .tabset-pills}
 
 Mean expression is shown for key marker genes for CD45- scRNA-seq datasets.
+
+```{r "format CD45- marker data", include = FALSE}
+cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
+
+cd45neg_gns <- c(
+  "Ptprc",
+  "Prox1", "Lyve1",
+  "Pdpn", "Pecam1",
+  "Cd3d", "Cd19",
+  "Ly6c2",
+  "Nkg7",
+  "Tbx21",
+  "Itgax",  # DCs
+  "Zbtb46", # DCs
+  "Fcgr1",  # CD64
+  "Itgam"
+)
+
+lvls <- c(
+  "LEC", "Fibroblasts", "BEC", "Epithelial cells",
+  "T cells", "B cells",
+  "DC", "NK cells"
+)
+
+# Calculate mean expression
+cd45neg_marks <- cd45_so %>%
+  FetchData(c("cell_type", "mouse", cd45neg_gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(cd45neg_gns)) %>%
+  mutate(
+    cell_type = fct_relevel(cell_type, lvls),
+    mouse     = fct_relevel(mouse, mice),
+    name      = fct_relevel(name, rev(cd45neg_gns))
+  )
+
+rm(cd45_so)
+gc()
+```
 
 ```{r "CD45- markers 1", fig.width = 10, fig.height = 4}
 heat_dat <- cd45neg_marks %>%
@@ -4390,193 +4186,6 @@ bar_dat %>%
   )
 ```
 
-```{r "XENIUM AG TYPE HEAT ALL SUPPLEMENTAL", fig.width = 14, fig.height = 6, eval = FALSE}
-bar_dat <- xen %>%
-  group_by(fov, slide, cell_type) %>%
-  summarize(
-    n = n(),
-    pct_ag_pos = (sum(Ag_class == "Ag-high") / n) * 100,
-    .groups = "drop"
-  ) %>%
-  filter(n > 100)
-
-# Filter to exclude cell types with < 100 cells
-bar_dat %>%
-  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
-  
-  group_by(fov, slide) %>%
-  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
-  
-  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
-  geom_tile() +
-  facet_wrap(~ slide) +
-  scale_fill_gradientn(colours = c("white", "#E7301F"), name = "relative %\nAg+ cells") +
-  base_theme +
-  theme(
-    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov),
-    axis.title.y = element_blank()
-  )
-```
-
-```{r "XENIUM 3WK 6WK SIGNAL", eval = FALSE}
-
-bar_dat <- xen@meta.data %>%
-  group_by(fov, cell_type) %>%
-  summarize(
-    ag_pct_1 = (sum(Ag_tag_1 > 0) / n()) * 100,
-    ag_pct_2 = (sum(Ag_tag_2 > 0) / n()) * 100,
-    .groups  = "drop"
-  )
-
-# Filter to exclude cell types with < 100 cells
-bar_dat %>%
-  mutate(cell_type = fct_reorder(cell_type, pct_ag_pos)) %>%
-  
-  group_by(fov) %>%
-  mutate(pct_ag_pos = as.numeric(scale(pct_ag_pos))) %>%
-  
-  ggplot(aes(fov, cell_type, fill = pct_ag_pos)) +
-  geom_tile() +
-  scale_fill_gradientn(colours = c("white", "#E7301F")) +
-  base_theme +
-  theme(
-    aspect.ratio = n_distinct(bar_dat$cell_type) / n_distinct(bar_dat$fov)
-  )
-```
-
-```{r "XENIUM UMAPS", eval = FALSE}
-top <- c("LEC", "other CD45-", "BEC")
-
-xen@meta.data %>%
-  plot_scatter(
-    "cell_type",
-    group_col = "fov",
-    size      = 0.00001
-    # top       = top
-  ) +
-  scale_color_spruce(difference = 20) +
-  theme(aspect.ratio = 0.9)
-
-xen@meta.data %>%
-  mutate(Ag_counts = Ag_tag_1 + Ag_tag_2 + 1) %>%
-  plot_scatter(
-    "Ag_counts",
-    outline     = TRUE,
-    plot_colors = c("white", "red"),
-    group_col   = "fov",
-    size        = 0.00001,
-    trans       = "log10"
-  ) +
-  theme(aspect.ratio = 0.9)
-
-xen@meta.data %>%
-  filter(cell_type %in% top) %>%
-  plot_scatter(
-    "SCT_snn_res.10",
-    group_col = "fov",
-    size      = 0.00001
-  ) +
-  scale_color_spruce(difference = 20) +
-  theme(aspect.ratio = 0.9)
-
-# Boxplots
-gns <- c(
-  "Ptprc", "Pdpn", "Pecam1",
-  "Cd3d", "Cd19",
-  "Prox1", "Lyve1",
-  "Itgax",           # DCs
-  "Xcr1",            # cDC1
-  "Sirpa", "Itgam",  # cDC2
-  "Siglech",         # Siglech DCs
-  "Ccr7"
-)
-
-dat <- xen %>%
-  FetchData(c(
-    "fov", "cell_type",
-    "UMAP_1", "UMAP_2",
-    "SCT_snn_res.10", gns
-  ))
-
-gns %>%
-  map(~ {
-    dat %>%
-      # filter(cell_type %in% top) %>%
-      plot_violin(
-        .x,
-        cluster_col = "SCT_snn_res.10",
-        method = "boxplot",
-        top = 20
-      ) +
-      scale_fill_spruce() +
-      scale_color_spruce()
-  }) %>%
-  plot_grid(plotlist = .)
-
-dat %>%
-  filter(cell_type %in% top) %>%
-  plot_violin(
-    "Ptprc",
-    cluster_col = "SCT_snn_res.10",
-    method = "boxplot",
-    # plot_colors = c("lightblue", "red"),
-  )
-
-dat %>%
-  plot_scatter(
-    "Ptprc",
-    group_col = "fov",
-    size = 0.0001,
-    plot_colors = c("lightblue", "red")
-  )
-
-dat %>%
-  ggplot(aes(Ptprc)) +
-  geom_histogram() +
-  facet_wrap(~ fov)
-
-```
-
-```{r "XENIUM CELL TYPES", eval = FALSE}
-# Format data
-xen_dat <- xen %>%
-  filter(fov == top_fov)
-
-n_labs <- xen_dat %>%
-  group_by(cell_type) %>%
-  summarize(n = n(), .groups = "drop") %>%
-  mutate(
-    n_lab = str_c(cell_type, "\nn = ", label_comma()(n))
-  ) %>%
-  pull(n_lab, cell_type)
-
-# Plot cell types
-xen_typ_fig <- xen_dat %>%
-  ggplot(aes(y_cell, x_cell, fill = cell_type)) +
-  geom_point_trace(
-    size = 0.1,
-    color = NA,
-    trace_position = !grepl("^other", cell_type),
-    background_params = list(color = "black", size = 0.5)
-  ) +
-  facet_wrap(~ slide) +
-  guides(fill = guide_legend(
-    nrow = 2,
-    title.position = "top",
-    override.aes = list(size = 4)
-  )) +
-  scale_fill_manual(values = xen_clrs, labels = n_labs) +
-  coord_fixed() +
-  umap_theme_2 +
-  theme(
-    legend.position   = "bottom",
-    legend.key.height = unit(35, "pt"),
-    legend.title      = element_blank(),
-    legend.text       = element_text(size = ttl_pt2),
-    strip.text        = element_text(size = ttl_pt2)
-  )
-```
-
 ---
 
 <br>
@@ -4587,4 +4196,56 @@ xen_typ_fig <- xen_dat %>%
 
 ```{r "session info"}
 sessionInfo()
+```
+
+```{r "save matrices"}
+# Metadata columns to include
+clmns_1 <- c(
+  "cell_id",
+  "exp",
+  "sample",
+  "mouse",
+  "tm",
+  "vaccination",
+  "RNA_snn_res.5",
+  "RNA_snn_res.10",
+  "cell_type",
+  "subtype",
+  "Ag_score",
+  "Ag_score_3",
+  "Ag_score_6",
+  "Ag_class_ml",
+  "Ag_class_dual",
+  "hUMAP_1",
+  "hUMAP_2"
+)
+
+clmns_2 <- clmns_1[clmns_1 != "subtype"]
+
+# Write files for GEO
+geo_objs <- list(
+  obj   = c("cd45neg", "cd45pos", "lec", "dc"),
+  clmns = list(clmns_1, clmns_1, clmns_2, clmns_2)
+)
+
+geo_objs %>%
+  pwalk(~ {
+    prfx      <- str_c(.x, "_")
+    geo_files <- str_c(prfx, c("count_matrix.tsv.gz", "metadata.tsv.gz"))
+    geo_files <- here(params$geo_dir, geo_files)
+    
+    # Write matrices and meta.data
+    if (all(file.exists(geo_files))) return(NULL)
+    
+    obj <- qread(here(params$so_dir, str_c(prfx, "so.qs")))
+    
+    obj %>%
+      export_matrices(
+        assays      = c("RNA", "ADT"),
+        feat_type   = c("Gene Expression", "Antibody Capture"),
+        columns     = .y,
+        out_dir     = params$geo_dir,
+        file_prefix = prfx
+      )
+  })
 ```

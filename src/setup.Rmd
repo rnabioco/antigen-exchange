@@ -16,6 +16,7 @@ library(presto)
 library(harmony)
 library(djvdj)
 library(M3Drop)
+library(hdf5r)
 
 # Gene ontology
 library(gprofiler2)

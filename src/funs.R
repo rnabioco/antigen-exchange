@@ -1108,33 +1108,61 @@ classify_mod_score <- function(so_in, feats, prefix, cutoff = 1, clst_col, type_
 #' @param file_prefix Prefix to add to output files
 #' @return Counts and meta.data tables
 #' @export
-export_matrices <- function(sobj_in, assays = "RNA", gene_prefix = "", columns,
-                            out_dir, file_prefix = "") {
+export_matrices <- function(sobj_in, assays = "RNA", feat_type = "Gene Expression",
+                            gene_prefix = "", columns, out_dir, file_prefix = "") {
   
   if (length(gene_prefix) == 1) {
     gene_prefix <- rep(gene_prefix, length(assays))
   }
   
   # Format count matrices
-  counts <- map2_dfr(assays, gene_prefix, ~ {
-    sobj_in %>%
-      Seurat::GetAssayData(assay = .x, "counts") %>%
-      tibble::as_tibble(rownames = "gene_symbol") %>%
-      dplyr::mutate(gene_symbol = stringr::str_c(.y, gene_symbol))
-  })
+  assays <- purrr::set_names(feat_type, assays)
   
-  # Write count matrix
+  mat <- assays %>%
+    purrr::imap(~ Seurat::GetAssayData(sobj_in, assay = .y, "counts"))
+  
+  gene_names <- mat %>%
+    purrr::map(rownames) %>%
+    c(recursive = TRUE, use.names = FALSE)
+  
+  feat_type <- mat %>%
+    purrr::imap(~ rep(assays[[.y]], nrow(.x))) %>%
+    c(recursive = TRUE, use.names = FALSE)
+  
+  mat <- mat %>%
+    purrr::reduce(rbind)
+  
+  barcodes <- colnames(mat)
+  
+  # Create HDF5 file
   counts_out <- file.path(out_dir, str_c(file_prefix, "count_matrix.tsv.gz"))
   
-  counts %>%
-    readr::write_tsv(counts_out)
+  h5file <- H5File$new(counts_out, mode = "w")
+  
+  h5file$create_group("matrix")
+  h5file$create_group("matrix/features")
+  
+  h5file[["matrix/barcodes"]]              <- barcodes
+  h5file[["matrix/features/name"]]         <- gene_names
+  h5file[["matrix/features/feature_type"]] <- feat_type
+  
+  # Save matrix data (in sparse format)
+  # * convert to COO format (i, j, x)
+  triplet <- summary(mat)
+  
+  h5file[["matrix/data"]]    <- triplet$x                       # Non-zero values
+  h5file[["matrix/indices"]] <- triplet$i - 1                   # Adjust indices for 0-based indexing
+  h5file[["matrix/indptr"]]  <- c(0, cumsum(table(triplet$j)))  # Compressed column pointer
+  h5file[["matrix/shape"]]   <- c(nrow(mat), ncol(mat))         # Matrix dimensions
+  
+  h5file$close()
   
   # Write meta.data table
   meta_out <- file.path(out_dir, str_c(file_prefix, "metadata.tsv.gz"))
   
   sobj_in@meta.data %>%
     tibble::as_tibble(rownames = "cell_id") %>%
-    dplyr::select(all_of(columns)) %>%
+    dplyr::select(any_of(columns)) %>%
     readr::write_tsv(meta_out)
 }
 
