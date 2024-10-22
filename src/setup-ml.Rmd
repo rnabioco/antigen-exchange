@@ -865,8 +865,12 @@ get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
       # so_in is required to determine background gene list
       # if genes is not named, all cells in so_in will be used
       if (!is.null(so_in)) {
-        if (is.character(.y)) bkgd <- subset(so_in, !!sym(type_clmn) == .y)
-        else                  bkgd <- so_in
+        if (is.character(.y) && (.y %in% so_in[[type_clmn]][[1]])) {
+          bkgd <- subset(so_in, !!sym(type_clmn) == .y)
+          
+        } else {
+          bkgd <- so_in
+        }
         
         bkgd <- bkgd@assays$RNA@data %>%
           rowMeans() %>%
@@ -885,7 +889,9 @@ get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
     })
   
   # Identify GO terms for each gene list
-  # exclude specified genes
+  # * exclude specified genes
+  # * the geneRatio column may not include some input genes if they are not
+  #   included in the "GOALL" gene universe used by clusterProfiler
   go <- genes %>%
     imap(~ {
       .x <- .x[!grepl(exclude_genes, .x)]
@@ -907,9 +913,6 @@ get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
       # * these genes could be used to calculate overall fold enrichment for
       #   each cell type for GO clusters, i.e. determine total number of unique
       #   background genes overlapping all terms in the cluster
-      # * overall fold enrichment scores for each cell type were not used
-      #   in the final version of the GO heatmaps since the overall enrichment
-      #   scores are on a much different scale as the other enrichement scores
       bkgd_gns <- g@result$ID %>%
         clusterProfiler::bitr(         # used to fetch gene symbols for GO terms
           fromType = "GOALL", toType = "SYMBOL",
@@ -929,7 +932,7 @@ get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
         mutate(bgID = bkgd_gns[ID])
     })
   
-  # Merge GO objects  
+  # Merge GO objects
   if (!is.null(names(go))) {
     go <- merge_result(go)
     
@@ -940,9 +943,9 @@ get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
   }
   
   # Simplify terms
-  # this collapses terms that are very similar
-  # this is very slow
-  if (simplify_terms) {
+  # * this collapses terms that are very similar
+  # * this is very slow
+  if (simplify_terms && !is.list(go)) {
     go <- go %>%
       clusterProfiler::simplify(semData = sim_data)
   }

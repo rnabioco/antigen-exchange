@@ -49,6 +49,7 @@ library(colorblindr)
 library(patchwork)
 library(ggtext)
 library(ggtrace)
+library(ggVennDiagram)
 library(MetBrewer)
 library(ggtree)
 library(qs)
@@ -340,7 +341,7 @@ format_ag_data <- function(so_in, norm_factors, ag_key, ...) {
 create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
                                    p_method = wilcox.test, p_alt = "two.sided",
                                    p_hjust = c(0.7, 0.5), p_vjust = c(1.2, 2.4),
-                                   n_label = FALSE
+                                   n_label = FALSE, ...
                                    ) {
 
   # Format data for boxplots  
@@ -395,7 +396,8 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
     geom_boxplot(
       outlier.size = 0.1,
       position     = position_dodge2(preserve = "single"),
-      key_glyph    = draw_key_point
+      key_glyph    = draw_key_point,
+      ...
     ) +
     
     # r label
@@ -2011,7 +2013,7 @@ ito_clrs <- c(
 )
 
 clrs <- ito_clrs %>%
-  sort_colors() %>%
+  sort_colors("hue") %>%
   interp_colors(n = length(typs)) %>%
   spruce_colors(
     difference = Inf,
@@ -2068,7 +2070,7 @@ other_clrs <- other_clrs %>%
 lec_clrs <- c(lec_clrs, other_clrs)
 
 lec_clrs <- lec_clrs %>%
-  sort_colors() %>%
+  sort_colors("hue") %>%
   spruce_colors(
     difference = Inf,
     filter = "deutan",

@@ -62,7 +62,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -1091,7 +1091,8 @@ mod_bxs <- rf_mod_args %>%
         p_hjust      = c(args$p_hjust, 0.5),
         p_vjust      = c(1.2, 2),
         clrs         = pred_clrs,
-        n_label      = args$n_label
+        n_label      = args$n_label,
+        linewidth    = 0.6
       )
   })
 ```
@@ -1233,7 +1234,9 @@ gene_examples <- lec_so %>%
   create_gn_plots(
     p_data = p_dat,
     top_gns = c(
-      "Ctsd", "Lgmn", "Psap", "Grn",
+      "Naaa", "Parm1",
+      "Psap", "Ctsd",
+      # "Lgmn", "Grn",     # other endosome related genes
       "Col4a2", "Tmsb4x",  # cell migration, angiogenesis
       "Ctla2a", "Ltbp4"    # immune response
     ),
@@ -1288,8 +1291,11 @@ fig2
 
 ### Figure S3
 
-A.  The top 15 gene ontology terms (cellular component) are shown for Ag-high gene modules
-    for each cLECs, fLECs, and collecting LECs.
+A.  Venn diagram shows the number of genes shared between the cLEC, fLEC and
+    collecting LEC gene modules.
+A.  The top gene ontology terms (biological process, cellular component) are
+    shown for the cLEC, fLEC, and collecting LEC Ag-high gene modules.
+    The number of overlapping genes is shown to the right of each ontology term.
 B.  Top gene ontology terms are shown for Ag-low gene modules as described in A.
 C.  The expression of each Ag-high gene module is shown for naive LECs
     (0 days post vaccination) along with each time point.
@@ -1307,6 +1313,18 @@ G.  UMAP projections show fLEC Ag-high module scores for each timepoint.
 H.  UMAP projections show collecting LEC Ag-high module scores for each
     timepoint.
 
+```{r "RF venn diagram"}
+rf_venn <- rf_feats[rf_typs] %>%
+  map(~ c(.x, recursive = TRUE, use.names = FALSE)) %>%
+  ggVennDiagram(set_size = ttl_pt2 / .pt) +
+  scale_fill_gradientn(colours = c("#56B4E9", "white", "#E7301F"), name = "number\nof genes") +
+  theme(
+    legend.key.height = unit(12, "pt"),
+    legend.key.width  = unit(7, "pt"),
+    legend.ticks      = element_blank()
+  )
+```
+
 ```{r "RF GO"}
 # Term similarity for simplifying terms
 dbs <- set_names(c("BP", "CC", "MF"))
@@ -1320,7 +1338,7 @@ go_sim_data <- dbs %>%
     )
   })
 
-# Get enriched GO terms
+# Get GO terms
 rf_grps <- rf_feats %>%
   map(names) %>%
   reduce(unique)
@@ -1341,7 +1359,7 @@ go_res <- rf_grps %>%
           get_go(
             lec_so,
             type_clmn      = "subtype",
-            max_term_size  = 500,
+            max_term_size  = 1000,
             min_term_size  = 10,
             db             = .y,
             simplify_terms = TRUE,
@@ -1355,22 +1373,28 @@ go_res <- rf_grps %>%
       })
   })
 
-# Filter GO terms
+# Filter for significant GO terms
 go_sig <- go_res %>%
   filter(p.adjust < 0.05) %>%
   arrange(p.adjust)
+```
 
+```{r "RF GO plot"}
 # Plot top CC GO terms
+# * only plot top BP and CC terms
 go_fig <- go_sig %>%
-  filter(db == "CC") %>%
-  group_by(Cluster, pred_grp) %>%
-  slice(1:15) %>%
+  filter(db %in% c("CC", "BP")) %>%
+  group_by(db, Cluster, pred_grp) %>%
+  slice(1:5) %>%
+  ungroup() %>%
+  arrange(p.adjust) %>%
   split(.$pred_grp) %>%
   imap(~ {
     dat <- .x %>%
       mutate(
-        y_var = str_c(Cluster, "-", Description),
-        y_var = fct_reorder(y_var, p.adjust, min, .desc = TRUE),
+        y_var       = str_c(Cluster, "-", Description),
+        y_var       = fct_reorder(y_var, p.adjust, min, .desc = TRUE),
+        Description = str_trunc(Description, width = 60)
       )
       
     y_labs <- dat %>%
@@ -1382,26 +1406,42 @@ go_fig <- go_sig %>%
       ggplot(aes(-log10(p.adjust), y_var, fill = Cluster)) +
       geom_col() +
       geom_vline(xintercept = -log10(0.05), color = "black", linetype = 2) +
+      geom_text(
+        aes(label = GeneRatio),
+        hjust = -0.1
+      ) +
+      
       facet_grid(space = "free", scales = "free_y", rows = vars(Cluster)) +
       labs(title = str_c("Ag-", .y), x = "-log10(p-value)") +
+      scale_x_continuous(expand = expansion(c(0, 0.15))) +
       scale_y_discrete(labels = y_labs) +
       scale_fill_manual(values = lec_clrs) +
       base_theme +
       theme(
         legend.position = "none",
-        plot.title      = element_text(size = ttl_pt2 * 1.5, hjust = 0.25),
+        plot.title      = element_text(size = ttl_pt2, hjust = 0.25),
         strip.clip      = "off",
-        axis.title.y    = element_blank()
+        axis.title.y    = element_blank(),
+        axis.text.y     = element_text(size = txt_pt1)
       )
   }) %>%
   plot_grid(
-    plotlist = .,
-    nrow  = 1,
-    align = "vh",
-    axis  = "trbl",
-    labels     = c("A", "B"),
+    plotlist   = .,
+    nrow       = 1,
+    align      = "vh",
+    axis       = "trbl",
+    labels     = c("B", "C"),
     label_size = ttl_pt2 * 1.5
   )
+
+# Create final GO figure
+go_fig <- plot_grid(
+  rf_venn, go_fig,
+  nrow       = 1,
+  rel_widths = c(0.5, 1),
+  labels     = c("A", ""),
+  label_size = ttl_pt2 * 1.5
+)
 ```
 
 ```{r "RF naive expression", fig.width = 10, fig.height = 4}
@@ -1422,7 +1462,7 @@ naive_fig <- naive_dat %>%
   imap(~ {
     .x %>%
       ggplot(aes(tm, value, fill = subtype)) +
-      geom_boxplot(outlier.size = 0.25, width = 0.5) +
+      geom_boxplot(linewidth = 0.7, outlier.size = 0.25, width = 0.5) +
       facet_grid(~ module_type) +
       scale_fill_manual(values = lec_clrs) +
       labs(x = "days post vaccination", y = "module score") +
@@ -1431,15 +1471,17 @@ naive_fig <- naive_dat %>%
         aspect.ratio = 1.1,
         legend.position = "none"
       )
-  }) %>%
-  plot_grid(
-    plotlist = .,
-    nrow  = 1,
-    align = "h",
-    axis  = "tb",
-    labels = c("C", "D"),
-    label_size = ttl_pt2 * 1.5
-  )
+  })
+
+naive_fig <- plot_grid(
+  plotlist = append(naive_fig, list(NULL)),
+  nrow  = 1,
+  align = "h",
+  axis  = "tb",
+  rel_widths = c(1, 1, 0.5),
+  labels     = c("D", "E", ""),
+  label_size = ttl_pt2 * 1.5
+)
 ```
 
 ```{r "RF predicted Ag class", fig.width = 8, fig.height = 5}
@@ -1464,7 +1506,7 @@ rf_bar_2 <- rf_bar_dat %>%
 top <- plot_grid(
   rf_bar_2, mod_bxs[[2]],
   rel_widths = c(0.75, 1),
-  labels = c("E", "F"),
+  labels = c("F", "G"),
   label_size = ttl_pt2 * 1.5,
   align = "h",
   axis  = "tb"
@@ -1486,7 +1528,7 @@ right <- plot_grid(
 
 bot <- plot_grid(
   left, right,
-  labels = c("G", "H"),
+  labels = c("H", "I"),
   label_size = ttl_pt2 * 1.5,
   nrow  = 1,
   align = "h",
@@ -1500,6 +1542,180 @@ figS3 <- plot_grid(
 )
 
 figS3
+```
+
+```{r "GENE SIMILARITY", eval = FALSE, inclue = FALSE}
+go_info <- go_sig %>%
+  filter(Cluster == "cLEC", pred_grp == "high") %>%
+  
+  select(Cluster, ID, Description, geneID, p.adjust) %>%
+  mutate(geneID = str_split(geneID, pattern = "/")) %>%
+  unnest(geneID) %>%
+  arrange(geneID, p.adjust)
+
+# Simplified GO terms
+gns <- rf_feats$cLEC$high
+
+go <- gns %>%
+  enrichGO(
+    OrgDb   = org.Mm.eg.db,
+    keyType = "SYMBOL",
+    ont     = "BP"
+  )
+
+
+
+# go@result <- go[go$ID %in% go_info$ID]
+
+
+sim <- pairwise_termsim(new)
+
+x <- new %>%
+  clusterProfiler::simplify(cutoff = 0.5)
+
+# # GO slim terms
+# go_slim_terms <- getBM(
+#   attributes = c("go_id", "goslim_goa_accession", "goslim_goa_description"), 
+#   filters = "go",
+#   values = unique(go_sig$ID),
+#   mart = m_mart
+# )
+# 
+# # Prepare GO data to measure gene similarity
+# go_sim_data <- godata(
+#   OrgDb   = org.Mm.eg.db,
+#   keytype = "SYMBOL",
+#   ont     = "BP"
+# )
+# 
+
+# # biomaRt GO terms
+# biomrt <- "ensembl"
+# m_mart <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+# 
+# gn_ids <- getBM(
+#   attributes = c("external_gene_name", "entrezgene_id", "go_id"),
+#   filters    = "external_gene_name",
+#   values     = gns,
+#   mart       = m_mart
+# )
+```
+
+```{r "GENE SIMILARITY-2", eval = FALSE, include = FALSE}
+# Calculate gene similarity
+typ  <- "Collecting"
+clss <- "high"
+db   <- "CC"
+gns  <- rf_feats[[typ]][[clss]]
+
+gn_sim <- mgeneSim(gns, semData = go_sim_data[[db]])
+gn_sim <- as.dist(1 - gn_sim)
+
+# Cluster genes
+clsts <- gn_sim %>%
+  hclust() %>%
+  cutree(k = 10)
+
+clst_list <- split(names(clsts), as.factor(clsts))
+
+# Identify GO terms for each gene cluster
+res <- get_go(
+  genes         = clst_list,
+  so_in         = subset(lec_so, subtype == typ),
+  max_term_size = 5000,
+  min_term_size = 10,
+  db            = db,
+  sim_data      = go_sim_data[[db]]
+)
+
+
+
+# res@compareClusterResult %>%
+#   select(-bgID) %>%
+#   mutate(geneID = str_split(geneID, "/")) %>%
+#   unnest(geneID) %>%
+#   
+#   group_by(ID) %>%
+#   mutate(n_genes = n_distinct(geneID), term_size = as.numeric(str_extract(BgRatio, "^[0-9]+"))) %>%
+#   filter(term_size < 2000) %>%
+#   arrange(Cluster, desc(n_genes), p.adjust) %>%
+#   
+#   group_by(geneID) %>%
+#   
+#   ungroup() %>%
+#   as.data.frame() %>%
+#   arrange(Cluster, p.adjust) %>%
+#   filter(p.adjust < 0.05)
+
+
+
+# res@compareClusterResult %>%
+#   select(-bgID) %>%
+#   mutate(geneID = str_split(geneID, "/")) %>%
+#   unnest(geneID) %>%
+#   
+#   group_by(ID) %>%
+#   mutate(n_genes = n_distinct(geneID)) %>%
+#   arrange(Cluster, desc(n_genes), p.adjust) %>%
+#            
+#   group_by(geneID) %>%
+#   
+#   slice(1) %>%
+#   
+#   ungroup()
+  
+  
+
+# x <- go_res %>%
+#   mutate(
+#     geneID = str_split(geneID, "/")
+#   ) %>%
+#   unnest(geneID) %>%
+#   filter(geneID %in% names(clsts)) %>%
+#   mutate(go_clst = clsts[geneID]) %>%
+#   group_by(go_clst, ID) %>%
+#   mutate(n_genes = n_distinct(geneID)) %>%
+#   ungroup() %>%
+#   select(-bgID)
+# 
+# x %>%
+#   filter(
+#     Cluster == "Collecting",
+#     pred_grp == "high",
+#     db == "BP"
+#   ) %>%
+#   group_by(go_clst) %>%
+#   slice_max(n_genes, n = 5) %>%
+#   ungroup() %>%
+#   arrange(go_clst, desc(n_genes)) %>%
+# 
+#   filter(go_clst == 1) %>%
+#   group_by(geneID) %>%
+#   slice_min(p.adjust, n = 1) %>%
+#   slice_max(n_genes) %>%
+#   ungroup() %>%
+#   arrange(geneID, desc(n_genes), p.adjust)
+# 
+# go <- gost(
+#   clsts,
+#   organism = "mmusculus"
+# )
+# 
+# # biomaRt GO terms
+# biomrt <- "ensembl"
+# m_mart <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+# 
+# attrs <- c(
+#   "external_gene_name", "entrezgene_id",
+#   "go_id", "goslim_goa_accession", "goslim_goa_description"
+# )
+# 
+# gn_ids <- getBM(
+#   attributes = attrs,
+#   filters    = "external_gene_name",
+#   values     = gns,
+#   mart       = m_mart
+# )
 ```
 
 <br>
@@ -1577,15 +1793,21 @@ tbl_s2
 
 ### Table S3
 
-Biological function and cellular component gene ontology terms are shown for
+Gene ontology terms are shown for
 Ag-low and Ag-high cells.
 
 ```{r}
+ex_clmns <- c(
+  "bgID", "n_ovlp", "tot_genes",
+  "n_bg_ovlp", "tot_bg_genes",
+  "Count", "enrichment"
+)
+
 tbl_s3 <- go_sig %>%
   rename(Ag_class = pred_grp, cell_type = Cluster) %>%
   mutate(Ag_class = str_c("Ag-", Ag_class)) %>%
   arrange(cell_type, Ag_class, p.adjust) %>%
-  select(-bgID) %>%
+  select(-all_of(c(ex_clmns))) %>%
   relocate(Ag_class, .after = cell_type)
   
 tbl_s3 %>%
@@ -1718,7 +1940,7 @@ ex_bxs <- ex_bx_args %>%
         tm        = args$tm,
         tm_clmn   = args$tm_clmn,
         ag_clmn   = args$ag_clmn,
-        typs      = ag_plt_typs$LEC,
+        typs      = c(ag_plt_typs$LEC, "Marco_LEC"),
         clrs      = tm_clrs,
         p_cutoff = Inf,
         p_hjust   = args$p_hjust,
