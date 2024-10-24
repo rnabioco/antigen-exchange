@@ -4420,7 +4420,7 @@ bar_dat %>%
 sessionInfo()
 ```
 
-```{r "save matrices"}
+```{r "save matrices", eval = FALSE}
 # Metadata columns to include
 clmns_1 <- c(
   "cell_id",
