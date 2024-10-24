@@ -62,7 +62,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -1940,7 +1940,7 @@ ex_bxs <- ex_bx_args %>%
         tm        = args$tm,
         tm_clmn   = args$tm_clmn,
         ag_clmn   = args$ag_clmn,
-        typs      = c(ag_plt_typs$LEC, "Marco_LEC"),
+        typs      = ag_plt_typs$LEC,
         clrs      = tm_clrs,
         p_cutoff = Inf,
         p_hjust   = args$p_hjust,
