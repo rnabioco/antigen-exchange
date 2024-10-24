@@ -62,7 +62,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -185,9 +185,9 @@ ag_dcs <- xen %>%
 top_types <- c("LEC", dcs)
 
 # FOVs to plot
-fovs      <- sort(unique(xen$fov))
-top_fov   <- "D"
-top_fov_2 <- "B"
+fovs    <- sort(unique(xen$fov))
+top_fov <- "D"
+bad_fov <- "C"  # section from very end of LN
 
 # Format plotting data
 xen_ag_classes <- c(
@@ -295,6 +295,88 @@ rf_feats %>%
       ) %>%
       mutate_meta(dplyr::rename, !!!syms(clmn_nms))
   })
+```
+
+```{r "format CD45+ marker data", include = FALSE, eval = FALSE}
+cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
+
+cd45pos_gns <- c(
+  "Ptprc",
+  "Cd3d", "Cd19",
+  "H2-Aa",
+  "Itgax",  # DCs
+  "Zbtb46", # DCs
+  "Ly6c2",
+  "Fcgr1",  # CD64, mon/mac
+  "Itgam",  # cDC2
+  "Cd14",   # mon/mac/neutrophils
+  "Ly6g",   # neutrophils
+  "Nkg7",   # NK cells
+  "Tbx21",  # NK cells
+  "Il7r"
+)
+
+lvls <- c(
+  "T cells", "B cells",
+  "DC", "Monocytes", "Neutrophils",
+  "NK cells", "ILC"
+)
+
+# Calculate mean expression
+cd45pos_marks <- cd45_so %>%
+  FetchData(c("cell_type", "mouse", cd45pos_gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(cd45pos_gns)) %>%
+  mutate(
+    cell_type = fct_relevel(cell_type, lvls),
+    mouse     = fct_relevel(mouse, mice),
+    name      = fct_relevel(name, rev(cd45pos_gns))
+  )
+
+rm(cd45_so)
+gc()
+```
+
+```{r "format CD45- marker data", include = FALSE, eval = FALSE}
+cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
+
+cd45neg_gns <- c(
+  "Ptprc",
+  "Prox1", "Lyve1",
+  "Pdpn", "Pecam1",
+  "Cd3d", "Cd19",
+  "Ly6c2",
+  "Nkg7",
+  "Tbx21",
+  "Itgax",  # DCs
+  "Zbtb46", # DCs
+  "Fcgr1",  # CD64
+  "Itgam"
+)
+
+lvls <- c(
+  "LEC", "Fibroblasts", "BEC", "Epithelial cells",
+  "T cells", "B cells",
+  "DC", "NK cells"
+)
+
+# Calculate mean expression
+cd45neg_marks <- cd45_so %>%
+  FetchData(c("cell_type", "mouse", cd45neg_gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(cd45neg_gns)) %>%
+  mutate(
+    cell_type = fct_relevel(cell_type, lvls),
+    mouse     = fct_relevel(mouse, mice),
+    name      = fct_relevel(name, rev(cd45neg_gns))
+  )
+
+rm(cd45_so)
+gc()
 ```
 
 ---
@@ -2074,7 +2156,7 @@ D.  21 day and 42 day Ag-score is compared for LEC subsets from a biological
 
 ```{r "rep exchange boxes"}
 # Set input data
-# plot replicates not shown in main figure
+# * plot replicates not shown in main figure
 exps        <- c("exp-1", "exp-2")
 plt_lec_exp <- exps[exps != ag_exps$LEC]
 plt_dc_exp  <- exps[exps != ag_exps$DC]
@@ -2113,8 +2195,7 @@ rep_ex_bxs <- ex_bx_args %>%
             facet_vars = "subtype",
             p_cutoff   = Inf
           ) +
-          scale_y_continuous(expand = expansion(c(0.05, 0.15))) +
-          theme(legend.position = "bottom")
+          scale_y_continuous(expand = expansion(c(0.05, 0.15)))
       })
   }) %>%
   flatten()
@@ -2163,15 +2244,28 @@ ex_mod_scat <- scat_args %>%
 
 ```{r "Fig S4", fig.width = 13, fig.height = 15}
 # Create final figure
-figS4 <- wrap_plots(rep_ex_bxs, ncol = 1) /
+top <- wrap_plots(rep_ex_bxs, ncol = 1) /
   ex_scat$`exp-2` /
-  (ex_mod_scat[[1]] + ex_mod_scat[[2]]) +
-  plot_layout(heights = c(1, 1, 1, 1.5, 3)) +
+  plot_layout(heights = c(1, 1, 1, 1.5)) +
   plot_annotation(tag_levels = "A") &
   theme(
-    plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
+    legend.margin     = margin(r = 5),
+    plot.tag          = element_text(size = ttl_pt2 * 1.5, face = "bold"),
     plot.tag.position = c(0, 1)
   )
+
+bot <- plot_grid(
+  plotlist = ex_mod_scat[1:2],
+  nrow = 1,
+  labels = c("E", "F"),
+  label_size = ttl_pt2 * 1.5 
+)
+
+figS4 <- plot_grid(
+  top, bot,
+  ncol = 1,
+  rel_heights = c(4.5, 2.7)
+)
 
 figS4
 ```
@@ -2188,7 +2282,8 @@ figS4
 
 A.  Antigen counts are shown for replicate LN tissue sections analyzed with the
     Xenium platform.
-B.  Localization of Ag+ and Ag- cells is shown for LECs and DCs.
+B.  Localization of Ag+ and Ag- cells is shown for LECs.
+C.  Localization of Ag+ and Ag- cells is shown for DCs.
 C.  The distance to the closest Ag+ LEC is shown for Ag+ and Ag- DCs.
 D.  Mean 21 day Ag-score is shown for DCs from mice that received a single
     vaccination (21 day or 42 day) or dual vaccination (21 day and 42 day).
@@ -2316,11 +2411,14 @@ xen_dat <- xen %>%
       type_ag %in% c("LEC", "DC"),
       str_c(type_ag, " (", Ag_class, ")"),
       type_ag
-    )
+    ),
+    
+    lec_ag = ifelse(cell_type %in% c("LEC", "B cells"), type_ag, "other"),
+    dc_ag  = ifelse(cell_type %in% c("DC", "B cells"),  type_ag, "other"),
   ) %>%
   arrange(type_ag, Ag_class) %>%
   mutate(
-    type_ag = fct_inorder(type_ag),
+    across(c(type_ag, lec_ag, dc_ag), ~ fct_relevel(.x, unique(type_ag))),
     slide = fct_relevel(slide, str_c("section ", xen_slides))
   )
 
@@ -2329,11 +2427,13 @@ xen_dat <- xen %>%
 ag_sig_fig <- xen_dat %>%
   mutate(Ag_counts = Ag_counts + 1) %>%
   plot_xenium(
-    "Ag_counts", grp_clmn = "slide",
+    "Ag_counts",
+    grp_clmn       = "slide",
     clrs           = c("white", xen_clrs[["LEC"]]),
     ttl            = "Ag counts + 1",
     trans          = "log10",
-    trace_position = "bottom"
+    trace_position = "bottom",
+    panel_nrow     = 2
   )
 ```
 
@@ -2358,12 +2458,18 @@ names(new_clrs) <- c(
 )
 
 # Plot Ag+ cells
-ag_pos_fig <- xen_dat %>%
-  plot_xenium(
-    "type_ag", grp_clmn = "slide",
-    clrs           = new_clrs,
-    trace_position = "bottom"
-  )
+ag_pos_fig <- c("lec_ag", "dc_ag") %>%
+  map(~ {
+    xen_dat %>%
+      plot_xenium(
+        .x,
+        grp_clmn       = "slide",
+        clrs           = new_clrs,
+        pt_size        = 0.2,
+        trace_position = "bottom",
+        panel_nrow     = 2
+      )
+  })
 ```
 
 ```{r "xenium LEC proximity", fig.width = 18, fig.height = 13}
@@ -2466,24 +2572,12 @@ hist <- hist_dat %>%
 ```
 
 ```{r "xenium figure", fig.width = 14, fig.height = 8.5}
-# top <- plot_grid(
-#   xen_typ_fig + labs(tag = "A"),
-#   ag_sig_fig  + labs(tag = "A"),
-#   ag_pos_fig  + labs(tag = "B"),
-#   hist        + labs(tag = "C"),
-#   nrow = 2
-# )
-# 
-# top
-
-top <- wrap_plots(
-  ag_sig_fig + labs(tag = "A"),
-  ag_pos_fig + labs(tag = "B"),
-  nrow = 1
-)
+top <- append(list(ag_sig_fig), ag_pos_fig) %>%
+  imap(~ .x + labs(tag = LETTERS[.y])) %>%
+  wrap_plots(nrow = 1)
 
 bot <- wrap_plots(
-  plot_spacer(), hist + labs(tag = "C"), plot_spacer(),
+  plot_spacer(), hist + labs(tag = "D"), plot_spacer(),
   nrow = 1,
   widths = c(0.3, 1, 0.3)
 )
@@ -2491,7 +2585,7 @@ bot <- wrap_plots(
 xen_fig <- wrap_plots(
   top, bot,
   ncol = 1,
-  heights = c(1, 0.65)
+  heights = c(1, 0.35)
 ) &
   theme(
     plot.tag = element_text(
@@ -2536,7 +2630,7 @@ dc_ex_heat <- ex_heat_args %>%
 
 ```{r "DC exchange boxes", fig.width = 10, fig.height = 2}
 # Effect of successive vaccinations on antigen uptake/retention
-# use DC subsets shown in figure 1
+# * use DC subsets shown in figure 1
 dc_ex_bxs <- ex_bx_args %>%
   pmap(~ {
     args <- list(...)
@@ -2556,12 +2650,12 @@ dc_ex_bxs <- ex_bx_args %>%
   })
 ```
 
-```{r "Fig 4", fig.width = 14, fig.height = 16}
+```{r "Fig 4", fig.width = 14, fig.height = 21}
 bot <- list(
-  D   = dc_ex_heat[[1]],
-  E   = dc_ex_bxs[[1]],
-  `F` = dc_ex_heat[[2]],
-  G   = dc_ex_bxs[[2]]
+  E   = dc_ex_heat[[1]],
+  `F` = dc_ex_bxs[[1]],
+  G   = dc_ex_heat[[2]],
+  H   = dc_ex_bxs[[2]]
 )
 
 bot <- bot %>%
@@ -2580,7 +2674,7 @@ bot <- wrap_plots(
 fig4 <- plot_grid(
   xen_fig, NULL, bot,
   ncol = 1,
-  rel_heights = c(1, 0.1, 1)
+  rel_heights = c(1.7, 0.01, 1)
 )
 
 fig4
@@ -2692,11 +2786,11 @@ xen_qc_dat <- seq_along(xen_slides) %>%
       pivot_longer(all_of(names(xen_ag_clmns)), names_to = "Ag-tag") %>%
       mutate(slide  = .x)
   }) %>%
-  bind_rows()
+  bind_rows() %>%
+  filter(!fov %in% bad_fov)
 
 # Format heatmap data
 xen_bar_dat <- xen_qc_dat %>%
-  filter(fov != "C") %>%
   group_by(slide, fov, mouse, `Ag-tag`) %>%
   mutate(
     tot_counts = sum(nCount_Xenium + nCount_Xenium_custom)
@@ -2718,6 +2812,9 @@ xen_bar_dat <- xen_qc_dat %>%
     tm       = replace_na(tm, "dual")
   )
 
+rm(xen_qc_dat)
+gc()
+
 # Create bar graph
 xen_bars <- xen_bar_dat %>%
   ggplot(aes(LN, value, fill = `Ag-tag`)) +
@@ -2730,9 +2827,6 @@ xen_bars <- xen_bar_dat %>%
     legend.position = "bottom",
     axis.title.x = element_blank()
   )
-
-rm(xen_qc_dat)
-gc()
 ```
 
 ```{r "xenium Ag+ cell types", fig.width = 14, fig.height = 6}
@@ -3843,48 +3937,6 @@ rm(abe_lec_so)
 
 Mean expression is shown for key marker genes for CD45+ scRNA-seq datasets.
 
-```{r "format CD45+ marker data", include = FALSE}
-cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
-
-DefaultAssay(cd45_so) <- "RNA"
-
-cd45pos_gns <- c(
-  "Ptprc",
-  "Cd3d", "Cd19",
-  "H2-Aa",
-  "Itgax",  # DCs
-  "Zbtb46", # DCs
-  "Ly6c2",
-  "Fcgr1",  # CD64, mon/mac
-  "Itgam",  # cDC2
-  "Cd14",   # mon/mac/neutrophils
-  "Ly6g",   # neutrophils
-  "Nkg7",   # NK cells
-  "Tbx21",  # NK cells
-  "Il7r"
-)
-
-lvls <- c(
-  "T cells", "B cells",
-  "DC", "Monocytes", "Neutrophils",
-  "NK cells", "ILC"
-)
-
-# Calculate mean expression
-cd45pos_marks <- cd45_so %>%
-  FetchData(c("cell_type", "mouse", cd45pos_gns)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(cd45pos_gns)) %>%
-  mutate(
-    cell_type = fct_relevel(cell_type, lvls),
-    mouse     = fct_relevel(mouse, mice),
-    name      = fct_relevel(name, rev(cd45pos_gns))
-  )
-
-rm(cd45_so)
-gc()
-```
-
 ```{r "CD45+ markers 1", fig.width = 10, fig.height = 4}
 heat_dat <- cd45pos_marks %>%
   group_by(cell_type, mouse, name) %>%
@@ -3954,46 +4006,6 @@ cd45pos_gns %>%
 ### CD45- markers {.tabset .tabset-pills}
 
 Mean expression is shown for key marker genes for CD45- scRNA-seq datasets.
-
-```{r "format CD45- marker data", include = FALSE}
-cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
-
-DefaultAssay(cd45_so) <- "RNA"
-
-cd45neg_gns <- c(
-  "Ptprc",
-  "Prox1", "Lyve1",
-  "Pdpn", "Pecam1",
-  "Cd3d", "Cd19",
-  "Ly6c2",
-  "Nkg7",
-  "Tbx21",
-  "Itgax",  # DCs
-  "Zbtb46", # DCs
-  "Fcgr1",  # CD64
-  "Itgam"
-)
-
-lvls <- c(
-  "LEC", "Fibroblasts", "BEC", "Epithelial cells",
-  "T cells", "B cells",
-  "DC", "NK cells"
-)
-
-# Calculate mean expression
-cd45neg_marks <- cd45_so %>%
-  FetchData(c("cell_type", "mouse", cd45neg_gns)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(cd45neg_gns)) %>%
-  mutate(
-    cell_type = fct_relevel(cell_type, lvls),
-    mouse     = fct_relevel(mouse, mice),
-    name      = fct_relevel(name, rev(cd45neg_gns))
-  )
-
-rm(cd45_so)
-gc()
-```
 
 ```{r "CD45- markers 1", fig.width = 10, fig.height = 4}
 heat_dat <- cd45neg_marks %>%
@@ -4113,106 +4125,6 @@ xen_marker_plt <- xen_gns %>%
   plot_grid(plotlist = .)
 
 xen_marker_plt
-  
-
-# # Adjust B and T cell annotations
-# xen <- xen %>%
-#   mutate_meta(
-#     mutate,
-#     new_type = if_else(pred_conf > 0.5, rough_type, "unassigned")
-#   ) %>%
-#   classify_markers(
-#     feats      = "Car3",
-#     filt       = Car3 > 0.75,
-#     clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
-#     type_label = "unassigned",
-#     type_col   = "new_type"
-#   ) %>%
-#   mutate_meta(
-#     mutate,
-#     new_type = if_else(
-#       new_type %in% c("unassigned", "Epithelial cells"),
-#       str_c("other ", cd45_class),
-#       new_type
-#     ),
-#     Ag_type = ifelse(Ag_class == "Ag-high", new_type, "Ag-low")
-#   ) %>%
-# 
-#   mutate(
-#     new_type = if_else(
-#       Cd19 > 1.1,
-#       "B cells",
-#       new_type
-#     ),
-#     new_type = if_else(
-#       Cd3d > 0.5,
-#       "T cells",
-#       new_type
-#     )
-#   )
-# 
-# xen <- xen %>%
-#   mutate(cell_type = new_type)
-#   
-# xen %>%
-#   # filter(fov == top_fov) %>%
-#   filter(fov == top_fov, Ag_class == "Ag+") %>%
-#   pull(new_type) %>%
-#   table()
-  
-  # mutate_meta(mutate, new_type = cell_type) %>%
-  # classify_markers(
-  #   feats      = c("Cd19", "Cd3d"),
-  #   filt       = Cd19 > 1.1,
-  #   type_label = "B cells",
-  #   clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
-  #   type_col   = "new_type"
-  # ) %>%
-  # classify_markers(
-  #   feats      = c("Cd19", "Cd3d"),
-  #   filt       = Cd3d > 0.75,
-  #   type_label = "T cells",
-  #   clst_col   = str_c("SCT_snn_res.", xen_clst_rsln),
-  #   type_col   = "new_type"
-  # )
-
-#   # mutate(
-#   #   new_type = if_else(Cd3d > 0.5, "T cells", new_type),
-#   #   new_type = if_else(Cd19 > 1.5, "B cells", new_type)
-#   # ) %>%
-#   
-#   filter(
-#     (new_type == "DC" & Sirpa > 0) | new_type != "DC"
-#   ) %>%
-#   
-#   pivot_longer(any_of(gns)) %>%
-#   ggplot(aes(new_type, value, fill = new_type)) +
-#   geom_boxplot() +
-#   facet_wrap(~ name) +
-#   base_theme +
-#   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-# 
-# test_dat %>%
-#   plot_scatter(
-#     "rough_type",
-#     x = "Cd19",
-#     y = "Cd3d",
-#     size = 0.001
-#   )
-# 
-# test_dat %>%
-#   filter(
-#     fov == top_fov,
-#     pred_conf > 0.5
-#   ) %>%
-#   plot_violin(
-#     gn, "SCT_snn_res.10",
-#     group_col = "rough_type",
-#     panel_scales = "free_x",
-#     method = "boxplot",
-#     top = Inf
-#   ) +
-#   geom_hline(yintercept = 1.2)
 ```
 
 <br>
