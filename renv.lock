@@ -361,6 +361,16 @@
       ],
       "Hash": "b27837cc8c91273e45563693f1017221"
     },
+    "GenSA": {
+      "Package": "GenSA",
+      "Version": "1.1.14",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R"
+      ],
+      "Hash": "795742f11262803ce349e6b583deb26a"
+    },
     "GenomeInfoDb": {
       "Package": "GenomeInfoDb",
       "Version": "1.36.4",
@@ -1166,6 +1176,17 @@
         "utils"
       ],
       "Hash": "4f57884290cc75ab22f4af9e9d4ca862"
+    },
+    "admisc": {
+      "Package": "admisc",
+      "Version": "0.36",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "methods"
+      ],
+      "Hash": "e19202c52a440288aed7cfdd1907224a"
     },
     "ape": {
       "Package": "ape",
@@ -2530,6 +2551,24 @@
       ],
       "Hash": "bbbd21a253d473f4671d7dcbd6d8971f"
     },
+    "ggVennDiagram": {
+      "Package": "ggVennDiagram",
+      "Version": "1.5.2",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "aplot",
+        "dplyr",
+        "forcats",
+        "ggplot2",
+        "methods",
+        "tibble",
+        "venn",
+        "yulab.utils"
+      ],
+      "Hash": "3d918732cc11f50bde1b02ef690ca68a"
+    },
     "ggbeeswarm": {
       "Package": "ggbeeswarm",
       "Version": "0.7.2",
@@ -2720,6 +2759,29 @@
         "withr"
       ],
       "Hash": "c76ee8fe60939384b9726128e38caea0"
+    },
+    "ggspruce": {
+      "Package": "ggspruce",
+      "Version": "0.1.0",
+      "Source": "GitHub",
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteRepo": "ggspruce",
+      "RemoteUsername": "sheridar",
+      "RemoteRef": "HEAD",
+      "RemoteSha": "2f19479b27c19fc640001cb644573a764c778d8b",
+      "Requirements": [
+        "GenSA",
+        "cli",
+        "colorspace",
+        "farver",
+        "ggplot2",
+        "methods",
+        "purrr",
+        "rlang",
+        "tibble"
+      ],
+      "Hash": "3fb4c9ddb5690b088c47c4361f7f348c"
     },
     "ggstats": {
       "Package": "ggstats",
@@ -3135,6 +3197,20 @@
         "vctrs"
       ],
       "Hash": "9b302fe352f9cfc5dcf0a4139af3a565"
+    },
+    "hdf5r": {
+      "Package": "hdf5r",
+      "Version": "1.3.11",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "R6",
+        "bit64",
+        "methods",
+        "utils"
+      ],
+      "Hash": "8f066454d3c306fa34e2885fbbfd4e1c"
     },
     "here": {
       "Package": "here",
@@ -3973,7 +4049,7 @@
     },
     "patchwork": {
       "Package": "patchwork",
-      "Version": "1.1.3",
+      "Version": "1.2.0",
       "Source": "Repository",
       "Repository": "RSPM",
       "Requirements": [
@@ -3987,7 +4063,7 @@
         "stats",
         "utils"
       ],
-      "Hash": "c5754106c02e8e019941100c81149431"
+      "Hash": "9c8ab14c00ac07e9e04d1664c0b74486"
     },
     "pbapply": {
       "Package": "pbapply",
@@ -5727,6 +5803,17 @@
         "rlang"
       ],
       "Hash": "d0ef2856b83dc33ea6e255caf6229ee2"
+    },
+    "venn": {
+      "Package": "venn",
+      "Version": "1.12",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "admisc"
+      ],
+      "Hash": "0cd3c5ad77a9cd9b1d8278aa6879c2a8"
     },
     "vipor": {
       "Package": "vipor",
