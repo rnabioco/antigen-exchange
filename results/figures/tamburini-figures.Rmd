@@ -62,7 +62,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ```{r "setup", include = FALSE}
@@ -1318,9 +1318,11 @@ gene_examples <- lec_so %>%
     top_gns = c(
       "Naaa", "Parm1",
       "Psap", "Ctsd",
-      # "Lgmn", "Grn",     # other endosome related genes
+      # "Lgmn", "Grn",       # other endosome related genes
       "Col4a2", "Tmsb4x",  # cell migration, angiogenesis
       "Ctla2a", "Ltbp4"    # immune response
+      # "Hmgb1", "Ccl21a"
+      # "Col4a2", "Lamc1"
     ),
     n_gns     = 4,
     plt_clrs  = pred_clrs,
@@ -2280,11 +2282,14 @@ figS4
 
 *Antigen exchange with DCs correlates with levels of antigen archiving*
 
-A.  Antigen counts are shown for replicate LN tissue sections analyzed with the
-    Xenium platform.
-B.  Localization of Ag+ and Ag- cells is shown for LECs.
-C.  Localization of Ag+ and Ag- cells is shown for DCs.
-C.  The distance to the closest Ag+ LEC is shown for Ag+ and Ag- DCs.
+A.  Antigen counts are shown for adjacent LN tissue sections from
+    a dual-immunized mouse analyzed with the Xenium platform.
+B.  Localization of Ag+ and Ag- cells is shown for LECs for tissue sections
+    from A.
+C.  Localization of Ag+ and Ag- cells is shown for DCs for tissue sections from
+    A.
+C.  The distance to the closest Ag+ LEC is shown for Ag+ and Ag- DCs for tissue
+    sections from A.
 D.  Mean 21 day Ag-score is shown for DCs from mice that received a single
     vaccination (21 day or 42 day) or dual vaccination (21 day and 42 day).
 E.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
@@ -2690,7 +2695,15 @@ A.  Localization of annotated cell types is shown for replicate tissue sections
     analyzed with the Xenium platform.
     Annotated cell types with >100 identified cells are shown.
     Color indicates cell density.
-B.  The fraction of Ag+ cells is shown for each cell type.
+B.  Total Ag counts are shown for the 21 day and 42 day Ag tags, for mice
+    immunized with the 21 day tag (left), 42 day tag (middle),
+    or both 21 and 42 day tags (right).
+    For each immunization group, tissue sections were analyzed for two LNs from
+    separate mice (LN-1, LN-2), with the exception of the dual-immunization group.
+    For each LN, two adjacent tissue sections were analyzed
+    (section 1, section 2).
+B.  The fraction of Ag+ cells is shown for each cell type for tissue sections
+    shown in Figure 4A.
 
 ```{r "xenium cell type sections", fig.width = 14, fig.height = 10}
 # Format data for plots
@@ -4072,10 +4085,6 @@ cd45neg_gns %>%
     cat("\n\n---\n\n<br>\n\n<br>\n\n")
   })
 ```
-
-<br>
-
-<br>
 
 ## Xenium
 
