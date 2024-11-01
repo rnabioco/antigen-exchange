@@ -462,7 +462,6 @@ img_vars <- c(
   Sample     = "sample",
   Roi        = "Roi",
   Segment    = "Segment",
-  Region_BT  = "region",
   Region     = "region_3",
   `Ag-score` = "Ag_score"
 )
