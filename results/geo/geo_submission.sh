@@ -2,8 +2,8 @@
 
 data=('211230_novogene' '220128_A00405_0521_AHH7JVDSX3' '220311_A00405_0541_AHCMMHDSX3' '221028_A00405_0632_AHJTM7DSX5')
 dat_dir='../../data'
-res_dir=("~/Projects/tamburini-antigen-tracking/results/2022-03-11", "~/Projects/tamburini-antigen-tracking/results/2022-10-28")
-sub='20241101_sheridan_geo/scrnaseq'
+res_dir=("~/Projects/tamburini-antigen-tracking/results/2022-03-11" "~/Projects/tamburini-antigen-tracking/results/2022-10-28")
+sub='20241101_sheridan_scrnaseq'
 sums='geo_scrnaseq_md5sums.txt'
 meta='geo_scrnaseq_metadata.xlsx'
 
@@ -40,7 +40,7 @@ do
         dir="$res/$nm"
         mat_dir="$res/$nm/outs"
     
-        if [ ! -d "$mat_dir" ]
+        if [ ! -d "$dir" ]
         then
             continue
         fi
@@ -57,19 +57,19 @@ do
     done
 done
 
-# Seurat metadata
-for file in *_count_matrix.h5 *_metadata.tsv.gz
-do
-    ln -sr "$file" "$sub"
-
-    md5sum "$file" \
-        >> "$tmp"
-done
+# # Seurat metadata
+# for file in *_count_matrix.h5 *_metadata.tsv.gz
+# do
+#     ln -sr "$file" "$sub"
+# 
+#     md5sum "$file" \
+#         >> "$tmp"
+# done
 
 # fastqs
 for dat in ${data[@]}
 do
-    fq=$dat_dir/$dat/*.fastq.gz
+    fq=$dat_dir/$dat/*.*q.gz
 
     ln -sr $fq "$sub"
 
