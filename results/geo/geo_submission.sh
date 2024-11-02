@@ -2,7 +2,8 @@
 
 data=('211230_novogene' '220128_A00405_0521_AHH7JVDSX3' '220311_A00405_0541_AHCMMHDSX3' '221028_A00405_0632_AHJTM7DSX5')
 dat_dir='../../data'
-res_dir=("~/Projects/tamburini-antigen-tracking/results/2022-03-11" "~/Projects/tamburini-antigen-tracking/results/2022-10-28")
+ref_dir='../../ref'
+res_dir=("$HOME/Projects/tamburini-antigen-tracking/results/2022-03-11" "$HOME/Projects/tamburini-antigen-tracking/results/2022-10-28")
 sub='20241101_sheridan_scrnaseq'
 sums='geo_scrnaseq_md5sums.txt'
 meta='geo_scrnaseq_metadata.xlsx'
@@ -47,7 +48,7 @@ do
 
         for file in 'filtered_feature_bc_matrix.h5'
         do
-            mat="$sub/${run}_${nm}_$file"
+            mat="$sub/${nm}_$file"
     
             ln -sr "$mat_dir/$file" "$mat"
     
@@ -57,14 +58,20 @@ do
     done
 done
 
-# # Seurat metadata
-# for file in *_count_matrix.h5 *_metadata.tsv.gz
-# do
-#     ln -sr "$file" "$sub"
-# 
-#     md5sum "$file" \
-#         >> "$tmp"
-# done
+# Seurat metadata
+for file in *_count_matrix.h5 *_metadata.tsv.gz
+do
+    ln -sr "$file" "$sub"
+
+    md5sum "$file" \
+        >> "$tmp"
+done
+
+# Feature reference
+ln -sr "$ref_dir/antibodies.csv" "$sub/feature_reference.csv"
+
+md5sum "$sub/feature_reference.csv" \
+    >> "$tmp"
 
 # fastqs
 for dat in ${data[@]}
