@@ -155,7 +155,7 @@ xen <- xen_slides %>%
   map(~ {
     here(params$xen_dir, str_c("xen_s", .x, ".qs")) %>%
       qread() %>%
-      FetchData(c(colnames(.@meta.data), xen_gns, "Car3")) %>%
+      FetchData(c(colnames(.@meta.data), xen_gns)) %>%
       as_tibble(rownames = "cell_id") %>%
       mutate(slide = .x)
   }) %>%
@@ -2769,17 +2769,10 @@ typ_plts <- typ_plts %>%
 ```
 
 ```{r "xenium total Ag counts", fig.height = 6, fig.width = 20, include = FALSE}
-# Format plotting data
+# Format labels
 xen_ag_clmns <- c(
   Ag_3wk_counts = "21 day",
   Ag_6wk_counts = "42 day"
-)
-
-feats <- c(
-  "mouse", "fov", "cell_type",
-  "nCount_Xenium", "nCount_Xenium_custom",
-  names(xen_ag_clmns), params$xen_ag_targets,
-  recursive = TRUE, use.names = FALSE
 )
 
 xen_ag_clrs <- set_names(
@@ -2787,23 +2780,10 @@ xen_ag_clrs <- set_names(
   str_c(names(tm_clrs), " day")
 )
 
-xen_qc_dat <- seq_along(xen_slides) %>%
-  map(~ {
-    s <- qread(here(params$xen_dir, str_c("xen_s", .x, ".qs")))
-    
-    DefaultAssay(s) <- "Xenium_custom"
-    
-    s %>%
-      FetchData(feats, slot = "counts") %>%
-      as_tibble(rownames = ".cell_id") %>%
-      pivot_longer(all_of(names(xen_ag_clmns)), names_to = "Ag-tag") %>%
-      mutate(slide  = .x)
-  }) %>%
-  bind_rows() %>%
-  filter(!fov %in% bad_fov)
-
-# Format heatmap data
-xen_bar_dat <- xen_qc_dat %>%
+# Format bargraph data
+xen_bar_dat <- xen %>%
+  filter(!fov %in% bad_fov) %>%
+  pivot_longer(all_of(names(xen_ag_clmns)), names_to = "Ag-tag") %>%
   group_by(slide, fov, mouse, `Ag-tag`) %>%
   mutate(
     tot_counts = sum(nCount_Xenium + nCount_Xenium_custom)
@@ -2819,16 +2799,12 @@ xen_bar_dat <- xen_qc_dat %>%
   ) %>%
   ungroup() %>%
   mutate(
-    slide    = str_c("section ", slide),
     `Ag-tag` = xen_ag_clmns[`Ag-tag`],
     tm       = str_c(tm_key[mouse], " day"),
     tm       = replace_na(tm, "dual")
   )
 
-rm(xen_qc_dat)
-gc()
-
-# Create bar graph
+# Create bargraph
 xen_bars <- xen_bar_dat %>%
   ggplot(aes(LN, value, fill = `Ag-tag`)) +
   geom_col(position = position_dodge2()) +
@@ -3950,7 +3926,7 @@ rm(abe_lec_so)
 sessionInfo()
 ```
 
-```{r "save matrices", eval = FALSE}
+```{r "matrices for geo", eval = FALSE}
 # Metadata columns to include
 clmns_1 <- c(
   "cell_id",
@@ -4001,3 +3977,33 @@ geo_objs %>%
       )
   })
 ```
+
+```{r "xenium metadata for geo", eval = FALSE}
+clmns <- c(
+  "cell_id",
+  "slide",
+  "fov",
+  "mouse",
+  "tm",
+  "nCount_Xenium",
+  "nFeature_Xenium",
+  "UMAP_1", "UMAP_2",
+  "cell_type",
+  "Ag_class",
+  "x_cell", "y_cell",
+  "lec_dist",
+  "Ag_3wk_counts",
+  "Ag_6wk_counts"
+)
+
+metadat <- xen %>%
+  mutate(
+    tm = str_c(tm_key[mouse], " day"),
+    tm = replace_na(tm, "dual")
+  ) %>%
+  select(all_of(clmns))
+
+metadat %>%
+  write_tsv(here(params$geo_dir, "xenium_metadata.tsv.gz"))
+```
+
