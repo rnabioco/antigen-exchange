@@ -4007,3 +4007,27 @@ metadat %>%
   write_tsv(here(params$geo_dir, "xenium_metadata.tsv.gz"))
 ```
 
+```{r "geomx metadata for geo", eval = FALSE}
+clmns <- c(
+  "dcc",
+  "Slide Name",
+  "slide",
+  "sample",
+  "LN",
+  "rep",
+  "Aoi",
+  "Segment",
+  "Area",
+  "Nuclei",
+  "region_3",
+  "UMAP_1", "UMAP_2",
+  "Ag_3wk_score",
+  "Ag_6wk_score"
+)
+
+metadat <- geomx_dat %>%
+  select(all_of(clmns))
+
+metadat %>%
+  write_tsv(here(params$geo_dir, "geomx_metadata.tsv.gz"))
+```
