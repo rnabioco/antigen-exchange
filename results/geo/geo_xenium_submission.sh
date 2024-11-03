@@ -30,6 +30,12 @@ do
     done
 done
 
+# processed data
+ln -sr 'xenium_metadata.tsv.gz' "$sub"
+
+md5sum 'xenium_metadata.tsv.gz' \
+    >> "$tmp"
+
 # format md5sums
 cat $tmp \
     | awk -v OFS="  " '{gsub("^.*/", "", $2); print}' \
