@@ -5,7 +5,7 @@ dat_dir='../../data'
 ref_dir='../../ref'
 res_dir=("$HOME/Projects/tamburini-antigen-tracking/results/2022-03-11" "$HOME/Projects/tamburini-antigen-tracking/results/2022-10-28")
 sub='20241101_sheridan_scrnaseq'
-sums='geo_scrnaseq_md5sums.txt'
+sums='metadata/geo_scrnaseq_md5sums.txt'
 
 set -o errexit -o pipefail -o nounset -x
 
