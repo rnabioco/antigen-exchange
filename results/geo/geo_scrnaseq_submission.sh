@@ -69,6 +69,12 @@ ln -sr "$ref_dir/antibodies.csv" "$sub/feature_reference.csv"
 md5sum "$sub/feature_reference.csv" \
     >> "$tmp"
 
+# Sample info
+ln -sr "$ref_dir/sample_info.xlsx" "$sub/sample_info.xlsx"
+
+md5sum "$sub/sample_info.xlsx" \
+    >> "$tmp"
+
 # fastqs
 for dat in ${data[@]}
 do

@@ -99,3 +99,4 @@ ddf618ccc4372f04cf9a182cc90c2a24  stromal_P4_P2_S3_L003_R1_001.fastq.gz
 73e8c5df1d10a55d208ee5e1409d4450  stromal_P4_P2_S3_L003_R2_001.fastq.gz
 94aa09f3f3d50feb4b6f4829166ca9d1  stromal_P4_S2_L003_R1_001.fastq.gz
 af385fd629ff789336c68eacff6c4f22  stromal_P4_S2_L003_R2_001.fastq.gz
+438f46cae712e87f8d99e29fbfe85f6a  sample_info.xlsx
