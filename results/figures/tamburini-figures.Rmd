@@ -77,7 +77,7 @@ knitr::opts_chunk$set(
 options(java.parameters = "-Xmx12000m")
 
 # Set environment for running UMAP
-reticulate::use_condaenv("umap", conda = "~/.local/bin/micromamba")
+reticulate::use_condaenv("umap-2", conda = "~/.local/bin/micromamba")
 
 # Main setup
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")

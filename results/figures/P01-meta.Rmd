@@ -1,0 +1,942 @@
+---
+title: "P01 figures"
+author: "Ryan Sheridan"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc:            true
+    toc_float:      true
+    toc_depth:      4
+    df_print:       "paged"
+    code_folding:   "hide"
+    self_contained: true
+    highlight:      "kate"
+params:
+  template_dir: "src"                                                                 # Rmd templates
+  so_dir:       "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-07-01"   # Seurat objects
+  mod_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2024-07-17"  # RF models
+  abe_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/abe"                # Abe et al objects
+  geomx_dir:    "results/geomx"                                                       # GeoMx objects
+  chikv_dir:    "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"                 # CHIKV objects
+  xen_dir:      "~/Dropbox/Ryan/Projects/antigen-exchange/results/xenium/2024-03-22"  # Xenium objects
+  ira_dir:      "~/Dropbox/Ryan/Projects/LNSC-P01/results/objects/ira"
+  ref_dir:      "ref"                                                                 # clustifyr references
+  table_dir:    "results/tables/2024-07-17"                                           # tables
+  sample_info:  "sample_info.xlsx"                                                    # samples names/info
+  p01_dir:      "/home/rmsheridan/Dropbox/Ryan/Projects/LNSC-P01/results/objects/2024-12-02"
+  res_dir:
+    value:
+      exp-0: "~/Projects/antigen-tracking/results"
+      exp-1: "~/Projects/tamburini-antigen-tracking/results/2022-03-11"
+      exp-2: "~/Projects/tamburini-antigen-tracking/results/2022-10-28"
+  xen_res_dir: "results/xenium/20240322__194506__032224_Tamburini_Run_1"                     # Directory with Xenium data
+  xen_regex:   ["output-XETG00230__0022624__[A-Z]__", "output-XETG00230__0022841__[A-Z]__"]  # Regex to pull samples for Xenium slides
+  xen_samples: 
+    value:
+      A: ["6wk", 1, 2]      # Sample identity and 6wk and 3wk barcode identity (in this order)
+      B: ["6wk", 2, 1]      # e.g. `1` indicates GeoMx-Barcode01
+      C: ["6wk-3wk", 1, 2]
+      D: ["6wk-3wk", 2, 1]
+      E: ["3wk", 2, 1]
+      F: ["3wk", 1, 2]
+  xen_ag_targets:
+    value:
+      Ag_tag_1: "GeoMx-Barcode01-ERCC00142"
+      Ag_tag_2: "GeoMx-Barcode02-ERCC00144"
+  xen_custom_targets:
+    - "Ag-tag-A-(ERCC2)"
+    - "Ag-tag-B-(ERCC3)"
+    - "Ag-tag-C-(ERCC4)"
+    - "T2-Sensitive-Ag-tag-(ERCC9)"
+    - "T2-Resistant-Ag-tag-(ERCC12)"
+    - "DNA-only-T2-Control-Ag-tag-(ERCC16)"
+    - "GeoMx-Barcode01-ERCC00142"
+    - "GeoMx-Barcode02-ERCC00144"
+    - "CHIKV-5-(0-7566)"
+    - "CHIKV-sgRNA-(7566-12036)"
+    - "CHIKV-negative-(0-12036)"
+    - "LCMV-(Armstrong)-Segment"
+    - "Listeria-monocytogenes-10403S-gyrase-B-CP002002-1"
+    - "Vaccinia-(Western-Reserve)-J6R"
+    - "mRNA-vaccine-(3-UTR)"
+    - "mRNA-vaccine-(ovalbumin)"
+    - "mRNA-vaccine-(FLAG-3x)"
+    - "mRNA-vaccine-(eGFP)"
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Meta-analysis
+
+The response to antigen, virus, or mRNA vaccine uptake was compared across
+samples, the general approach:
+
+* Differentially expressed genes were identified for Ag-high vs -low
+  (or virus, mRNA vaccine, etc.) LECs for each sample.
+  LECs were not divided into subsets.
+* PCA was performed using the fold change in expression for DEGs
+  (Ag-high / Ag-low), the top genes from PC1 were identified
+* A random effects model was used to identify genes that show the most
+  consistent response across samples.
+  
+A.  PCA plot showing similarity of the Ag/virus/vaccine response across samples
+B.  The top genes from PC1 were clustered based on fold change in expression
+C.  Gene ontology terms are shown for each gene cluster from B.
+D.  The top genes with the most consistent response across samples were
+    clustered as in B.
+E.  Gene ontology terms are shown for each gene cluster from D.
+
+```{r "setup", include = FALSE}
+library(meta)
+library(ComplexHeatmap)
+
+# Default chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  echo    = FALSE,
+  dpi     = 300
+)
+
+options(java.parameters = "-Xmx12000m")
+
+# Set environment for running UMAP
+reticulate::use_condaenv("umap-2", conda = "~/.local/bin/micromamba")
+
+# Main setup
+knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
+
+# # Xenium setup
+# xen_slides <- seq_along(params$xen_regex)
+# 
+# chunks <- xen_slides %>%
+#   map_chr(~ knit_expand(here(params$template_dir, "setup-xenium.Rmd")))
+# 
+# knit(text = chunks, output = "")
+
+# Process other datasets
+knit(here(params$template_dir, "setup-ml.Rmd"), "")
+# knit(here(params$template_dir, "setup-geomx.Rmd"), "")
+# knit(here(params$template_dir, "setup-abe.Rmd"), "")
+
+# Plot parameters
+min_cells <- 5
+rf_typs   <- c("cLEC", "fLEC", "Collecting")
+rf_tms    <- c(14, 21, 42)
+
+ag_modules <- rf_typs %>%
+  map(str_c, c("_high", "_low")) %>%
+  unlist()
+
+# Keys for naming labels
+ag_clmns <- c("Ag_3wk_score", "Ag_6wk_score")
+
+ag_labs <- set_names(
+  c("Ag-score (21 day)", "Ag-score (42 day)"),
+  ag_clmns
+)
+
+ag_labs_2 <- set_names(
+  c("Ag-score\n21 day", "Ag-score\n42 day"),
+  ag_clmns
+)
+
+# Mouse key
+m_key <- c(
+  d2        = "2 day",
+  d14       = "14 day",
+  `3wk`     = "21 day",
+  `6wk`     = "42 day",
+  `6wk-3wk` = "dual"
+)
+
+# Experiment to show in main figures
+ag_exps <- list(LEC = "exp-1", DC = "exp-2")
+
+# LEC/DC subset colors
+subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
+
+# Check for saved objects
+obj_file   <- here(params$p01_dir, "lec_merged_so.qs")
+create_obj <- !file.exists(obj_file)
+```
+
+```{r "P01 functions"}
+# Function to convert to Seurat v4 object
+.convert_to_v4 <- function(so_in) {
+  
+  cell_ids <- attr(so_in[["RNA"]], "cells")@.Data %>%
+    as.data.frame() %>%
+    filter(counts)
+  
+  genes <- attr(so_in[["RNA"]], "features")@.Data %>%
+    as.data.frame() %>%
+    filter(counts)
+  
+  counts <- attr(so_in[["RNA"]], "layers")$counts
+  
+  rownames(counts) <- rownames(genes)
+  colnames(counts) <- rownames(cell_ids)
+  
+  # Check that sparse matrix has correct column/row names
+  count_sums <- colSums(counts)
+  feat_sums  <- colSums(counts > 0)
+  
+  stopifnot(
+    identical(colnames(counts), rownames(so_in@meta.data)),
+    all(count_sums == so_in@meta.data$nCount_RNA),
+    all(feat_sums  == so_in@meta.data$nFeature_RNA)
+  )
+  
+  # Create new object and format data
+  res <- counts %>%
+    CreateSeuratObject(meta.data = so_in@meta.data) %>%
+    NormalizeData(normalization.method = "LogNormalize")
+  
+  res
+}
+
+.create_meta_heat <- function(mat, km = 1, split = NULL,
+                              clrs = c("#00446E", "#0072B2", "white", "#E7301F", "#8D1A10"),
+                              clr_breaks  = NULL,
+                              auto_breaks = FALSE, ...) {
+  
+  if (auto_breaks || !is.null(clr_breaks)) {
+    brks <- clr_breaks
+    
+    if (is.null(clr_breaks)) {
+      mn <- min(mat)
+      mx <- max(mat)
+      
+      brks <- c(mn, quantile(c(mn, 0), 0.65), 0, quantile(c(0, mx), 0.45), mx)
+    }
+    
+    clrs <- circlize::colorRamp2(
+      breaks = brks,
+      colors = clrs
+    )
+  }
+  
+  set.seed(42)
+  
+  res <- mat %>%
+    Heatmap(
+      col                   = clrs,
+      show_column_names     = FALSE,
+      
+      cluster_columns       = TRUE,
+      cluster_column_slices = TRUE,
+      
+      row_names_side        = "left",
+      row_names_gp          = gpar(fontsize = 10),
+      row_dend_side         = "right",
+      km                    = km,
+      column_km_repeats     = 5,
+      show_column_dend      = FALSE,
+      column_split          = split,
+      show_parent_dend_line = FALSE,
+      border                = "black",
+      heatmap_legend_param = list(
+        grid_height        = unit(5, "pt"),
+        legend_direction   = "horizontal",
+        legend_width       = unit(55, "pt"),
+        # border             = "black",
+        title              = "log fold change\nhigh/low",
+        title_gp           = gpar(fontsize = 8, fontface = "plain"),
+        tick_length        = unit(0, "cm"),
+        labels_gp          = gpar(fontsize = 6, fontface = "plain")
+      ),
+      ...
+    )
+  
+  res
+}
+
+.create_matrix <- function(df_in, gns, flip = TRUE, scale = FALSE) {
+  dat <- df_in %>%
+    filter(name %in% gns)
+  
+  if (scale) {
+    dat <- dat %>%
+      group_by(name) %>%
+      mutate(fc = as.numeric(scale(fc))) %>%
+      ungroup()
+  }
+  
+  mat <- dat %>%
+    select(name, fc, tm) %>%
+    pivot_wider(names_from = tm, values_from = fc) %>%
+    column_to_rownames("name")
+  
+  bad_mat <- mat %>%
+    filter(if_any(everything(), ~ !is.finite(.x)))
+  
+  if (nrow(bad_mat) > 0) cli::cli_abort("Non-finite values present")
+  
+  if (flip) mat <- t(mat)
+  
+  mat <- as.matrix(mat)
+}
+
+.cluster_mat <- function(mat, k, cluster_columns = TRUE, scale = TRUE) {
+  if (cluster_columns) mat <- t(mat)
+  
+  if (scale) mat <- scale(mat, center = TRUE, scale = TRUE)
+  
+  set.seed(42)
+  
+  res <- kmeans(mat, centers = k)
+  res <- res$cluster
+  res
+  
+  # res <- mat %>%
+  #   dist() %>%
+  #   hclust() %>%
+  #   cutree(k = k)
+}
+```
+
+```{r "P01 ELROND DATA", eval = create_obj}
+# Format Ira's data
+# object was saved with Seurat v5, need to convert to v4 object
+el_dat <- read_rds(here(params$ira_dir, "20241130_ELROND.rds"))
+
+el_dat <- .convert_to_v4(el_dat)
+
+# Subset only for Ag+ cells and re-process
+el_dat <- el_dat %>%
+  subset(cell_type == "LEC") %>%
+  integrate_sobjs(group_vars = "orig.ident")
+
+# Classify Ag-high cells
+# * cells with signal above background for any probe (cut, uncut,
+#   sensitive, resistant)
+el_dat <- el_dat %>%
+  mutate_meta(
+    mutate,
+    Ag_class_ml = ifelse(
+      T2Sc_norm > 0 | T2Sw_norm > 0 | T2Rc_norm > 0 | T2Rw_norm > 0,
+      "high", "low"
+    ),
+    tm = str_c("ELROND-", orig.ident)
+  )
+
+# Subset for LECs and re-process
+el_dat <- el_dat %>%
+  integrate_sobjs(group_vars = "tm")
+
+# Annotate LEC subsets
+el_dat <- el_dat %>%
+  mutate_meta(select, -any_of(c("UMAP_1", "UMAP_2", "type", "r"))) %>%
+  clustify(
+    ref_mat     = ref_lec,
+    cluster_col = "RNA_snn_res.3"
+  ) %>%
+  mutate_meta(mutate, subtype = type)
+```
+
+```{r "P01 mRNA VACCINE DATA", eval = create_obj}
+# Convert to Seurat v4 object
+vax_so <- read_rds(here(params$ira_dir, "mRNA_vaccine_seurat.rds"))
+
+vax_dat <- .convert_to_v4(vax_so)
+
+# Subset for LECs and re-process
+vax_dat <- vax_dat %>%
+  subset(cell_type == "LEC") %>%
+  integrate_sobjs(group_vars = "timepoint")
+
+# Annotate LEC subsets
+vax_dat <- vax_dat %>%
+  mutate_meta(select, -any_of(c("UMAP_1", "UMAP_2", "type"))) %>%
+  clustify(
+    ref_mat = ref_lec,
+    cluster_col = "RNA_snn_res.3"
+  ) %>%
+  mutate_meta(mutate, subtype = type)
+
+# Classify vaccine-high LECs
+# * only use dat 2 LECs
+vax_dat <- vax_dat %>%
+  AddMetaData(
+    FetchData(., "mRNA-vaccine-fwd", slot = "counts"),
+    col.name = "vaccine"
+  ) %>%
+  mutate_meta(
+    mutate,
+    Ag_class_ml = ifelse(vaccine > 0, "high", "low"),
+    tm = str_c("mRNA-vax-", timepoint)
+  ) %>%
+  subset(timepoint == "2d")
+
+# # Plot LEC marker genes
+# subset_marks <- c(
+#   "Ackr4", "Marco", "Madcam1",
+#   "Lyve1", "Vcam1", "Ptx3"
+# )
+# 
+# subset_bxs <- subset_marks %>%
+#   map(~ {
+#     vax_dat %>%
+#       plot_violin(
+#         .x,
+#         cluster_col = "type",
+#         method = "boxplot"
+#       )
+#   }) %>%
+#   plot_grid(plotlist = .)
+```
+
+```{r "P01 CHIKV DATA", eval = create_obj}
+# Load CHIKV data
+chikv_dat <- qread(here(params$chikv_dir, "so_lec.qs"))
+
+chikv_dat <- chikv_dat %>%
+  subset(treatment == "CHIKV" & lec_subtype != "BEC") %>%
+  mutate_meta(
+    mutate,
+    subtype     = lec_subtype,  # add subtype column to keep consistent
+    tm          = str_c("CHIKV-", tm),
+    Ag_class_ml = str_extract(chikv_grp, "(high|low)")
+  )  %>%
+  AddMetaData(FetchData(., c("hUMAP_1", "hUMAP_2")))
+
+# Merge objects
+lec_dat <- lec_so %>%
+  mutate_meta(
+    mutate,
+    tm = ifelse(is.na(tm), "dual", as.character(tm)),
+    tm = ifelse(grepl("^[0-9]+$", tm), str_c(tm, "d"), tm),
+    tm = str_c("Ag-", tm),
+  ) %>%
+  subset(subtype != "BEC")
+
+lec_dat <- merge(lec_dat, list(vax_dat, chikv_dat, el_dat))
+
+# Save object
+lec_dat %>%
+  qsave(obj_file)
+```
+
+```{r "P01 LOAD DATA", eval = !create_obj}
+lec_dat <- qread(obj_file)
+```
+
+```{r "P01 META ANALYSIS"}
+# Identify DEGs
+degs <- unique(lec_dat$tm) %>%
+  map_dfr(~ {
+    lec_dat %>%
+      subset(tm == .x) %>%
+      wilcoxauc(
+        group_by     = "Ag_class_ml",
+        seurat_assay = "RNA",
+        assay        = "data"
+      ) %>%
+      mutate(tm = .x)
+  })
+
+gns <- degs %>%
+  filter(
+    padj < 0.05,
+    pct_in > 50,
+    !grepl("^(Rp[ls]|mt-)", feature)
+  ) %>%
+  pull(feature) %>%
+  unique()
+
+# Calculate fold changes and standard error
+# * this is based on how wilcoxauc reports fold changes
+fc_dat <- unique(lec_dat$tm) %>%
+  set_names() %>%
+  map_dfr(~ {
+    dat <- lec_dat %>%
+      subset(tm == .x)
+    
+    fc_dat <- dat %>%
+      FetchData(c("Ag_class_ml", gns)) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      pivot_longer(all_of(gns))
+      # mutate(value = exp(value))
+    
+    fc_dat <- fc_dat %>%
+      group_by(name, Ag_class_ml) %>%
+      summarize(
+        n     = n_distinct(.cell_id),
+        sd    = sd(value),
+        se    = sd / sqrt(n),
+        value = mean(value),
+        .groups = "drop"
+      )
+    
+    res <- fc_dat %>%
+      group_by(name) %>%
+      mutate(pos = Ag_class_ml == "high") %>%
+      summarize(
+        fc      = log(value[pos] / value[!pos]),
+        fc_se   = sqrt((se[pos]^2) + (se[!pos]^2)),
+        .groups = "drop"
+      ) %>%
+      mutate(tm = .x)
+    
+    res
+  })
+
+# Format data for meta-analysis
+fcs <- fc_dat %>%
+  select(-fc_se) %>%
+  pivot_wider(names_from = tm, values_from = fc) %>%
+  column_to_rownames("name") %>%
+  filter(if_all(everything(), ~ is.finite(.x))) %>%
+  t() %>%
+  as.data.frame()
+
+ses <- fc_dat %>%
+  select(-fc) %>%
+  pivot_wider(names_from = tm, values_from = fc_se) %>%
+  column_to_rownames("name") %>%
+  t() %>%
+  as.data.frame()
+
+ses <- ses[, colnames(fcs)]
+
+# Perform meta-analysis
+# * perform separately for each gene
+met_res <- map2(fcs, ses, ~ {
+  metagen(
+    TE     = .x,
+    seTE   = .y,
+    random = TRUE,
+    sm     = "MD",  # use this for fold changes
+    method.tau = "REML" 
+  )
+})
+
+# Filter for genes with low heterogeneity
+pvals <- met_res %>%
+  map_dbl(~ .x$pval.random)
+
+het <- met_res %>%
+  map_dbl(~ .x$pval.Q)
+
+# idx <- !is.na(pvals) & pvals < 0.1 & het > 0.6
+# idx <- !is.na(pvals) & pvals < 0.05
+idx <- !is.na(pvals) & pvals < 0.005
+
+met_gns <- set_names(het[idx], names(met_res)[idx]) %>%
+  sort(decreasing = TRUE) %>%
+  names()
+```
+
+```{r "P01 PCA ANALYSIS"}
+# Perform PCA
+pca_dat <- fc_dat %>%
+  dplyr::select(-fc_se) %>%
+  pivot_wider(names_from = tm, values_from = fc) %>%
+  column_to_rownames("name") %>%
+  filter(if_all(everything(), ~ is.finite(.x))) %>%
+  as.matrix()
+
+pca_res <- pca_dat %>%
+  prcomp(center = TRUE, scale = TRUE)
+
+# Identify top PC genes
+pca_gns <- pca_res$x[, 1] %>%
+  abs() %>%
+  sort(decreasing = TRUE) %>%
+  names() %>%
+  head(length(met_gns))
+  # head(max(50, length(met_gns)))
+
+# Create PCA plot
+pca_clrs <- typ_clrs %>%
+  collapse_colors(n = n_distinct(fc_dat$tm), filter = "colorblind")
+
+pca_labs <- summary(pca_res)
+pca_labs <- pca_labs$importance[2, ]
+pca_labs <- round(pca_labs, 2)
+
+pca_labs <- pca_labs %>%
+  imap_chr(~ str_c(.y, " (", round(.x, 2) * 100, "%)"))
+
+pca_plt <- pca_res$rotation %>%
+  as_tibble(rownames = "tm") %>%
+  ggplot(aes(PC1, PC2, color = tm)) +
+  geom_point(size = 2) +
+  geom_text_repel(aes(label = tm), color = "black", size = 12 / .pt, seed = 42) +
+  scale_color_manual(values = pca_clrs) +
+  labs(x = pca_labs[["PC1"]], y = pca_labs[["PC2"]]) +
+  base_theme +
+  theme(
+    aspect.ratio    = 1,
+    legend.position = "none",
+    panel.border    = element_rect(color = "black"),
+    # legend.position = "top",
+    # legend.title = element_blank(),
+    # legend.text.position = "bottom",
+    axis.text    = element_blank(),
+    axis.ticks   = element_blank(),
+    axis.title   = element_text(size = 12)
+  )
+```
+
+```{r "P01 HEATMAPS"}
+# Cluster genes based on response
+mat_args <- list(
+  mat = list(meta = met_gns, pca = pca_gns),
+  k   = c(2, 3)
+)
+
+mat_args$mat <- mat_args$mat %>%
+  map(.create_matrix, df_in = fc_dat)
+
+mat_args$clusts <- mat_args %>%
+  pmap(.cluster_mat) %>%
+  map(sort)
+
+mat_args$mat <- mat_args %>%
+  pmap(~ {
+    args <- list(...)
+    args$mat[, names(args$clusts)]
+  })
+
+# Set colorbar range and breaks
+fc_rng <- fc_dat %>%
+  filter(name %in% c(met_gns, pca_gns)) %>%
+  pull(fc) %>%
+  range()
+
+fc_rng[1] <- floor(fc_rng[1])
+fc_rng[2] <- ceiling(fc_rng[2])
+
+brks <- c(
+  fc_rng[1],
+  median(c(fc_rng[1], 0)),
+  0,
+  median(c(0, fc_rng[2])),
+  fc_rng[2]
+)
+
+# Create heatmaps
+heatmaps <- mat_args %>%
+  pmap(~ {
+    args <- list(...)
+    .create_meta_heat(
+      mat        = args$mat,
+      clr_breaks = brks,
+      km         = 1,
+      split      = args$clusts
+    )
+  }) %>%
+  map(~ {
+    grid::grid.grabExpr(
+      draw(
+        .x,
+        heatmap_legend_side    = "bottom",
+        annotation_legend_side = "bottom",
+        newpage                = FALSE
+      )
+    )
+  })
+```
+
+```{r "P01 GO ANALYSIS"}
+# GO analysis
+go_file <- here(params$p01_dir, "lec_cluster_go.qs")
+
+if (!file.exists(go_file) || create_obj) {
+  dbs <- set_names(c("BP", "CC", "MF"))
+  
+  # Term similarity for simplifying terms
+  go_sim_data <- dbs %>%
+    map(~ {
+      godata(
+        OrgDb   = org.Mm.eg.db,
+        keytype = "SYMBOL",
+        ont     = .x
+      )
+    })
+  
+  clusts_go <- mat_args$clusts %>%
+    map(~ split(.x, .x)) %>%
+    map(map, names) %>%
+    map(
+      get_go,
+      so_in          = lec_dat,
+      db             = "BP",
+      sim_data       = go_sim_data$BP,
+      max_term_size  = 1000,
+      simplify_terms = TRUE
+    )
+  
+  clusts_go %>%
+    qsave(go_file)
+  
+} else {
+  clusts_go <- qread(go_file)
+}
+
+# Create GO plots
+go_args <- list(
+  go = clusts_go,
+  n  = c(9, 3)
+)
+
+go_plts <- go_args %>%
+  pmap(~ {
+    args <- list(...)
+    
+    dat <- args$go@compareClusterResult %>%
+      select(-bgID) %>%
+      filter(p.adjust < 0.05) %>%
+      arrange(p.adjust) %>%
+      group_by(Cluster) %>%
+      slice(1:args$n) %>%
+      mutate(
+        Description = str_trunc(Description, width = 40),
+        Description = fct_reorder(Description, p.adjust, .desc = TRUE),
+        p           = p.adjust
+      )
+    
+    dat %>%
+      ggplot(aes(1, Description, fill = -log10(p))) +
+      geom_tile(color = "black", linewidth = 0.2) +
+      geom_text(aes(x = 1.5, label = Description), size = 8 / .pt, hjust = -0.02) +
+      facet_wrap(~ Cluster, ncol = 1, scales = "free_y", strip.position = "left") +
+      scale_fill_gradientn(colours = c("white", "#E7301F")) +
+      scale_x_continuous(expand = expansion(c(0.05, 17))) +
+      theme_void() +
+      theme(
+        aspect.ratio = args$n * 0.075,
+        strip.text            = element_text(size = 12, hjust = 2, margin = margin(r = 5)),
+        legend.position       = "bottom",
+        legend.justification  = "center",
+        legend.title.position = "top",
+        legend.title          = element_text(size = 8, hjust = 0.5),
+        legend.key.height     = unit(6, "pt"),
+        legend.key.width      = unit(11, "pt"),
+        legend.text           = element_text(size = 6),
+        legend.ticks.length   = unit(1, "pt")
+      )
+  })
+```
+
+```{r "P01 FIGURE", fig.width = 12, fig.height = 5}
+# Format PCA plot tags
+tag_theme <- theme(plot.tag = element_text(size = 18))
+
+pca_plt <- pca_plt +
+  labs(tag = "A") +
+  tag_theme
+
+# Combine heatmaps
+heats <- wrap_plots(
+  heatmaps[2:1],
+  ncol = 1,
+  heights = c(1, 1)
+) &
+  plot_annotation(tag_levels = list(c("B", "D"))) &
+  tag_theme
+
+# Combine GO plots
+gos <- wrap_plots(
+  go_plts[2:1],
+  ncol = 1,
+  heights = c(1, 1)
+) &
+  plot_annotation(tag_levels = list(c("C", "E"))) &
+  tag_theme
+
+# Create final figure
+plot_grid(
+  pca_plt, NULL, 
+  heats, NULL,
+  gos,
+  rel_widths = c(5, 0.2, 5, 0.2, 3),
+  nrow = 1
+)
+```
+
+<br>
+
+<br>
+
+## Endocytic receptors {.tabset .tabset-pills}
+
+Project 3 will use LYTACs and EndoTags to direct antigen into specific endocytic
+compartments.
+Expression of relevant receptors is shown below.
+
+```{r "P01 ENDO RECEPTORS", fig.width = 7, fig.height = 5, results = "asis"}
+endo_gns <- c(
+  "M6pr",
+  # "Aspgr",
+  "Sort1",
+  "Tfrc",
+  "Igf2r"
+)
+
+endo_gns %>%
+  walk(~ {
+    cat("\n\n### ", .x, "\n\n")
+    
+    plt <- lec_dat %>%
+      plot_violin(
+        .x,
+        cluster_col  = "subtype",
+        plot_colors  = lec_clrs,
+        method       = "boxplot",
+        outlier.size = 0.1,
+        group_col    = "tm",
+        n_label      = "corner"
+      )
+    
+    print(plt)
+    cat("\n\n<br>\n\n<br>\n\n")
+  })
+```
+
+## Session info
+
+```{r "session info"}
+sessionInfo()
+```
+
+
+
+```{r "P01 PCA GENE PLOTS", eval = FALSE}
+plt_gns <- pca_gns %>%
+  sort() %>%
+  # .[26:length(pca_gns)]
+  .[1:25]
+
+lec_dat %>%
+  FetchData(c("tm", "Ag_class_ml", plt_gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(-c(.cell_id, tm, Ag_class_ml)) %>%
+  
+  ggplot(aes(tm, value, fill = tm, alpha = Ag_class_ml)) +
+  geom_boxplot(outlier.size = 0.1) +
+  facet_wrap(~ name, scales = "free_y") +
+  guides(alpha = guide_legend(override.aes = list(fill = "black")), fill = "none") +
+  base_theme +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank()
+  )
+```
+
+```{r "P01 mRNA VACCINE PREDICTIONS", eval = FALSE}
+# Prepare data for predictions
+info_clmns <- c("timepoint", "subtype")
+
+pred_dat <- vax_dat %>%
+  FetchData(unique(c(info_clmns, all_feats)))
+
+missing_gns <- all_feats[!all_feats %in% colnames(pred_dat)]
+
+pred_dat[, missing_gns] <- 0
+
+pred_dat <- pred_dat %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+
+# Predict Ag-high cells
+vax_preds <- rf_mods_best %>%
+  pmap_dfr(~ {
+    args <- list(...)
+    
+    dat <- pred_dat %>%
+      filter(subtype == args$subtype) %>%
+      dplyr::select(-all_of(info_clmns))
+    
+    mod <- args$mod
+    
+    if (identical("train", class(mod))) mod <- mod$finalModel
+    
+    dat %>%
+      rf_predict(
+        mod          = mod,
+        dat          = .,
+        return_stats = FALSE
+      ) %>%
+      dplyr::select(pred, any_of("correct")) %>%
+      mutate(.cell_id = rownames(dat)) %>%
+      column_to_rownames(".cell_id")
+  })
+
+# Add prediction back to vaccine object
+vax_dat <- vax_dat %>%
+  AddMetaData(vax_preds)
+
+# Plot results
+vax_dat@meta.data %>%
+  filter(subtype %in% rf_typs) %>%
+  group_by(timepoint, subtype) %>%
+  summarize(
+    n_high  = sum(pred == "high"),
+    n       = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    frac_high = n_high / n,
+    lab       = str_c(n_high, "/", n),
+    subtype   = fct_reorder(subtype, frac_high, .desc = TRUE),
+    timepoint = fct_relevel(timepoint, c("2d", "14d"))
+  ) %>%
+  
+  ggplot(aes(subtype, frac_high, fill = subtype)) +
+  geom_col() +
+  geom_text(aes(label = lab), vjust = -0.2) +
+  facet_wrap(~ timepoint, nrow = 1) +
+  labs(y = "fraction Ag-competent") +
+  scale_fill_manual(values = lec_clrs) +
+  base_theme +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank()
+  )
+```
+
+```{r "P01 FC CLUSTERING TEST", eval = FALSE}
+# Use k-means clustering to identify response patterns across samples
+# * An issue with this approach is there are many patterns and it can be
+#   difficult to summarize these patterns in a concise way
+clst_dat <- fc_dat %>%
+  select(name, tm, fc) %>%
+  
+  group_by(name) %>%
+  mutate(fc = as.numeric(scale(fc))) %>%
+  ungroup() %>%
+  
+  pivot_wider(names_from = tm, values_from = fc) %>%
+  column_to_rownames("name") %>%
+  filter(if_all(everything(), ~ is.finite(.x)))
+
+clsts <- clst_dat %>%
+  as.matrix() %>%
+  kmeans(centers = 20) %>%
+  .$cluster
+
+clst_dat %>%
+  as_tibble(rownames = "name") %>%
+  pivot_longer(-name, names_to = "tm", values_to = "fc") %>%
+  mutate(cluster = clsts[as.character(name)]) %>%
+  
+  # group_by(name) %>%
+  # mutate(fc = as.numeric(scale(fc))) %>%
+  # ungroup() %>%
+  
+  ggplot(aes(tm, name, fill = fc)) +
+  geom_tile() +
+  facet_grid(cluster ~ ., space = "free", scales = "free") +
+  scale_fill_gradient2(low = "lightblue", mid = "white", high = "red", midpoint = 0) +
+  base_theme +
+  theme(
+    strip.clip   = "off",
+    axis.title   = element_blank(),
+    axis.text.x  = element_text(angle = 45, hjust = 1),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+```
