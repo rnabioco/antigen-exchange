@@ -62,7 +62,7 @@ params:
     - "mRNA-vaccine-(FLAG-3x)"
     - "mRNA-vaccine-(eGFP)"
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r "setup", include = FALSE}
@@ -1106,13 +1106,9 @@ hsts <- wrap_plots(
 
 ```{r "RF Ag-competent bars", fig.width = 8, fig.height = 5}
 # Format data for bargraphs
-# * for main figure include cells used for training
-# * exclude training data for supp figure
+# * exclude cells used to train models
 rf_bar_dat <- lec_so@meta.data %>%
-  filter(
-    tm %in% rf_tms,
-    subtype %in% rf_typs
-  ) %>%
+  .filter_rf_data() %>%
   mutate(
     subtype    = fct_relevel(subtype, rf_typs),
     rf_correct = fct_relevel(as.character(rf_correct), c("TRUE", "FALSE")),
@@ -1140,16 +1136,17 @@ rf_bar_1 <- rf_bar_dat %>%
 
 ```{r "RF module boxplots", fig.width = 10, fig.height = 4}
 # Format plot data
-# exclude dual vaccination data
+# * exclude dual vaccination data
 clmns <- c(
   "tm", "subtype", "pred_grp",
-  "Ag_score", ag_modules
+  "Ag_score", "rf_training_data",
+  ag_modules
 )
 
 rf_bx_dat <- lec_so %>%
   FetchData(clmns) %>%
   as_tibble(rownames = ".cell_id") %>%
-  filter(tm %in% rf_tms)
+  .filter_rf_data()
 
 rf_mod_args <- list(
   mod_typ = c("high", "low"),
@@ -1229,9 +1226,9 @@ p_vals <- rf_feats[rf_typs] %>%
       reduce(c)
     
     dat <- lec_so %>%
-      subset(subtype == typ & tm %in% rf_tms) %>%
+      .subset_rf_data(subtype == typ) %>%
       FetchData(c("pred_grp", "tm", names(gns))) %>%
-      as_tibble(rownames = ".cell_id") %>%
+      as_tibble(rownames = ".cell_id") %>%      
       pivot_longer(all_of(names(gns)), names_to = "gene") %>%
       mutate(
         class = gns[gene],
@@ -1239,7 +1236,7 @@ p_vals <- rf_feats[rf_typs] %>%
       ) %>%
       split(.$gene)
       
-    dat %>%
+    dat <- dat %>%
       map_dfr(~ {
         p_grps <- names(pred_clrs)[-1]
         p_con  <- names(pred_clrs)[1]
@@ -1268,12 +1265,14 @@ p_vals <- rf_feats[rf_typs] %>%
           })
       }) %>%
       mutate(subtype = typ)
+    
+    dat
   })
 
 # Adjust p-values for multiple testing
-# * adjust each tm and pred_grp separately
+# * adjust each cell subtype separately
 p_vals <- p_vals %>%
-  group_by(tm, pred_grp, subtype) %>%
+  group_by(subtype) %>%
   mutate(
     p_adj   = p.adjust(p, method = "BH"),
     n_genes = n()
@@ -1311,8 +1310,7 @@ p_dat <- p_vals %>%
 
 # Plot example genes
 gene_examples <- lec_so %>%
-  subset(subtype == rf_cell_type) %>%
-  subset(tm %in% rf_tms) %>%
+  .subset_rf_data(subtype == rf_cell_type) %>%
   create_gn_plots(
     p_data = p_dat,
     top_gns = c(
@@ -1571,7 +1569,6 @@ naive_fig <- plot_grid(
 ```{r "RF predicted Ag class", fig.width = 8, fig.height = 5}
 # Plot fraction predicted groups
 rf_bar_2 <- rf_bar_dat %>%
-  filter(!rf_training_data) %>%
   ggplot(aes(tm, fill = rf_pred, alpha = rf_correct)) +
   geom_bar(position = "fill") +
   scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.5)) +
@@ -2065,8 +2062,8 @@ ex_mod_bx_dat <- lec_so %>%
   mutate(Ag_class_dual = ifelse(
     Ag_class_dual == "Ag-low" & rf_pred == "Ag-high",
     "Ag-competent",
-    Ag_class_dual)
-  )
+    Ag_class_dual
+  ))
 
 # Create boxplots
 bx_lvls <- c("Ag-low", "Ag-competent", "single-high", "double-high")
@@ -2748,7 +2745,8 @@ typ_plts <- names(xen_typs) %>%
       ggtitle(ttl) +
       guides(fill = guide_colorbar(ticks = FALSE)) +
       scale_fill_gradientn(
-        colours = c("white", xen_clrs[[typ]]),
+        # colours = c("white", xen_clrs[[typ]]),
+        colours = c("white", xen_clrs[["LEC"]]),  # just use red for all slices
         name = "number of cells"
       ) +
       facet_wrap(~ slide, nrow = 1) +
@@ -3913,6 +3911,459 @@ plot_grid(
 
 rm(abe_lec_so)
 ```
+
+---
+
+<br>
+
+<br>
+
+## Reviewer 1
+
+In this manuscript, the authors aim to characterize the role of Lymphatic Endothelial Cell (LEC) populations in immunization, with a focus on their capacity to capture and store antigens for extended periods (“antigen archiving”). By utilizing DNA-barcoded antigens, single-cell sequencing, and machine learning models, they claim to have identified predictive features of LECs particularly competent in antigen archiving. Additionally, they demonstrate that LECs previously exposed to an antigen are more adept at acquiring and storing another antigen upon secondary immunization.
+While the use of DNA-barcoded antigens combined with scRNA-Seq is an innovative approach for studying antigen archiving, there are several methodological concerns and limitations in the interpretation of the results that should be addressed.
+
+### Comment 1
+
+[Figure 2]
+
+<details>
+  <summary>full comment</summary>
+The main underlined result consists of the identification of a gene signature,
+that can predict Ag-archiving capacity of a cell and correlate it with the
+duration of antigen retention [236-239].
+However, this prediction system has several limitations:
+    
+* The manuscript lacks a statistical test (e.g. importance plot) to validate
+  the correlation between predicted responses and observed antigen archiving,
+  which could have been done using the data shown in Fig. 2B.
+* It is not clear what the LECs identified as “Ag-competent” are.
+  In line 226-227 they are defined as having “low amounts of antigen but is
+  predicted to have high antigen levels by our classification models”.
+  In Fig. 2B, when comparing the results of the predictive model with the
+  observed Ag retention, the discrepancy (Ag-high vs Ag-competent) increases
+  significantly as time passes from the 14 days (the time point of the
+  samples that trained the algorithm).
+  This can have different explanations:
+      
+  * The prediction dramatically drop its accuracy as we move from the
+    training conditions.
+    So these cells are misclassified by the algorithm
+  * In Fig. 2C it is shown that this cells better correlate with the
+    Ag-high module score, however, in the manuscript there are not
+    functional evidence that support the hypothesis that this cells are
+    really better in Ag-archiving.
+    It is plausible that this cells are good in capturing the Ag but not in
+    retaining it.
+    This could explain why their number increases with time (Fig. 2B).
+  * To summarize this point, the authors exploit an algorithm to predict
+    which cells are better in Ag-archiving,
+    however, in this manuscript it is not shown that the identified cells
+    are really better in capturing and retain the Ags.
+</details>
+
+<br>
+
+* The manuscript lacks a statistical test (e.g. importance plot) to validate
+  the correlation between predicted responses and observed antigen archiving.
+  
+  **P values indicating overall feature (gene) importance are included in [Table S2]**
+
+* The authors use an algorithm to predict which cells are better at archiving Ag,
+  however, it is not shown that the identified cells are really better at
+  capturing and retaining the antigen.
+  
+  **How can we better show that the predicted cells are in fact better at
+  archiving Ag?**
+  
+  * **Include a bargraph similar to [Figure 2]B that includes dual immunized mice,
+    to show that predicted Ag-competent cells are taking up Ag after the 2nd
+    immunization.**
+  * **We can emphasize that the accuracy of the predictions is supported by
+    the CHIKV experimental data shown in [Figure 5].**
+  * **We can further emphasize the correlation we see between Ag uptake and
+    expression of the Ag-archiving modules ([Figure 3]I-J, [Figure S4]E-F).**
+
+<br>
+
+[Figure 2]B was modified to include the dual vaccinated sample.
+The fraction of cells predicted to be Ag-competent is shown for each LEC subset.
+For dual-immunized mice, Ag-high refers to cells that took up both antigens.
+
+```{r "dual vax bars", fig.width = 6, fig.height = 4, out.width = "50%"}
+# Format data
+lvls <- c("Ag-low", "Ag-competent", "single-high", "Ag-high")
+
+new_clrs <- pred_clrs
+new_clrs["single-high"]  <- pred_clrs["Ag-competent"]
+new_clrs["Ag-competent"] <- "grey75"
+
+dat <- ex_mod_bx_dat %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(
+    pred_grp = Ag_class_dual,
+    pred_grp = recode(pred_grp, `double-high` = "Ag-high"),
+    tm = "dual"
+  ) %>%
+  bind_rows(rf_bar_dat) %>%
+  mutate(pred_grp = fct_relevel(pred_grp, rev(lvls)))
+
+# Create bargraphs
+dat %>%
+  ggplot(aes(tm, fill = pred_grp)) +
+  geom_bar(position = "fill", alpha = 0.85, key_glyph = draw_key_point) +
+  geom_bar(position = "fill", key_glyph = draw_key_point) +
+  facet_grid(~ subtype) +
+  scale_fill_manual(values = new_clrs) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  guides(fill = guide_legend(override.aes = list(shape = 22, size = 5))) +
+  labs(y = "fraction of cells", x = "days post vaccination") +
+  bar_thm +
+  theme(
+    aspect.ratio = 1.2,
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+```
+
+<br>
+
+### Comment 2
+
+[Figure 2]
+
+In [Figure 2]C, results indicate that the predicted antigen-competent cells exhibit
+higher expression of the antigen-high module.
+However, as the random forest algorithm was trained on the antigen score at day 14,
+for this time point the outcome results strongly biased by the input data.
+For this reason, it is not clear why this comparison is shown.
+
+**Not all day 14 LECs were used to train the models. The cells used for training
+have been removed from the [Figure 2] plots.**
+
+<br>
+
+### Comment 4
+
+[Figure 5]
+
+<details>
+  <summary>full comment</summary>
+    In Fig. 5G-H it is shown how CHIKV infection reduce the amount of Ag.
+    In line 396 it is written “To experimentally test the accuracy of these predictions”.
+    However, this result only shows that CHIKV reduces Ag uptake by LECs,
+    since the readout is limited at 2 days post-immunization.
+    Moreover, it is not shown how different populations are differently perturbed by the infection,
+    which is one of the main results of the prediction.
+</details>
+
+<br>
+
+* For [Figure 5], the experiment uses a 2 day timepoint to assess archiving,
+  but this timepoint will only show differences in Ag uptake.
+  
+  **If the number of ova+ cells is already reduced at day 2, we would expect
+  them to also be reduced at later timepoints.
+  To address this further we would have to repeat the CHIKV experiment with a
+  longer timepoint.
+  We might see a larger difference in ova+ cells at later timepoints.**
+  
+* It is not shown how Ag archiving is impacted for different populations during
+  CHIKV infection.
+  
+  * **From the CHIKV experiment we have flow data for PDPN-low LECs,
+    which could reflect MARCO+ LECs based on
+    [Fujimoto et al](https://pmc.ncbi.nlm.nih.gov/articles/PMC7162550/).
+    Ag uptake could be more impacted in MARCO LECs since this population
+    shows strongest uptake of viral RNA.**
+  * **We did not train a model for MARCO LECs due to the low number of cells
+    detected ([Figure S2]C).
+    We could try to train a model using the data we have.**
+
+<br>
+
+Pdpn expression is shown for the CHIKV 24 hpi scRNA-seq datasets.
+Expression is lower for Marco LECs.
+
+```{r, fig.width = 8, fig.height = 3, out.width = "50%"}
+chikv_so %>%
+  plot_violin(
+    "Pdpn",
+    cluster_col   = "subtype",
+    group_col     = "treatment",
+    method        = "boxplot",
+    plot_colors   = lec_clrs,
+    n_label       = "corner",
+    color         = "black",
+    outlier.size  = 0.1,
+    outlier.alpha = 1
+  )
+```
+
+<br>
+
+### Comment 5
+
+[Figure S9]
+
+In lines 428-430 it is reported “Overall these results illustrate the utility of
+our approach to investigate antigen archiving in human samples and other systems
+where inclusion of antigen-DNA conjugates is not feasible”.
+However, this conclusion is not supported by the data (Fig. S9).
+The reported results only show a transcriptional overlap between Ag-competent
+cLECs and fLECs (but not for collecting LECs) between human and mouse.
+It is therefore not possible to state that these cells are really able to archive the Ag.
+To do so, it is necessary to validate that, in human, these cells are capable of
+retaining Ags for long time (e.g. ex vivo assay).
+Otherwise, the statement needs to be strongly resized.
+
+**Reword conclusions about the human samples and archiving to be more suggestive
+rather than conclusive.**
+
+<br>
+
+### Comment 6
+
+[Figure 4] [Figure S4]
+
+<details>
+  <summary>full comment</summary>
+In lines 509-513 the authors claim: “We found higher antigen levels in both LEC subsets and DC subsets, CCR7hi DC and cDC2 Tbet-, upon a second antigen exposure when compared to single-immunized mice (Figure 3D,G, S4A-C). This supports our published data demonstrating that migratory DCs and cDC1s are required for cross-presentation of archived antigens during the time frame of LEC apoptosis. cDC1 cross-presentation of cell-associated antigens is partly attributed to their ability to internalize apoptotic cells or cell debris”.
+However, in this manuscript any evidence was shown, regarding the role of cDC1 in antigen exchange with LECs. Data was instead provided for CCR7hi DCs and Tbet- DCs.
+</details>
+
+<br>
+
+Authors claim higher antigen levels in CCR7hi DCs and cDC2 Tbet- upon a second
+antigen exposure, which supports their published data demonstrating that
+migratory DCs and cDC1s are required for cross-presentation of archived antigens
+during the time frame of LEC apoptosis.
+However, no evidence is shown regarding the role of cDC1s in antigen exchange
+with LECs.
+
+**CCR7hi DCs might include some cDC1s, but since we do not distinguish between
+cDC1 and cDC2 in this subset we can clarify the text.
+We can also further investigate the CCR7hi DCs to see if we can
+identify cDC1s in this populations (working on this).**
+
+<br>
+
+### Comment 7
+
+Generally, the study would benefit from functional assays to validate the findings from scRNA-Seq and spatial transcriptomics. For example, perturbing genes associated with the high-archiving signature in specific LEC subsets could validate their supposed roles in antigen acquisition or retention. The analysis presented without additional functional studies does not demonstrate claims on the function of the cells identified by RNA sequencing analysis.
+
+**Downplay the language and include in vitro studies, described in more detail
+for reviewer 2**
+
+---
+
+<br>
+
+<br>
+
+## Reviewer 2
+
+This article describes the duration and maintenance of antigen archives by different subsets of LEC and the associated genetic programs. The topic is novel, and the primary experimental approach (DNA tagging of Ag for later detection through scRNASeq) is innovative, robust, and elegant. However, the reviewer has some concerns regarding the process's relevance, the model's translatability, and the robustness of some key manuscript conclusions. As detailed below, these doubts could be addressed through additional experiments.
+
+### Comment 1
+
+[Figure 2]
+
+In line 236, could the observed signatures be associated with other relevant features unrelated to the archive antigen, such as the activation status of the cell? This needs to be clarified and further discussed. Could the authors demonstrate in vitro that the KO of some of the described genes/pathways is affecting the antigen archived process?
+
+**Connect in vitro experiments with Ag archiving gene signatures.
+Relevant in vitro data includes:**
+
+  * **Nystatin - Ag lower**
+  * **Clathrin inhibitor - Ag lower**
+  * **EIPA (micropinocytosis inhibitor) - Ag higher**
+  * **cholesterol - Ag higher. [Haidar et al](https://www.jbc.org/article/S0021-9258(20)76831-6/fulltext)
+    find that inactivation of CTSD results in accumulation of cholesterol in
+    late endosomes/lysosomes, potentially linking the in vitro cholesterol data
+    with the Ag-high gene module**
+    
+<br>
+
+### Comment 2
+
+[Figure 3]
+
+It is unclear why the authors decided to evaluate the effect of repeated immunization on day 42. This effect is most likely affected by the previous inflammatory status, a process well characterized in other vaccine models. We suggest repeating this experiment with a longer time frame to discard an effect associated with inflammation.
+
+**Discuss previous data looking at LEC expansion and contraction and Autumn’s
+paper.**
+
+<br>
+
+### Comment 3
+
+[Figure 4]
+
+<details>
+  <summary>full comment</summary>
+As the authors previously demonstrated that DCs acquire Ag following LECs apoptosis and consequent Ag release, how can they exclude the possibility that the Ag in DCs is phagocyted early following vaccination (either at the injection site or upon drainage in the LN) without involving LECs? Thus, how relevant are LECs for DCs Ag uptake and immune activation?
+Could the authors, for example, test this by vaccinating irradiated mice and causing Ag accumulation only in the LECs but not in the DCs and later measure immune activation (at DCs and T level) following reconstitution with hematopoietic cells not previously exposed to the Ag by vaccination?
+Or they could measure the functional immune responses (T cell activation or proliferation) to the vaccine in the CHIKV model, where LECs fail to archive the Ag?
+</details>
+
+<br>
+
+* How can the authors exclude the possibility that the Ag in DCs is phagocyted
+  early following vaccination (either at the injection site or upon drainage in the LN)
+  without involving LECs?
+  
+  **Discuss the duration of antigen and half-life of DCs and LEC/DC antigen
+  presentation studies.**
+
+* Could the authors measure the functional immune responses (T cell activation or proliferation)
+  to the vaccine in the CHIKV model, where LECs fail to archive the Ag?
+  
+  **Plot antigen levels compared to antigen presentation over time or
+  reference paper showing this?**
+
+<br>
+
+### Comment 4
+
+[Figure 1]
+
+The statement that “LECs are the predominant cell population that acquires and archives antigens in the draining lymph node” (line 137) seems too general. Most experiments measure the DNA tag rather than OVA (with only one early timepoint measurement). To what extent is the observed process due to the DNA nature of the Ag? Do LECs express DNA receptors such as TLRs? Would the results differ for protein Ag? Is OVA cleaved from DNA, and if so, when? Is OVA degraded over time? Is archiving associated with an OVA-specific immune response?
+
+**Reference other papers demonstrating different antigens and degradation of ova
+and DNA tag.
+Show antigen duration by flow and OT1 transfer (Beth has these data).**
+
+<br>
+
+### Comment 5
+
+[Figure 1]
+
+[Figure 1]E shows a general decrease in Ag across populations over time.
+Does this mean that only a small group of LECs retain the Ag while the others
+lose or degrade it?
+Is the amount of archived Ag positively correlated with memory or effector
+immunity?
+
+**Presumably, reference Autumns paper showing that beyond the time frame of
+antigen archiving protection is lost.**
+
+<br>
+
+### Comment 6
+
+[Figure S3]
+
+<details>
+  <summary>full comment</summary>
+In Fig S3C-D, Ag-high specific genes are found at similar levels in Ag-high from vaccinated mice and naïve LECs. Were the Ag-high LECs compared to total naïve LEC or to a cluster of Ag-high-similar LEC identified also in naïve mice?
+If the former, why do the Ag-high genes distinguish Ag-high and Ag-low LECs, but not Ag-high and naïve cells?
+If the latter, how were Ag-high LECs identified in naïve mice?
+Additionally, for fLEC, some Ag-high genes increase over Ag stimulation (day 2 vs. day 0), differently from what is stressed in the text.
+This seems in contrast with the conclusion of Figure 2, that the archiving capacity is already present in naïve cells at a transcriptomic level.
+</details>
+
+<br>
+
+* In [Figure S3]D-E, were the Ag-high LECs compared to total naïve LEC or to a
+  cluster of Ag-high-similar LEC identified also in naïve mice?
+  
+  **The reviewer is confused about the figure.
+  The LECs were not divided into Ag-high/low, these plots include all cells
+  for the indicated LEC subset. Clarify text.**
+  
+* For fLECs, some Ag-high genes increase after immunization,
+  this seems in contrast to the conclusion that the archiving capacity is
+  already present in naïve cells.
+  
+  **These plots show that the Ag-high gene module is expressed in cells from naive mice,
+  suggesting that some of these cells are predisposed to archive antigen.
+  However, there is still some upregulation that occurs in response to vaccination.
+  It is possible that these Ag-competent LECs are predisposed to archive antigen,
+  but this ability is further induced during vaccination,
+  so both of these models can be true.**
+
+<br>
+
+### Comment 7
+
+[Figure 4]
+
+<details>
+  <summary>full comment</summary>
+Fig 4 shows LN sections containing only the LN cortex (SCS and follicles) and a small portion of the T cell zone, excluding the medulla. This is important because antigens are typically processed and transferred to the medulla, which is not considered here. Additionally, macrophages (Fig S6A) should be present in SCS but not detected.
+Fig S7 also raises doubts about the LN structure analysis, as low magnifications (Fig S7A-B) hinder LN region discrimination. In addition, regions were highlighted (and analyzed?) inconsistently across groups. For example, the SCS is shown only in the “dual” group. Finally, it is also unclear why the signals from the same regions from single and dual-immunized mice were pooled (lines 342-343).
+</details>
+
+<br>
+
+* Concerns about the structure observed in Xenium sections.
+  Sections contain only the LN cortex (SCS and follicles) and a small portion of
+  the T cell zone, excluding the medulla.
+  Additionally, macrophages ([Figure S6]A) should be present in SCS but not
+  detected.
+  
+  **There are some macrophages shown in [Figure S6]A.
+  The colors have been adjusted to make this more apparent.
+  We could also include higher resolution images in the paper
+  (high resolution images are on GEO).**
+
+* Concerns about the regions selected for the GeoMx analysis.
+  Low magnifications ([Figure S7]A-B) hinder LN region discrimination.
+  In addition, regions were highlighted inconsistently across groups.
+  For example, the SCS is shown only in the “dual” group.
+  
+  **There are sinus regions included for the the day 21 and day 42 samples.
+  The colors have been adjusted to make this more apparent.**
+  
+* It is also unclear why the signals from the same regions from single and
+  dual-immunized mice were pooled ([Figure S7]C).
+
+  **The signals were pooled due to the small number of regions available for
+  analysis.**
+
+<br>
+
+### Comment 8
+
+[Figure S9]
+
+While human equivalent genes split cLECs and fLECs into fractions like mouse
+Ag-high and Ag-low populations, this experiment does not confirm the presence of
+archived Ag, its alteration in disease (FL vs. CHIKV),
+or increased archiving gene expression due to a lack of negative controls
+(no antigen-stimulated, as metastasis free are also antigen-stimulated in
+the primary tumor).
+This proof of concept is appreciated, but a validation using proper controls
+(e.g., no Ag exposure or disrupted LEC Ag archiving as in CHIKV) would strengthen
+these data.
+
+**For a non-antigen-stimulated control we could use scRNA-seq data from original
+paper describing LEC subsets (Zhang?)**
+
+<br>
+
+### Minor comments
+
+1. Could the authors explain why the 4:4:1:1 ratio in the scSeq exp in [Figure 1]?
+2. The results section often integrates discussion and references (of other works and previous figures), making the readability nonlinear. Additionally, some methodological details (e.g., lines 311–313) disrupt the flow and could fit better in Methods. A more apparent structure might improve readability.
+3. In [Figure 4]E, CCR7+ DC shows the highest Ag at day 21 with single immunization, while cDC2 Tbet- shows the highest values in dual immunization. Could this reflect the migratory nature of CCR7+ DCs, which might migrate to the LN within the first 21 days and then downregulate CCR7 in later stages and differentiate into cDC2 Tbet- ? More discussion about the implications of these DCs subset-specific findings would increase the interest in the manuscript, especially considering that the authors showed before that the DCs uptake of archived Ag is CCR7 dependent.
+4. In [Figure 1] and [Figure S1], the colors of the populations are similar and not distinguishable, e.g., two similar shades of blue for different populations.
+5. [Figure 1]D: Why is n significantly lower on day 2 compared to the other groups?
+6. [Figure 5]: why was it not the same classification as before, including Ag high, low, and competent?
+
+   **Mice were not vaccinated with ova-psDNA, so we can only predict
+   Ag-competent cells.**
+   
+7. A few typos need to be corrected:
+
+   * Line 213 findings vs finding.
+   * Line 336 is probably Fig S7A and not S6A.
+   * Line 340 should not be Fig 4B. Maybe S7C? But CD4 is missing in the figure.
+   * Line 344, a past tense, is missing
+   * Line 348 shows a repetition
+   * Line 384 might be Fig S8A and not S7A
+   * Line 487 is Tbet-
 
 ---
 

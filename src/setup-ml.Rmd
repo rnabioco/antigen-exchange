@@ -29,6 +29,27 @@ run_rf <- !file.exists(here(params$mod_dir, "ag-high_preds.tsv.gz"))
 ```
 
 ```{r "RF functions"}
+# Filter RF data to include correct cell types, timepoints, and to remove cells
+# that were used to train models 
+.filter_rf_data <- function(df, filt, timepoints = rf_tms, cell_types = rf_typs) {
+  df %>%
+    filter(
+      tm %in% timepoints,
+      subtype %in% cell_types,
+      !rf_training_data,
+      {{filt}}
+    )
+}
+
+.subset_rf_data <- function(so, filt, timepoints = rf_tms, cell_types = rf_typs) {
+  cells <- so@meta.data %>%
+    .filter_rf_data({{filt}}, timepoints, cell_types) %>%
+    rownames()
+  
+  so %>%
+    subset(cells = cells)
+}
+
 # Function to predict
 rf_predict <- function(mod, dat, data_clmn = NULL, return_stats = TRUE,
                        prob = FALSE) {
@@ -1792,4 +1813,34 @@ rf_preds <- read_tsv(here(params$mod_dir, "ag-high_preds.tsv.gz")) %>%
 
 chikv_preds <- read_tsv(here(params$mod_dir, "ag-high_chikv_preds.tsv.gz")) %>%
   column_to_rownames(".cell_id")
+```
+
+```{r "MORE TESTING", eval = FALSE}
+typ <- "cLEC"
+
+mod <- rf_mods_best %>%
+  filter(subtype == typ)
+
+train_bcs <- mod$training_bcs[[1]]
+
+dat <- lec_so %>%
+  subset(subtype == typ & mouse == "d14") %>%
+  FetchData(c("Ag_class_ml", rf_feats[[typ]], recursive = TRUE, use.names = FALSE)) %>%
+  rename_with(~ str_replace_all(.x, "-", "_")) %>%
+  rename_with(~ str_replace_all(.x, "\\(|\\)", "_")) %>%
+  rename_with(~ str_c("x", .x), matches("^[0-9]"))
+
+dat <- dat[!rownames(dat) %in% train_bcs, ] %>%
+  rownames_to_column(".cell_id") %>%
+  group_by(Ag_class_ml) %>%
+  slice_sample(n = 139, replace = FALSE) %>%
+  ungroup() %>%
+  column_to_rownames(".cell_id")
+
+res <- rf_predict(
+  mod = mod$mod[[1]],
+  dat = dat,
+  data_clmn = "Ag_class_ml",
+  return_stats = TRUE
+)
 ```
