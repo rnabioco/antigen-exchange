@@ -4286,11 +4286,10 @@
       "Source": "GitHub",
       "RemoteType": "github",
       "RemoteHost": "api.github.com",
-      "RemoteRepo": "presto",
       "RemoteUsername": "immunogenomics",
-      "RemotePkgRef": "immunogenomics/presto",
-      "RemoteRef": "HEAD",
-      "RemoteSha": "31dc97fed5e2e7fc323ae4af62f72181cc51d9a3",
+      "RemoteRepo": "presto",
+      "RemoteRef": "master",
+      "RemoteSha": "7636b3d0465c468c35853f82f1717d3a64b3c8f6",
       "Requirements": [
         "Matrix",
         "R",
@@ -4306,7 +4305,7 @@
         "tidyr",
         "utils"
       ],
-      "Hash": "fc5cbe33e2ceb253cbb680c96af907fb"
+      "Hash": "68068c5934b821e06dea1d4255e9dc0c"
     },
     "prettyunits": {
       "Package": "prettyunits",
@@ -5936,14 +5935,16 @@
     },
     "xfun": {
       "Package": "xfun",
-      "Version": "0.40",
+      "Version": "0.48",
       "Source": "Repository",
       "Repository": "RSPM",
       "Requirements": [
+        "R",
+        "grDevices",
         "stats",
         "tools"
       ],
-      "Hash": "be07d23211245fc7d4209f54c4e4ffc8"
+      "Hash": "89e455b87c84e227eb7f60a1b4e5fe1f"
     },
     "xlsx": {
       "Package": "xlsx",
