@@ -1693,6 +1693,16 @@ all_feats <- rf_feats %>%
   unlist(use.names = FALSE) %>%
   unique()
 
+# Save module names
+module_nms <- rf_feats[rf_typs] %>%
+  imap(~ str_c(.y, "_", names(.x))) %>%
+  flatten()
+
+module_nms <- set_names(
+  str_c(module_nms, seq_along(module_nms)),
+  module_nms
+)
+
 # Save top features
 rf_feats %>%
   qsave(here(params$mod_dir, "ag-high_features.qs"))

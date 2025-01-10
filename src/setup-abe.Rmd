@@ -212,7 +212,7 @@ save_objs(abe_lec_so, ob_dir = params$abe_dir)
 ```
 
 ```{r "abe load object"}
-abe_lec_so <- qread(here(params$abe_dir, "abe_lec_so.qs"))
+abe_lec_so <- load_obj(here(params$abe_dir, "abe_lec_so.qs"))
 ```
 
 ```{r "abe predict Ag-competent"}

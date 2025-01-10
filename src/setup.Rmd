@@ -1911,12 +1911,12 @@ rm(all_meta, cd45neg_so, cd45pos_so, lec_so, frc_so, dc_so)
 ```{r "load seurat objects"}
 # Load objects
 all_meta <- read_tsv(here(params$so_dir, "all_meta.tsv.gz"))
-lec_so   <- qread(here(params$so_dir, "lec_so.qs"))
-dc_so    <- qread(here(params$so_dir, "dc_so.qs"))
+lec_so   <- load_obj(here(params$so_dir, "lec_so.qs"))
+dc_so    <- load_obj(here(params$so_dir, "dc_so.qs"))
 
-# frc_so   <- qread(here(params$so_dir, "frc_so.qs"))
-# cd45neg_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
-# cd45pos_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+# frc_so   <- load_obj(here(params$so_dir, "frc_so.qs"))
+# cd45neg_so <- load_obj(here(params$so_dir, "cd45neg_so.qs"))
+# cd45pos_so <- load_obj(here(params$so_dir, "cd45pos_so.qs"))
 
 # Load cell type markers
 xlsx_path <- here(params$ref_dir, "cell-type-markers.xlsx")

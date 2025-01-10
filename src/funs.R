@@ -25,6 +25,26 @@ save_objs <- function(ob_in, prfx = NULL, ob_dir = "") {
   }
 }
 
+#' Load slimmed down Seurat object
+#' 
+#' @param file File path to qs object
+#' @param diet Return slimmed down object
+load_obj <- function(file, diet = TRUE) {
+  obj <- qread(file)
+  
+  if (diet) {
+    obj <- obj %>%
+      DietSeurat(
+        assays = "RNA",
+        counts = FALSE
+      )
+  }
+  
+  gc()
+  
+  obj
+}
+
 #' Export counts and meta.data tables
 #' 
 #' @param sobj_in Seurat object
