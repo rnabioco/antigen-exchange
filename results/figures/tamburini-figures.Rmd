@@ -65,6 +65,39 @@ editor_options:
   chunk_output_type: console
 ---
 
+---
+
+## Summary
+
+A summary of the revised analysis needed to respond to reviewer comments is
+included below.
+
+<u>Primary</u>
+
+- [ ] &nbsp;Train additional models to further corroborate predictions and check
+      contribution of Cav/Cavin genes ([R3C7](#R3C7))
+- [ ] &nbsp;Perform additional Xenium analysis to further assess spatial
+      correlation between Ag+ DCs and LECs ([R3C8](#R3C8))
+- [ ] &nbsp;Look at Zhang et al scRNA-seq data for non-stim control dataset for
+      FL figure ([R2C8](#R2C8))
+- [x] &nbsp;Revise cell type annotations, check epithelial cells ([R3C3](#R3C3))
+- [x] &nbsp;Remove day 14 LECs from [Figure 2] that were used to train models
+      ([R1C2](#R1C2))
+- [x] &nbsp;Compare expression of the Ag modules for LECs vs other stromal cells
+      and DCs ([R3C5](#R3C5))
+- [x] &nbsp;Include a bargraph similar to [Figure 2]B that includes dual
+      immunized mice, to show that predicted Ag-competent cells are taking up
+      Ag after the 2nd immunization ([R1C1](#R1C1))
+
+<u>Secondary</u>
+
+- [ ] &nbsp;Additional Xenium analysis of Ag in medulla ([R2C7](#R2C7))
+- [ ] &nbsp;Check CCR7hi DC population for cDC1s ([R1C6](#R1C6))
+- [ ] &nbsp;Report Pearson correlation for Fig S4E-F ([R3C6](#R3C6))
+- [ ] &nbsp;Adjust [Figure 1] and [Figure S1] colors to make them more distinguishable
+      ([R2-minor](#R2-minor))
+- [ ] &nbsp;Generate source tables for all figures
+
 ```{r "setup", include = FALSE}
 # Default chunk options
 knitr::opts_chunk$set(
@@ -301,89 +334,9 @@ rf_feats %>%
   })
 ```
 
-```{r "format CD45+ marker data", include = FALSE, eval = FALSE}
-cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
-
-DefaultAssay(cd45_so) <- "RNA"
-
-cd45pos_gns <- c(
-  "Ptprc",
-  "Cd3d", "Cd19",
-  "H2-Aa",
-  "Itgax",  # DCs
-  "Zbtb46", # DCs
-  "Ly6c2",
-  "Fcgr1",  # CD64, mon/mac
-  "Itgam",  # cDC2
-  "Cd14",   # mon/mac/neutrophils
-  "Ly6g",   # neutrophils
-  "Nkg7",   # NK cells
-  "Tbx21",  # NK cells
-  "Il7r"
-)
-
-lvls <- c(
-  "T cells", "B cells",
-  "DC", "Monocytes", "Neutrophils",
-  "NK cells", "ILC"
-)
-
-# Calculate mean expression
-cd45pos_marks <- cd45_so %>%
-  FetchData(c("cell_type", "mouse", cd45pos_gns)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(cd45pos_gns)) %>%
-  mutate(
-    cell_type = fct_relevel(cell_type, lvls),
-    mouse     = fct_relevel(mouse, mice),
-    name      = fct_relevel(name, rev(cd45pos_gns))
-  )
-
-rm(cd45_so)
-gc()
-```
-
-```{r "format CD45- marker data", include = FALSE, eval = FALSE}
-cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
-
-DefaultAssay(cd45_so) <- "RNA"
-
-cd45neg_gns <- c(
-  "Ptprc",
-  "Prox1", "Lyve1",
-  "Pdpn", "Pecam1",
-  "Cd3d", "Cd19",
-  "Ly6c2",
-  "Nkg7",
-  "Tbx21",
-  "Itgax",  # DCs
-  "Zbtb46", # DCs
-  "Fcgr1",  # CD64
-  "Itgam"
-)
-
-lvls <- c(
-  "LEC", "Fibroblasts", "BEC", "Epithelial cells",
-  "T cells", "B cells",
-  "DC", "NK cells"
-)
-
-# Calculate mean expression
-cd45neg_marks <- cd45_so %>%
-  FetchData(c("cell_type", "mouse", cd45neg_gns)) %>%
-  as_tibble(rownames = ".cell_id") %>%
-  pivot_longer(all_of(cd45neg_gns)) %>%
-  mutate(
-    cell_type = fct_relevel(cell_type, lvls),
-    mouse     = fct_relevel(mouse, mice),
-    name      = fct_relevel(name, rev(cd45neg_gns))
-  )
-
-rm(cd45_so)
-gc()
-```
-
 ---
+
+<br>
 
 <br>
 
@@ -3923,6 +3876,8 @@ plot_grid(
 <br>
 
 <br>
+
+`r knitr::knit_child("cell-type-annotations.Rmd")`
 
 `r knitr::knit_child("reviews.Rmd")`
 

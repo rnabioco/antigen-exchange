@@ -1,0 +1,355 @@
+
+## Cell annotations
+
+```{r "format CD45- marker data", include = FALSE}
+cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
+```
+
+To annotate cell types, clusters are first compared with ImmGen reference data.
+Cell types are then refined based on the expression of individual marker genes.
+Correlation coefficients are shown for all epithelial cells, grouped based on
+the original annotations from the ImmGen reference.
+In this plot, cells labeled as "unassigned" were later classified as epithelial
+cells based on Cdh1 and Krt8 expression.
+
+```{r "correlation", fig.width = 6, fig.height = 4, out.width = "50%"}
+typ <- "Epithelial cells"
+
+cd45_so@meta.data %>%
+  filter(cell_type == typ) %>%
+  mutate(type = fct_reorder(type, r, .desc = TRUE)) %>%
+  
+  plot_violin(
+    data_col = "r",
+    cluster_col = "type",
+    method = "boxplot",
+    plot_colors = typ_clrs,
+    color = "black",
+    width = 0.75
+  ) +
+  base_theme +
+  theme(
+    aspect.ratio    = 0.9,
+    legend.position = "none",
+    axis.title.x    = element_blank(),
+    axis.text.x     = element_text(size = txt_pt1, angle = 45, hjust = 1)
+  )
+```
+
+<br>
+
+Differentially expressed genes were identified separately for each
+timepoint by comparing annotated epithelial cells with all other cells in the
+CD45- datasets.
+Genes were filtered to only include genes with a p value < 0.05 for all
+timepoints.
+Mean expression (relative) is shown for the top 50 differentially expressed
+genes.
+
+```{r "DEGs"}
+deg_file <- here(params$table_dir, "epithelial_degs.tsv.gz")
+
+# Identify DEGs
+if (!file.exists(deg_file)) {
+  Idents(cd45_so) <- cd45_so$cell_type
+  
+  degs <- cd45_so %>%
+    mutate_meta(
+      mutate,
+      tm = if_else(is.na(tm), "dual", as.character(tm))
+    ) %>%
+    FindConservedMarkers(
+      ident.1 = "Epithelial cells",
+      grouping.var = "tm"
+    ) %>%
+    as_tibble(rownames = "gene") %>%
+    arrange(max_pval)
+  
+  degs %>%
+    write_tsv(deg_file)
+}
+
+degs <- read_tsv(deg_file)
+
+# Top DEGs
+top_degs <- degs %>%
+  filter(max_pval < 0.05) %>%
+  arrange(max_pval) %>%
+  pull(gene) %>%
+  head(100)
+```
+
+```{r "DEGs heatmap", fig.width = 10, fig.height = 9}
+# Calculate average expression
+expr <- cd45_so %>%
+  mutate_meta(
+    mutate,
+    tm = if_else(vaccination == "dual", vaccination, as.character(tm))
+  ) %>%
+  AverageExpression(
+    assays   = "RNA",
+    slot     = "data",
+    features = top_degs[1:50],
+    group.by = c("cell_type", "tm")
+  )
+
+# Format heatmap data
+dat <- expr$RNA %>%
+  as_tibble(rownames = "gene") %>%
+  pivot_longer(-gene) %>%
+  separate_wider_delim(
+    name,
+    names = c("cell_type", "tm"),
+    delim = "_"
+  ) %>%
+  
+  group_by(tm, gene) %>%
+  mutate(value = as.numeric(scale(value))) %>%
+  ungroup() %>%
+  mutate(
+    gene      = fct_relevel(gene, rev(top_degs)),
+    cell_type = fct_reorder(cell_type, value, .desc = TRUE),
+    tm        = fct_relevel(tm, tms)
+  )
+  
+# Create heatmap
+dat %>%
+  ggplot(aes(cell_type, gene, fill = value)) +
+  geom_tile() +
+  facet_wrap(~ tm, nrow = 1) +
+  scale_fill_gradientn(colours = c("white", "#E7301F")) +
+  base_theme +
+  theme(
+    legend.title = element_blank(),
+    axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    axis.title   = element_blank()
+  )
+```
+
+<br>
+
+Gene ontology terms (Biological Process) are shown for the top 100
+differentially expressed genes.
+The number of genes overlapping each term is shown to the right of each bar.
+
+```{r "GO", fig.width = 10, fig.height = 5}
+n_degs <- length(top_degs)
+
+go <- top_degs %>%
+  gost(
+    organism = "mmusculus",
+    evcodes = TRUE
+  )
+
+dat <- go$result %>%
+  as_tibble() %>%
+  select(-parents, -evidence_codes) %>%
+  filter(
+    p_value   < 0.05,
+    term_size < 1000,
+    source    == "GO:BP"
+  ) %>%
+  mutate(
+    term_name = str_trunc(term_name, width = 40),
+    term_name = str_c(term_name, " (", label_comma()(term_size), ")"),
+    term_name = fct_inorder(term_name),
+    term_name = fct_rev(term_name),
+    n_lab     = str_c(intersection_size, "/", n_degs)
+  ) %>%
+  arrange(p_value)
+
+dat %>%
+  head(18) %>%
+  ggplot(aes(-log10(p_value), term_name)) +
+  geom_col(fill = "#2A8897") +
+  geom_vline(xintercept = 0.5, linetype = 2) +
+  geom_text(aes(label = n_lab), hjust = -0.1) +
+  scale_x_continuous(expand = expansion(c(0, 0.1))) +
+  base_theme +
+  theme(axis.title.y = element_blank())
+```
+
+```{r "cleanup", include = FALSE}
+rm(cd45_so)
+gc()
+```
+
+---
+
+<br>
+
+<br>
+
+```{r "format CD45+ marker data", include = FALSE, eval = FALSE}
+cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
+
+gns <- c(
+  "Ptprc",
+  "Cd3d", "Cd19",
+  "H2-Aa",
+  "Itgax",  # DCs
+  "Zbtb46", # DCs
+  "Ly6c2",
+  "Fcgr1",  # CD64, mon/mac
+  "Itgam",  # cDC2
+  "Cd14",   # mon/mac/neutrophils
+  "Ly6g",   # neutrophils
+  "Nkg7",   # NK cells
+  "Tbx21",  # NK cells
+  "Il7r"
+)
+
+lvls <- c(
+  "T cells", "B cells",
+  "DC", "Monocytes", "Neutrophils",
+  "NK cells", "ILC"
+)
+
+# Create LEC/DC subtype boxplots
+dat <- cd45_so %>%
+  FetchData(c("tm", "vaccination", "cell_type", gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(gns)) %>%
+  mutate(
+    tm        = if_else(vaccination == "dual", vaccination, as.character(tm)),
+    type_tm   = str_c(cell_type, "_", tm),
+    name      = fct_relevel(name, gns),
+    cell_type = fct_relevel(cell_type, lvls)
+  ) %>%
+  arrange(cell_type) %>%
+  mutate(type_tm = fct_inorder(type_tm))
+
+# Data for n labels
+n_labs <- dat %>%
+  group_by(cell_type, tm, type_tm) %>%
+  summarize(
+    n = label_comma()(n_distinct(.cell_id)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n_lab = str_replace(cell_type, "_", " "),
+    n_lab = str_c(n_lab, " (", n, ")")
+  )
+
+n_labs <- set_names(n_labs$n_lab, n_labs$type_tm)
+
+# Create boxplots
+n_typs <- n_distinct(dat$cell_type)
+
+dat %>%
+  ggplot(aes(type_tm, value, fill = cell_type)) +
+  geom_boxplot(outlier.size = 0.1, key_glyph = draw_key_point, alpha = 0.9) +
+  facet_grid(name ~ tm, scales = "free") +
+  guides(fill = guide_legend(override.aes = list(shape = 22, size = 4))) +
+  scale_x_discrete(labels = n_labs) +
+  scale_fill_manual(values = typ_clrs) +
+  base_theme +
+  theme(
+    aspect.ratio    = 4 / n_typs,
+    legend.position = "none",
+    strip.clip      = "off",
+    axis.title      = element_blank(),
+    axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  )
+```
+
+```{r "CD45- marker plots", eval = FALSE}
+gns <- c(
+  "Ptprc",
+  "Prox1", "Lyve1",
+  "Pdpn", "Pecam1",
+  "Cd3d", "Cd19",
+  "Ly6c2",
+  "Nkg7",
+  "Tbx21",
+  "Itgax",  # DCs
+  "Zbtb46", # DCs
+  "Fcgr1",  # CD64
+  "Itgam"
+)
+
+lvls <- c(
+  "LEC", "Fibroblasts", "BEC", "Epithelial cells",
+  "T cells", "B cells",
+  "DC", "NK cells"
+)
+
+# Create LEC/DC subtype boxplots
+dat <- cd45_so %>%
+  FetchData(c("tm", "vaccination", "cell_type", gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(gns)) %>%
+  mutate(
+    tm        = if_else(vaccination == "dual", vaccination, as.character(tm)),
+    type_tm   = str_c(cell_type, "_", tm),
+    name      = fct_relevel(name, gns),
+    cell_type = fct_relevel(cell_type, lvls)
+  ) %>%
+  arrange(cell_type) %>%
+  mutate(type_tm = fct_inorder(type_tm))
+
+# Data for n labels
+n_labs <- dat %>%
+  group_by(cell_type, tm, type_tm) %>%
+  summarize(
+    n = label_comma()(n_distinct(.cell_id)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n_lab = str_replace(cell_type, "_", " "),
+    n_lab = str_c(n_lab, " (", n, ")")
+  )
+
+n_labs <- set_names(n_labs$n_lab, n_labs$type_tm)
+
+# Create boxplots
+n_typs <- n_distinct(dat$cell_type)
+
+dat %>%
+  ggplot(aes(type_tm, value, fill = cell_type)) +
+  geom_boxplot(outlier.size = 0.1, key_glyph = draw_key_point, alpha = 0.9) +
+  facet_grid(name ~ tm, scales = "free") +
+  guides(fill = guide_legend(override.aes = list(shape = 22, size = 4))) +
+  scale_x_discrete(labels = n_labs) +
+  scale_fill_manual(values = typ_clrs) +
+  base_theme +
+  theme(
+    aspect.ratio    = 4 / n_typs,
+    legend.position = "none",
+    strip.clip      = "off",
+    axis.title      = element_blank(),
+    axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  )
+```
+
+```{r "epithelial cell marker plots OLD", fig.width = 8, fig.height = 4, eval = FALSE}
+so <- load_obj(here(params$so_dir, "cd45neg_so.qs"))
+
+gns <- c(
+  "Ptprc", "Pdpn", "Pecam1",
+  "Cdh1", "Krt8"
+  # "Acta2", "Itga7", "Pdgfrb"
+)
+
+gns %>%
+  map(~ {
+    so %>%
+      plot_violin(
+        .x,
+        cluster_col   = "cell_type",
+        method        = "boxplot",
+        plot_colors   = typ_clrs,
+        color         = "black",
+        outlier.size  = 0.1,
+        outlier.alpha = 1
+      ) +
+      theme(axis.text.x = element_text(size = 5, color = "black"))
+  }) %>%
+  plot_grid(plotlist = ., nrow = 2)
+
+rm(so)
+```

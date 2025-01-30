@@ -31,7 +31,7 @@ While the use of DNA-barcoded antigens combined with scRNA-Seq is an innovative 
 
 <br>
 
-### Comment 1 (a)
+### Comment 1 (a) {#R1C1}
 
 [Figure 2]
 
@@ -133,7 +133,7 @@ dat %>%
 
 <br>
 
-### Comment 2 (a)
+### Comment 2 (a) {#R1C2}
 
 [Figure 2]
 
@@ -210,7 +210,7 @@ Otherwise, the statement needs to be strongly resized.
 
 <br>
 
-### Comment 6 (a, t)
+### Comment 6 (a, t) {#R1C6}
 
 [Figure 4] [Figure S4]
 
@@ -436,7 +436,7 @@ capacity is already present in naïve cells at a transcriptomic level.
 
 <br>
 
-### Comment 7 (a, t)
+### Comment 7 (a, t) {#R2C7}
 
 [Figure 4]
 
@@ -488,7 +488,7 @@ and dual-immunized mice were pooled (lines 342-343).
 
 <br>
 
-### Comment 8 (a)
+### Comment 8 (a) {#R2C8}
 
 [Figure S9]
 
@@ -507,7 +507,7 @@ strengthen these data.
 
 <br>
 
-### Minor comments
+### Minor comments {#R2-minor}
 
 1. Could the authors explain why the 4:4:1:1 ratio in the scSeq exp in
    [Figure 1]?
@@ -608,7 +608,7 @@ CHIKV RNA in murine lymph node stromal cells, including FRCs.
 
 <br>
 
-### Comment 2 (a, e)
+### Comment 2 (a, e) {#R3C2}
 
 [Figure 1]
 
@@ -626,7 +626,7 @@ To what extent is the reduction in LEC Ag-score from 6 on day 2 to approximately
 
 <br>
 
-### Comment 3 (a)
+### Comment 3 (a) {#R3C3}
 
 [Figure 1]
 
@@ -635,40 +635,8 @@ published data. Lymph nodes do not contain epithelial cells, although some Cdh1
 and Krt8 expression could be assigned.
 
 * **Revise cell type annotations.
-  The population assigned as epithelial cells express Cdh1 and Krt8 and lack
-  expression of Pdpn and Pecam1.**
-
-<br>
-
-Expression of Cdh1, Krt8, Pdpn, and Pecam1 is shown below for cell types.
-
-```{r "epithelial cells", fig.width = 8, fig.height = 4, eval = generate_plots}
-so <- load_obj(here(params$so_dir, "cd45neg_so.qs"))
-
-gns <- c(
-  "Ptprc", "Pdpn", "Pecam1",
-  "Cdh1", "Krt8"
-  # "Acta2", "Itga7", "Pdgfrb"
-)
-
-gns %>%
-  map(~ {
-    so %>%
-      plot_violin(
-        .x,
-        cluster_col   = "cell_type",
-        method        = "boxplot",
-        plot_colors   = typ_clrs,
-        color         = "black",
-        outlier.size  = 0.1,
-        outlier.alpha = 1
-      ) +
-      theme(axis.text.x = element_text(size = 5, color = "black"))
-  }) %>%
-  plot_grid(plotlist = ., nrow = 2)
-
-rm(so)
-```
+  The population assigned as epithelial cells express epithelial cell markers
+  ([Cell annotations]).**
 
 <br>
 
@@ -690,7 +658,7 @@ BECs, which contradicts the results in [Figure 3]H.
 
 <br>
 
-### Comment 5 (a) {.tabset .tabset-pills}
+### Comment 5 (a) {.tabset .tabset-pills #R3C5}
 
 [Figure S3]
 
@@ -908,7 +876,7 @@ plts %>%
   })
 ```
 
-### Comment 6 (a, t)
+### Comment 6 (a, t) {#R3C6}
 
 [Figure 3]
 
@@ -932,7 +900,7 @@ or, in general, other similarity/dissimilarity measures to support their claim.
 
 <br>
 
-### Comment 7 (a)
+### Comment 7 (a) {#R3C7}
 
 [Figure 2]
 
@@ -944,7 +912,7 @@ Can these predictions be confirmed using another machine learning classifier?
 
 <br>
 
-### Comment 8 (a, t)
+### Comment 8 (a, t) {#R3C8}
 
 [Figure 4]
 
