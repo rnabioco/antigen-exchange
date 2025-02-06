@@ -1,0 +1,143 @@
+
+```{r "chikv setup"}
+# Check for saved predictions
+# * compare modification times to make sure models have not been re-trained
+predict_cells <- .check_mtime(
+  upstream_file = here(params$mod_dir, "ag-high_best_models.qs"),
+  new_file      = here(params$mod_dir, "ag-high_chikv_preds.qs")
+)
+
+predict_cells <- predict_cells || TRAIN_MODELS
+```
+
+```{r "chikv theme"}
+# CHIKV theme
+chikv_clrs <- c(
+  `Ag-low`       = "#56B4E9",
+  `Ag-competent` = "#D7301F",
+  other          = "white"
+)
+
+treat_clrs <- set_names(chikv_clrs[1:2], c("mock", "CHIKV"))
+
+chikv_u_theme <- umap_theme_2 +
+  theme(aspect.ratio = 0.7)
+```
+
+```{r "chikv load data"}
+# Load CHIKV data
+chikv_so <- qread(here(params$chikv_dir, "so_lec.qs"))
+
+chikv_so <- chikv_so %>%
+  subset(tm == "24hpi") %>%
+  AddMetaData(FetchData(., c("hUMAP_1", "hUMAP_2"))) %>%
+  DietSeurat(assays = "RNA", counts = FALSE)
+
+chikv_clmns <- c(
+  "orig.ident", "rep", "treatment", "tm",
+  CHIKV_TYPE_CLMN,
+  "UMAP_1", "UMAP_2"
+)
+```
+
+```{r "chikv predict Ag-competent", eval = predict_cells}
+# Predict using models for each LEC subset
+chikv_preds <- BEST_MLS %>%
+  split(.$training_rank) %>%
+  map(~ {
+    .x %>%
+      pmap_dfr(~ {
+        args <- list(...)
+        
+        cells <- chikv_so@meta.data %>%
+          filter(!!sym(CHIKV_TYPE_CLMN) == args$subtype) %>%
+          rownames()
+        
+        dat <- chikv_so %>%
+          subset(cells = cells) %>%
+          .prepare_ml_data(feats = ML_FEATS, class_clmn = NULL)
+        
+        pred <- args$predict_fn(as.h2o(dat)) %>%
+          pull(adj_pred) %>%
+          factor(levels = ag_lvls)
+        
+        res <- dat %>%
+          mutate(pred = pred) %>%
+          select(pred)
+        
+        res
+      })
+  })
+
+# Save predictions
+chikv_preds %>%
+  qsave(here(params$mod_dir, "ag-high_chikv_preds.qs"))
+```
+
+```{r "chikv format data", include = FALSE}
+# Load CHIKV predictions
+chikv_preds <- qread(here(params$mod_dir, "ag-high_chikv_preds.qs"))
+
+# Add Ag-competent predictions
+chikv_preds %>%
+  iwalk(~ {
+    chikv_so <<- chikv_so %>%
+      AddMetaData(.x, col.name = str_c("ml_", colnames(.x), "_", .y))
+  })
+
+chikv_so <- chikv_so %>%
+  mutate_meta(~ {
+    .x %>%
+      mutate(
+        across(matches("^ml_pred_[0-9]+"), ~ {
+          .x %>%
+            dplyr::recode(high = "Ag-competent", low = "Ag-low") %>%
+            fct_relevel(rev(names(chikv_clrs)))
+        }, .names = "{.col}_grp"),
+        
+        treatment = fct_relevel(treatment, c("mock", "CHIKV")),
+        subtype   = !!sym(CHIKV_TYPE_CLMN)  # add subtype column to keep consistent
+      )
+  })
+
+# Add module scores
+# * only add modules for top prediction
+CHIKV_FEATS <- MODULE_FEATS[[1]]
+
+CHIKV_FEATS %>%
+  iwalk(~ {
+    clmn_nms <- str_c(.y, "_", names(.x))
+
+    clmn_nms <- set_names(
+      str_c(clmn_nms, seq_along(clmn_nms)),
+      clmn_nms
+    )
+
+    chikv_so <<- chikv_so %>%
+      AddModuleScore(
+        features = .x,
+        name     = names(clmn_nms)
+      ) %>%
+      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
+  })
+
+# Data for plotting
+# * cLEC Ag-high heatmap data, not all genes are in CHIKV object
+# * only pull module features for top model
+CHIKV_FEATS <- CHIKV_FEATS$cLEC$high
+CHIKV_FEATS <- CHIKV_FEATS[CHIKV_FEATS %in% rownames(chikv_so)]
+
+fetch_feats <- c(
+  "treatment", "rep", "lec_subtype",
+  colnames(chikv_so@meta.data),
+  CHIKV_FEATS
+) %>%
+  unique()
+
+CHIKV_DAT <- chikv_so %>%
+  FetchData(fetch_feats) %>%
+  as_tibble(rownames = ".cell_id")
+
+rm(chikv_so)
+gc()
+```

@@ -55,7 +55,7 @@ deg_file <- here(params$table_dir, "epithelial_degs.tsv.gz")
 if (!file.exists(deg_file)) {
   Idents(cd45_so) <- cd45_so$cell_type
   
-  degs <- cd45_so %>%
+  epi_degs <- cd45_so %>%
     mutate_meta(
       mutate,
       tm = if_else(is.na(tm), "dual", as.character(tm))
@@ -67,14 +67,14 @@ if (!file.exists(deg_file)) {
     as_tibble(rownames = "gene") %>%
     arrange(max_pval)
   
-  degs %>%
+  epi_degs %>%
     write_tsv(deg_file)
 }
 
-degs <- read_tsv(deg_file)
+epi_degs <- read_tsv(deg_file)
 
 # Top DEGs
-top_degs <- degs %>%
+top_degs <- epi_degs %>%
   filter(max_pval < 0.05) %>%
   arrange(max_pval) %>%
   pull(gene) %>%
@@ -171,7 +171,7 @@ dat %>%
   theme(axis.title.y = element_blank())
 ```
 
-```{r "cleanup", include = FALSE}
+```{r "cleanup environment", include = FALSE}
 rm(cd45_so)
 gc()
 ```
@@ -181,6 +181,103 @@ gc()
 <br>
 
 <br>
+
+```{r "EPITHELIAL CLUSTERING", eval = FALSE}
+# * Re-cluster epithelial cells
+# * Re-annotate epithelial cells using a merged reference containing Immgen
+#   data and FRC subsets
+# * Identify DEGs comparing the new annotations
+
+# Cluster epithelial cells
+so <- cd45_so %>%
+  subset(cell_type == "Epithelial cells")
+
+so <- so %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(npcs = 40) %>%
+  RunUMAP(dims = 1:40) %>%
+  FindNeighbors(dims = 1:40) %>%
+  FindClusters(resolution = c(0.2, 0.5, 1))
+
+# Re-annotate cell clusters
+ref_gns   <- rownames(ref_frc)
+ref_gns   <- ref_gns[ref_gns %in% rownames(ref_immgen)]
+ref_types <- colnames(ref_frc)
+ref_types <- ref_types[!ref_types %in% colnames(ref_immgen)]
+
+ref_merge <- ref_frc[ref_gns, ref_types]
+ref_merge <- bind_cols(ref_merge, ref_immgen[ref_gns, ])
+
+so <- so %>%
+  mutate_meta(
+    select,
+    -any_of(c("type", "r", "UMAP_1", "UMAP_2"))
+  ) %>%
+  clustify(
+    ref_mat     = ref_merge,
+    cluster_col = "RNA_snn_res.0.2",
+    threshold   = 0,
+    n_genes     = 2000
+  )
+
+# Identify DEGs
+so <- so %>%
+  mutate_meta(
+    mutate,
+    new_type = str_remove(type, " \\(.+$")
+  )
+
+Idents(so) <- so$new_type
+
+epi_degs <- so %>%
+  subset(tm != 2) %>%
+  FindConservedMarkers(
+    ident.1      = "Epithelial cells",
+    grouping.var = "mouse",
+    assay        = "RNA",
+    slot         = "data",
+    only.pos     = TRUE
+  )
+
+top_epi_degs <- epi_degs %>%
+  filter(max_pval < 0.05)
+
+
+
+# so %>%
+#   plot_scatter(
+#     "Pecam1",
+#     size = 0.1
+#   )
+# 
+# so %>%
+#   plot_violin(
+#     "Pdpn",
+#     cluster_col = "type",
+#     method = "boxplot",
+#     top = Inf
+#   )
+# 
+# so %>%
+#   plot_scatter(
+#     "RNA_snn_res.1",
+#     size = 0.1
+#   )
+# 
+# so %>%
+#   plot_violin(
+#     "Krt8",
+#     cluster_col = "RNA_snn_res.1",
+#     method = "boxplot",
+#     top = Inf
+#   )
+# 
+# Seurat::DoHeatmap(
+#   so,
+#   features = top_degs
+# )
+```
 
 ```{r "format CD45+ marker data", include = FALSE, eval = FALSE}
 cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))

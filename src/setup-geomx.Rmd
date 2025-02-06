@@ -52,7 +52,71 @@ pkcs        <- c("Mm_R_NGS_WTA_v1.0.pkc", "Hesselberth_02-SO-90138_v1.0.pkc")
 create_objs <- !file.exists(here(params$geomx_dir, "geomx.qs"))
 ```
 
-```{r "load geomx data", eval = create_objs}
+```{r "geomx functions"}
+plot_geomx_image <- function(obj_in, color, clrs = NULL, labs = NULL,
+                             legend_values = names(labs) %||% names(clrs),
+                             ttl = NULL, line_size = 0.5, scale_size = 8,
+                             scale_dist = 1.5, ...) {
+  
+  # `NA`s will get plotted since all segements must be included in the object
+  #  to plot. `NA`s are segments that did pass QC.
+  
+  labs <- labs %||% waiver()
+  ttl  <- ttl %||% color
+  
+  res <- obj_in %>%
+    plotSpatialOverlay(
+      colorBy          = color,
+      scaleBar         = TRUE,
+      corner           = "bottomleft",
+      textDistance     = scale_dist,
+      scaleBarLineSize = line_size,
+      scaleBarFontSize = scale_size / .pt,
+      ...
+    ) +
+    ggtitle(ttl) +
+    theme(
+      plot.margin  = margin(r = 15, l = 15),
+      plot.title   = element_text(hjust = 0.5, size = ttl_pt2 * 1.5),
+      legend.title = element_blank()
+    )
+  
+  if (!is.null(legend_values)) {
+    all_sams_df <- tibble(x = 1, y = 1, colorBy = legend_values)
+    
+    res <- res +
+      geom_blank(aes(x, y, fill = colorBy), data = all_sams_df)
+  }
+  
+  if (!is.null(clrs)) {
+    if (is.numeric(obj_in@plottingFactors[[color]])) {
+      res <- res +
+        scale_fill_gradientn(colours = clrs) +
+        guides(fill = guide_colorbar(ticks = FALSE)) +
+        theme(
+          legend.position   = "bottom",
+          legend.key.width  = unit(50, "pt"),
+          legend.key.height = unit(7, "pt"),
+          legend.text       = element_text(size = txt_pt2)
+        )
+      
+    } else {
+      res <- res +
+        scale_fill_manual(
+          values = clrs,
+          labels = labs,
+          limits = names(labs) %||% names(clrs),
+          drop   = FALSE
+        ) +
+        theme(legend.text = element_text(size = ttl_pt2))
+    }
+  }
+  
+  res
+}
+```
+
+```{r "geomx load data", eval = create_objs}
 # Load data
 dcc <- dir(here(geomx_dir, "counts"), ".dcc$", full.names = TRUE)
 pkc <- here(params$ref_dir, pkcs)
@@ -71,7 +135,7 @@ pkcs    <- annotation(geomx_raw)
 modules <- gsub(".pkc", "", pkcs)
 ```
 
-```{r "segment qc", eval = create_objs}
+```{r "geomx segment qc", eval = create_objs}
 # Add pseudocount of 1 to enable downstream transformations
 # useDALogic = TRUE will only add pseudocount to zeros
 geomx_raw <- geomx_raw %>%
@@ -133,7 +197,7 @@ QC_Summary["TOTAL FLAGS", ] <- c(
 )
 ```
 
-```{r "probe qc", eval = create_objs}
+```{r "geomx probe qc", eval = create_objs}
 # Calculate geometric mean for negative control probes for each pkc module
 # MARGIN = 2 is for per module, MARGIN = 1 is for per sample
 neg_geo_mns <- esBy(
@@ -189,7 +253,7 @@ geomx <- geomx %>%
   )
 ```
 
-```{r "limit of quantification", eval = create_objs}
+```{r "geomx limit of quantification", eval = create_objs}
 # Collapse probe counts for each gene
 # This is important since multiple probes are included for some genes
 # Remove neg_geomean columns from pData since aggregateCounts()
@@ -248,7 +312,7 @@ pData(geomx)$GenesDetected     <- colSums(LOQ_Mat, na.rm = TRUE)
 pData(geomx)$GeneDetectionRate <- pData(geomx)$GenesDetected / nrow(geomx)
 ```
 
-```{r "gene detection rate", eval = create_objs}
+```{r "geomx gene detection rate", eval = create_objs}
 # Determine detection thresholds
 # Bin segments based on detection rate
 pData(geomx)$DetectionThreshold <- cut(
@@ -298,7 +362,7 @@ rownames(plot_detect) <- plot_detect$Freq
 #        y = "Genes Detected, % of Panel > LOQ")
 ```
 
-```{r "normalize data", eval = create_objs}
+```{r "geomx normalize data", eval = create_objs}
 # USING CUTOFF OF 1%
 # Subset to target genes detected in at least 1% of the samples.
 # Also manually include the negative control probes, for downstream use
@@ -318,7 +382,7 @@ geomx <- geomx %>%
   normalize(norm_method = "quant", desiredQuantile = 0.75, toElt = "q_norm")
 ```
 
-```{r "run UMAP", eval = create_objs}
+```{r "geomx run umap", eval = create_objs}
 # update defaults for umap to contain a stable random_state (seed)
 custom_umap <- umap::umap.defaults
 
@@ -338,7 +402,7 @@ umap_out <- umap(
 pData(geomx)[, c("UMAP_1", "UMAP_2")] <- umap_out$layout[, c(1,2)]
 ```
 
-```{r "format pData", eval = create_objs}
+```{r "geomx format pData", eval = create_objs}
 # Fix sample names
 pData(geomx) <- pData(geomx) %>%
   mutate(
@@ -413,12 +477,12 @@ pData(geomx) <- pData(geomx) %>%
   column_to_rownames("dcc")
 ```
 
-```{r "save geomx objects", eval = create_objs}
+```{r "geomx save objects", eval = create_objs}
 save_objs(geomx_raw,  ob_dir = here(params$geomx_dir))
 save_objs(geomx,      ob_dir = here(params$geomx_dir))
 ```
 
-```{r "load geomx objects"}
+```{r "geomx load objects"}
 geomx     <- qread(here(params$geomx_dir, "geomx.qs"))
 geomx_raw <- qread(here(params$geomx_dir, "geomx_raw.qs"))
 

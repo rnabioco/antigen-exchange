@@ -1,5 +1,5 @@
 
-```{r "{{.x}} xen setup", include = FALSE}
+```{r "{{.x}} xenium setup", include = FALSE}
 # Slide to process
 slide <- {{.x}}
 
@@ -17,9 +17,24 @@ xen_clst_rsln <- 10
 sffx <- str_c("_s", slide, ".qs")
 
 create_sobjs <- !file.exists(here(params$xen_dir, str_c("xen", sffx)))
+
+# Custom targets
+# * feature names cannot have underscores, Seurat will replace with dashes
+xen_ag_targets <- unname(params$xen_ag_targets)
+xen_ag_clmns   <- names(params$xen_ag_targets)
+
+custom_targets <- here(params$xen_custom_targets) %>%
+  read_csv(col_types = cols_only("c")) %>%
+  pull(1) %>%
+  unique() %>%
+  str_replace_all("_", "-")
+
+if (!all(xen_ag_targets %in% custom_targets)) {
+  cli_abort("Not all xen_ag_targets are present in xen_custom_")
+}
 ```
 
-```{r "{{.x}} xen functions"}
+```{r "{{.x}} xenium functions"}
 .plot_full_fov <- function(df_in, fov_in, color, trace = list(), clrs,
                            size = 0.3, trace_size = 1, trace_clr = "black") {
   # Format input data
@@ -164,9 +179,106 @@ create_sobjs <- !file.exists(here(params$xen_dir, str_c("xen", sffx)))
   
   res
 }
+
+plot_xenium <- function(df_in, dat_clmn, grp_clmn = NULL, clrs = NULL,
+                        x = "y_cell", y = "x_cell", ttl = NULL,
+                        pt_size = 0.35, outline = TRUE,
+                        trans = "identity", show_scale = TRUE, scale_len = 300,
+                        scale_linewidth = 1,
+                        scale_unit = "\u03BCm", scale_lab_pad = 0.05,
+                        scale_lab_size = 8, ...) {
+  
+  is_num <- !is.null(dat_clmn) && is.numeric(df_in[[dat_clmn]])
+  
+  if (is_num && length(clrs) == 1) clrs <- c("white", clrs)
+  
+  # Create UMAPs
+  res <- df_in %>%
+    plot_scatter(
+      dat_clmn,
+      x            = x,
+      y            = y,
+      group_col    = grp_clmn,
+      size         = pt_size,
+      stroke       = 0.75,
+      outline      = outline,
+      plot_colors  = clrs,
+      plot_lvls    = names(clrs),
+      trans        = trans,
+      label_params = list(size = 14),
+      ...
+    ) +
+    coord_fixed() +
+    umap_theme_2 +
+    theme(
+      legend.position = "bottom",
+      legend.text     = element_text(size = ttl_pt2),
+      strip.text      = element_text(size = ttl_pt2)
+    )
+  
+  if (is_num) {
+    res <- res +
+      guides(fill = guide_colorbar(
+        title.position = "top",
+        title          = ttl,
+        ticks          = FALSE
+      )) +
+      theme(
+        legend.key.width  = unit(35, "pt"),
+        legend.key.height = unit(7, "pt"),
+        legend.title      = element_text(size = ttl_pt2, hjust = 0.5)
+      )
+    
+  } else if (!is.null(dat_clmn)) {
+    res <- res +
+      guides(fill = guide_legend(
+        nrow           = 2,
+        title.position = "top",
+        title          = ttl,
+        override.aes   = list(size = 4, color = "black"),
+        reverse        = TRUE
+      )) +
+      theme(
+        legend.key.height = unit(35, "pt"),
+        legend.title      = element_blank()
+      )
+  }
+
+  # Add scale bar
+  scale_dat <- df_in %>%
+    summarize(
+      x    := min(!!sym(x)),
+      ymax := max(!!sym(y)),
+      y    := min(!!sym(y)),
+      xend  = x + scale_len,
+      yend  = y
+    ) %>%
+    mutate(
+      xlab      = median(c(x, xend)),
+      ylab      = abs(diff(c(ymax, y))),
+      ylab      = y + (ylab * scale_lab_pad),
+      scale_lab = str_c(c(as.character(scale_len), scale_unit), collapse = " ")
+    )
+  
+  if (show_scale) {
+    res <- res +
+      geom_segment(
+        aes(x = x, xend = xend, y = y, yend = yend, fill = NULL, color = NULL),
+        data = scale_dat,
+        linewidth = scale_linewidth
+      ) +
+      geom_text(
+        aes(xlab, ylab, label = scale_lab, fill = NULL, color = NULL),
+        data  = scale_dat,
+        size  = scale_lab_size / .pt
+      )
+  }
+  
+  res
+}
 ```
 
-```{r "{{.x}} xen create object", eval = create_sobjs}
+```{r "{{.x}} xenium create object", eval = create_sobjs}
 # Identify samples to load
 xen_dirs <- dir(
   here(params$xen_res_dir),
@@ -176,15 +288,6 @@ xen_dirs <- dir(
 
 names(xen_dirs) <- xen_dirs %>%
   str_extract("(?<=__)[A-Z](?=__)")
-
-# Custom targets
-ag_targets <- unname(params$xen_ag_targets)
-ag_clmns   <- names(params$xen_ag_targets)
-
-custom_targets <- ag_targets %>%
-  c(params$xen_custom_targets) %>%
-  unique() %>%
-  unlist()
 
 # Create Seurat object
 # store custom targets as separate assay
@@ -209,7 +312,7 @@ xen <- xen_dirs %>%
   })
 ```
 
-```{r "{{.x}} xen process object", include = FALSE, eval = create_sobjs}
+```{r "{{.x}} xenium process object", include = FALSE, eval = create_sobjs}
 # Process data
 # Add FOV labels
 xen <- xen %>%
@@ -224,7 +327,7 @@ xen <- xen %>%
 
 # Identify Ag+ cells
 # * set Ag tag signals for each sample based on params$xen_samples
-ag_feats <- str_c("xenium_custom_", ag_targets)
+ag_feats <- str_c("xenium_custom_", xen_ag_targets)
 
 xen <- xen %>%
   imap(~ {
@@ -233,7 +336,7 @@ xen <- xen %>%
     .x %>%
       AddMetaData(
         FetchData(., ag_feats),
-        col.name = ag_clmns
+        col.name = xen_ag_clmns
       ) %>%
       mutate_meta(~ {
         .x %>%
@@ -260,7 +363,7 @@ xen <- xen %>%
   })
 ```
 
-```{r "{{.x}} xen cell type reference", eval = create_sobjs}
+```{r "{{.x}} xenium cell type reference", eval = create_sobjs}
 # Create reference using scRNA-seq data
 # Run SCTransform separately, merge, PrepSCTFindMarkers to correct sequencing
 #   depth between samples
@@ -308,7 +411,7 @@ if (!file.exists(ref_file)) {
 }
 ```
 
-```{r "{{.x}} xen cell type annotations", eval = create_sobjs}
+```{r "{{.x}} xenium cell type annotations", eval = create_sobjs}
 # Identify transfer anchors
 anchors <- xen %>%
   map(~ {
@@ -367,7 +470,7 @@ rm(ref_so)
 gc()
 ```
 
-```{r "{{.x}} xen refine annotations", eval = create_sobjs}
+```{r "{{.x}} xenium refine annotations", eval = create_sobjs}
 # Each FOV was clustered separately, so add FOV ID to cluster ID
 xen_clst_clmn <- str_c("SCT_snn_res.", xen_clst_rsln)
 
@@ -443,7 +546,7 @@ xen <- xen %>%
   )
 ```
 
-```{r "{{.x}} xen create lec/frc objects", include = FALSE, eval = create_sobjs}
+```{r "{{.x}} xenium create lec/frc objects", include = FALSE, eval = create_sobjs}
 # Process data
 type_key <- c(lec = "LEC", frc = "Fibroblasts")
 
@@ -467,7 +570,7 @@ rm(cd45neg)
 gc()
 ```
 
-```{r "{{.x}} xen calculate distance from Ag+ LEC", eval = create_sobjs}
+```{r "{{.x}} xenium calculate distance from Ag+ LEC", eval = create_sobjs}
 # Calculate distance from closest Ag+ LEC
 # * this will only return cell coordinates for FOVs with Ag+ LECs
 # * FOV F will not have cell coordinates, this column will be all `NA`s
@@ -564,7 +667,7 @@ xen <- xen %>%
   AddMetaData(dist_meta)
 ```
 
-```{r "{{.x}} xen lec types", eval = create_sobjs}
+```{r "{{.x}} xenium lec types", eval = create_sobjs}
 # Annotate LEC types
 # * automated threshold leaves a small Marco-high cluster as unassigned
 lec_clst_clmn <- "SCT_snn_res.3"
@@ -608,7 +711,7 @@ rm(lec, frc)
 gc()
 ```
 
-```{r "{{.x}} xen small object", eval = create_sobjs}
+```{r "{{.x}} xenium small object", eval = create_sobjs}
 # Format Ag labels
 dcs <- xen$cell_type %>%
   unique() %>%

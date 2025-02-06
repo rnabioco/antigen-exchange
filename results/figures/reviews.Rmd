@@ -21,7 +21,7 @@ knitr::opts_chunk$set(
   dpi     = 300
 )
 
-generate_plots <- TRUE
+generate_plots <- FALSE
 ```
 
 ## Reviewer 1
@@ -502,8 +502,9 @@ This proof of concept is appreciated, but a validation using proper controls
 (e.g., no Ag exposure or disrupted LEC Ag archiving as in CHIKV) would
 strengthen these data.
 
-* **For a non-antigen-stimulated control we could use scRNA-seq data from original
-  paper describing LEC subsets (Zhang?)**
+* **There is no human scRNA-seq LN data available that was not collected from
+  cancer patients, used the protocol description from Abe et al. and soften
+  language describing these results**
 
 <br>
 
@@ -634,9 +635,10 @@ The cell type annotation needs to be validated and checked against additional
 published data. Lymph nodes do not contain epithelial cells, although some Cdh1
 and Krt8 expression could be assigned.
 
-* **Revise cell type annotations.
-  The population assigned as epithelial cells express epithelial cell markers
-  ([Cell annotations]).**
+* **The population assigned as epithelial cells expresses epithelial cell
+  markers ([Cell annotations]).
+  These cells likely represent contamination that occurred during sample
+  collection.**
 
 <br>
 
@@ -701,7 +703,7 @@ chikv_naive <- chikv_so %>%
   mutate_meta(
     mutate,
     tm = 0,
-    subtype = lec_subtype
+    subtype = !!sym(CHIKV_TYPE_CLMN)
   )
 
 # Merge with lec and dc objects
@@ -746,6 +748,16 @@ gc()
 ```
 
 ```{r "module exp plots", fig.width = 10, fig.height = 6, results = "asis", eval = generate_plots}
+# Set module names
+module_nms <- MODULE_FEATS[[1]][rf_typs] %>%
+  imap(~ str_c(.y, "_", names(.x))) %>%
+  flatten()
+
+module_nms <- set_names(
+  str_c(module_nms, seq_along(module_nms)),
+  module_nms
+)
+
 # Format n labels
 dat <- naive_dat %>%
   pivot_longer(all_of(names(module_nms)), names_to = "module") %>%

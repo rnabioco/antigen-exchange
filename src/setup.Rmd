@@ -341,7 +341,8 @@ format_ag_data <- function(so_in, norm_factors, ag_key, ...) {
 create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
                                    p_method = wilcox.test, p_alt = "two.sided",
                                    p_hjust = c(0.7, 0.5), p_vjust = c(1.2, 2.4),
-                                   n_label = FALSE, ...
+                                   n_label = FALSE, pred_clmn = "ml_pred_1_grp",
+                                   ...
                                    ) {
 
   # Format data for boxplots  
@@ -352,15 +353,15 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
     mutate(module_type = str_remove(name, "_[^_]+$")) %>%
     filter(subtype == module_type) %>%
     mutate(
-      subtype  = fct_relevel(subtype, typs),
-      pred_grp = fct_relevel(pred_grp, names(clrs))  # must set as factor to
+      subtype           = fct_relevel(subtype, typs),
+      !!sym(pred_clmn) := fct_relevel(!!sym(pred_clmn), names(clrs))  # must set as factor to
     )                                                # calculate correlation
   
   # Calculate Spearman correlation
   p_dat <- dat %>%
     group_by(subtype, tm) %>%
     summarize(corr = list(tidy(cor.test(
-      as.numeric(pred_grp), value,
+      as.numeric(!!sym(pred_clmn)), value,
       method      = "spearman",
       continuity  = TRUE,
       exact       = FALSE,
@@ -381,10 +382,10 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
   # need to make sure n_dat is ordered based on factor level which is set
   # upstream
   n_dat <- dat %>%
-    group_by(tm, subtype, pred_grp) %>%
+    group_by(tm, subtype, !!sym(pred_clmn)) %>%
     summarize(n = n_distinct(.cell_id), .groups = "drop") %>%
     mutate(n_lab = label_comma()(n)) %>%
-    arrange(pred_grp)
+    arrange(!!sym(pred_clmn))
   
   # Create boxplots
   y_exp <- c(0.05, 0.25)
@@ -392,7 +393,7 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
   if (n_label) y_exp[1] <- 0.1
   
   res <- dat %>%
-    ggplot(aes(as.character(tm), value, fill = pred_grp)) +
+    ggplot(aes(as.character(tm), value, fill = !!sym(pred_clmn))) +
     geom_boxplot(
       outlier.size = 0.1,
       position     = position_dodge2(preserve = "single"),
@@ -1147,7 +1148,8 @@ create_ag_boxes <- function(df_in, clrs, facet_vars = "subtype") {
 #' 
 #' Used for figure 5
 create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
-                                    rep_clmn = "rep", ttl, n_p = NULL) {
+                                    rep_clmn = "rep", ttl, n_p = NULL,
+                                    pred_clmn = "ml_pred_1_grp") {
   
   # Set colors
   grps <- unique(df_in[[x]])
@@ -1166,7 +1168,7 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
   dat <- df_in %>%
     group_by(!!!syms(c("x_clmn", x, "subtype", rep_clmn))) %>%
     summarize(
-      frac_comp = sum(pred_grp == "Ag-competent") / n(),
+      frac_comp = sum(!!sym(pred_clmn) == "Ag-competent") / n(),
       .groups = "drop"
     )
   
@@ -1176,7 +1178,7 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
     mutate(n = n()) %>%
     group_by(x_clmn, subtype, !!sym(x), n) %>%
     summarize(
-      n_comp = sum(pred_grp == "Ag-competent"),
+      n_comp = sum(!!sym(pred_clmn) == "Ag-competent"),
       .groups = "drop"
     ) %>%
     group_by(subtype) %>%
