@@ -1246,7 +1246,7 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
     
     facet_wrap(~ subtype, scales = "free_x") +
     scale_fill_manual(values = clrs) +
-    scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
+    scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1), expand = expansion(c(0.05, 0.2))) +
     scale_x_discrete(labels = x_labs) +
     guides(alpha = "none") +
     labs(y = ttl) +
@@ -1254,6 +1254,7 @@ create_chikv_class_bars <- function(df_in, x = "treatment", clrs = treat_clrs,
     theme(
       aspect.ratio    = 1.5,
       legend.position = "none",
+      strip.clip      = "off",
       axis.title.x    = element_blank(),
       axis.text.x     = element_text(size = ttl_pt2)
     )
@@ -1835,6 +1836,68 @@ cd45neg_so <- cd45neg_so %>%
   })
 ```
 
+```{r "epithelial cells", eval = create_sobjs}
+# Re-assess epithelial cell annotations
+# * Re-annotate epithelial cells using a merged reference containing Immgen
+#   data and FRC subsets
+# * FRC object will not include updated annotations, but these subsets are not
+#   included in the paper
+
+# Cluster epithelial cells
+epi_so <- cd45neg_so %>%
+  subset(cell_type == "Epithelial cells")
+
+epi_so <- epi_so %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(npcs = 40) %>%
+  RunUMAP(dims = 1:40) %>%
+  FindNeighbors(dims = 1:40) %>%
+  FindClusters(resolution = c(0.2, 0.5, 1))
+
+# Re-annotate cell clusters
+# * used merged annotation that includes immgen and frc cell types
+ref_gns   <- rownames(ref_frc)
+ref_gns   <- ref_gns[ref_gns %in% rownames(ref_immgen)]
+ref_types <- colnames(ref_frc)
+ref_types <- ref_types[!ref_types %in% colnames(ref_immgen)]
+
+ref_merge <- ref_frc[ref_gns, ref_types]
+ref_merge <- bind_cols(ref_merge, ref_immgen[ref_gns, ])
+
+epi_so <- epi_so %>%
+  mutate_meta(
+    select,
+    -any_of(c("type", "r", "UMAP_1", "UMAP_2"))
+  ) %>%
+  clustify(
+    ref_mat     = ref_merge,
+    cluster_col = "RNA_snn_res.1",
+    n_genes     = 2000
+  )
+
+epi_ann <- epi_so %>%
+  mutate_meta(
+    mutate,
+    cell_type = str_remove(type, " \\(.+$"),
+    cell_type = if_else(
+      cell_type %in% c("Epithelial cells", "unassigned"),
+      cell_type,
+      "Fibroblasts"
+    )
+  ) %>%
+  FetchData("cell_type")
+
+# Add adjusted annotations back to original object
+cd45neg_so <- cd45neg_so %>%
+  AddMetaData(epi_ann, col.name = "new_type") %>%
+  mutate_meta(~ {
+    .x %>%
+      mutate(cell_type = if_else(!is.na(new_type), new_type, cell_type)) %>%
+      select(-new_type)
+  })
+```
+
 ```{r "DC object", eval = create_sobjs}
 # Re-cluster and integrate DCs
 # DC subsets were annotated with broad cell types
@@ -1916,7 +1979,6 @@ all_meta <- read_tsv(here(params$so_dir, "all_meta.tsv.gz"))
 lec_so   <- load_obj(here(params$so_dir, "lec_so.qs"))
 dc_so    <- load_obj(here(params$so_dir, "dc_so.qs"))
 
-# frc_so   <- load_obj(here(params$so_dir, "frc_so.qs"))
 # cd45neg_so <- load_obj(here(params$so_dir, "cd45neg_so.qs"))
 # cd45pos_so <- load_obj(here(params$so_dir, "cd45pos_so.qs"))
 
@@ -2025,8 +2087,10 @@ clrs <- ito_clrs %>%
 # Cell type colors
 other_clr <- "grey80"
 
-typ_clrs <- clrs %>%
+typ_clrs <- set_clrs <- clrs %>%
   assign_colors(typs, filter = "deutan")
+
+# typ_clrs["unnassigned"] <- other_clr
 
 set_typs <- c(
   "LEC", "DC", "Fibroblasts",
@@ -2060,7 +2124,7 @@ lec_clrs <- c()
 
 lec_clrs[set_typs] <- c(
   "#E69F00", "#56B4E9", "#F0E442",
-  "#E7301F", "#000000", typ_clrs[["BEC"]],
+  "#E7301F", "#000000", "#0072B2",  # typ_clrs[["BEC"]],
   other_clr
 )
 

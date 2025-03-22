@@ -14,7 +14,7 @@ output:
 params:
   template_dir:    "src"                                                                  # Rmd templates
   so_dir:          "~/Dropbox/Ryan/Projects/antigen-exchange/results/sobjs/2024-07-01"    # Seurat objects
-  mod_dir:         "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2025-02-03_2" # ML models
+  mod_dir:         "~/Dropbox/Ryan/Projects/antigen-exchange/results/models/2025-03-20"   # ML models
   abe_dir:         "~/Dropbox/Ryan/Projects/antigen-exchange/results/abe"                 # Abe et al objects
   geomx_dir:       "results/geomx"                                                        # GeoMx objects
   chikv_dir:       "~/Dropbox/Ryan/Projects/morrison-lnsc/results/sobjs"                  # CHIKV objects
@@ -22,7 +22,7 @@ params:
   xen_dir:         "~/Dropbox/Ryan/Projects/antigen-exchange/results/xenium/2024-03-22"   # Xenium objects
   ref_dir:         "ref"                                                                  # clustifyr references
   geo_dir:         "results/geo"                                                          # GEO submission files
-  table_dir:       "results/tables/2025-02-03_2"                                          # tables
+  table_dir:       "results/tables/2025-03-20"                                            # tables
   sample_info:     "sample_info.xlsx"                                                     # samples names/info
   res_dir:
     value:
@@ -44,6 +44,8 @@ params:
       Ag_tag_1: "GeoMx-Barcode01-ERCC00142"
       Ag_tag_2: "GeoMx-Barcode02-ERCC00144"
   xen_custom_targets: "ref/QX42XM_mMulti_98g_custom_sequences.csv" # Custom non-endogenous targets in panel
+editor_options: 
+  chunk_output_type: console
 ---
 
 ---
@@ -55,13 +57,16 @@ included below.
 
 <u>Primary</u>
 
-- [ ] &nbsp;Train additional models to further corroborate predictions and check
-      contribution of Cav/Cavin genes ([R3C7](#R3C7))
-- [ ] &nbsp;Perform additional Xenium analysis to further assess spatial
+- [ ] &nbsp;Train additional models to further corroborate predictions
+      ([R3C7](#R3C7)) and to improve human predictions ([R1C5](#R1C5))
+- [ ] &nbsp;Revise cell type annotations, check epithelial cells ([R3C3](#R3C3))
+- [ ] &nbsp;Modify LEC subset labels used for CHIKV prediction plots, need these
+      groups to be directly comparable with the groups assessed by flow
+      ([R1C4](#R1C4))
+- [x] &nbsp;Perform additional Xenium analysis to further assess spatial
       correlation between Ag+ DCs and LECs ([R3C8](#R3C8))
-- [x] &nbsp;Revise cell type annotations, check epithelial cells ([R3C3](#R3C3))
-- [x] &nbsp;Compare expression of the Ag modules for LECs vs other stromal cells
-      and DCs ([R3C5](#R3C5))
+- [x] &nbsp;Compare expression of the Ag modules for LECs vs DC subsets
+      ([R3C5](#R3C5))
 - [x] &nbsp;Include a bargraph similar to [Figure 2]B that includes dual
       immunized mice, to show that predicted Ag-competent cells are taking up
       Ag after the 2nd immunization ([R1C1](#R1C1))
@@ -92,7 +97,7 @@ reticulate::use_condaenv("umap-2", conda = "~/.local/bin/micromamba")
 knitr::knit(here::here(params$template_dir, "setup.Rmd"), "")
 
 # Train and load models
-knit(here(params$template_dir, "setup-automl-2.Rmd"), "")
+knit(here(params$template_dir, "setup-ml.Rmd"), "")
 
 # Plot parameters
 min_cells <- 5
@@ -317,7 +322,7 @@ lec_so <- lec_so %>%
     ),
     
     # Label training data
-    training_data = .cell_id %in% c(TRAINING_CELLS, VALID_CELLS),
+    training_data = .cell_id %in% TRAINING_CELLS,
     mouse = fct_relevel(mouse, mice)
   )
 
@@ -640,7 +645,7 @@ fig1
 
 <br>
 
-### Figure S1
+### Figure S2
 
 A.  UMAP projections show cell types identified for CD45- and CD45+ samples.
 B.  UMAP projections show LEC subsets identified for each timepoint.
@@ -807,8 +812,11 @@ figS1
 
 <br>
 
-### Figure S2
+### Figure S3
 
+A.  Mean Ag-score and mean MFI (fold change relative to naive)
+    is shown for LECs from 2, 14, and 21 days post-immunization.
+    Error bars show the 95% confidence interval.
 A.  Ag-scores are shown for each timepoint for CD45- cell types.
     Two biological replicates are shown for the day 21 and day 42 timepoints
     (r1, r2),
@@ -820,6 +828,86 @@ B.  Ag-scores are shown for each timepoint for CD45+ cell types,
     as described in A.
 C.  Ag-scores are shown for each timepoint for LEC subsets, as described in A.
 D.  Ag-scores are shown for each timepoint for DC subsets, as described in A.
+
+```{r "mfi vs Ag score"}
+# Format MFI data
+mfi_dat <- read.xlsx2(
+  here("data/gMFI norm to naive 2d-14d-21d.xlsx"),
+  sheetIndex = 1
+)
+
+mfi <- mfi_dat %>%
+  as_tibble() %>%
+  pivot_longer(everything()) %>%
+  mutate(value = as.numeric(value)) %>%
+  filter(!is.na(value)) %>%
+  mutate(tm = str_extract(name, "(?<=X)[0-9]+"), .keep = "unused") %>%
+  group_by(tm) %>%
+  summarize(
+    mfi         = mean(value),
+    mfi_ci_low  = tidy(t.test(value))$conf.low,
+    mfi_ci_high = tidy(t.test(value))$conf.high,
+    .groups = "drop"
+  )
+
+# Format Ag data
+ag_dat <- all_meta %>%
+  filter(
+    cell_type   == "LEC",
+    cell_sort   == "CD45neg",
+    vaccination == "single",
+    tm %in% unique(mfi$tm)
+  ) %>%
+  group_by(tm) %>%
+  summarize(
+    Ag_ci_low  = tidy(t.test(Ag_score))$conf.low,
+    Ag_ci_high = tidy(t.test(Ag_score))$conf.high,
+    Ag_score   = mean(Ag_score),
+    .groups    = "drop"
+  ) %>%
+  mutate(tm = as.character(tm))
+
+dat <- ag_dat %>%
+  left_join(mfi, by = "tm") %>%
+  mutate(
+    tm = str_c("day ", tm),
+    tm = fct_relevel(tm, str_c("day ", tms))
+  )
+
+# Create scatter plot
+mfi_plt <- dat %>%
+  ggplot(aes(mfi, Ag_score, color = tm)) +
+  geom_linerange(
+    aes(ymin = Ag_ci_low, ymax = Ag_ci_high),
+    color       = "grey90",
+    linewidth   = 1,
+    show.legend = FALSE
+  ) +
+  geom_linerange(
+    aes(xmin = mfi_ci_low, xmax = mfi_ci_high),
+    color       = "grey90",
+    linewidth   = 1,
+    show.legend = FALSE
+  ) +
+  geom_smooth(method = "lm", color = "black", linetype = 2, linewidth = 0.5, se = FALSE) +
+  geom_point(size = 3) +
+  geom_text_repel(
+    aes(label = tm),
+    size    = txt_pt2 / .pt,
+    color   = "black",
+    nudge_x = 2,
+    nudge_y = 0.1,
+    min.segment.length = Inf
+  ) +
+  scale_color_manual(values = c("black", "#E7301F", "#6A51A3")) +
+  labs(y = "Ag-score", x = "MFI fold increase over naive") +
+  
+  base_theme +
+  theme(
+    aspect.ratio = 0.75,
+    legend.position = "none"
+  )
+```
 
 ```{r "type Ag boxplots"}
 # Format data for boxplots
@@ -902,13 +990,21 @@ all_ag_bxs <- bx_dat %>%
 ```
 
 ```{r "Fig S2", fig.width = 15, fig.height = 17.5}
+top <- plot_grid(
+  mfi_plt, typ_ag_bxs$`CD45-`,
+  rel_widths = c(0.55, 1),
+  labels = c("A", "B"),
+  label_size = ttl_pt2 * 1.5,
+  align = "h", axis = "tb",
+  nrow = 1
+)
+
 # Create final figure
 figS2 <- plot_grid(
-  typ_ag_bxs$`CD45-`, typ_ag_bxs$`CD45+`,
+  top, typ_ag_bxs$`CD45+`,
   all_ag_bxs$LEC, all_ag_bxs$DC,
-  labels = c("A", "B", "C", "D"),
+  labels = c("", "C", "D", "E"),
   label_size = ttl_pt2 * 1.5,
-  # rel_heights = c(1.1, 1.2, 1, 1.2),
   align = "v", axis = "rl",
   ncol = 1
 )
@@ -953,7 +1049,7 @@ E.  The expression of select genes from the Ag-high (top four) and Ag-low
 * With this approach there is a different cutoff for each LEC subset, but the
   cutoff is consistent across timepoints.
 
-```{r "RF Ag signal", fig.width = 12, fig.height = 3.25}
+```{r "ML Ag signal", fig.width = 12, fig.height = 3.25}
 # Format plotting data
 plt_dat <- lec_so@meta.data %>%
   filter(
@@ -1069,7 +1165,7 @@ hsts <- wrap_plots(
 )
 ```
 
-```{r "RF Ag-competent bars", fig.width = 8, fig.height = 5}
+```{r "ML Ag-competent bars", fig.width = 8, fig.height = 5}
 # Format data for bargraphs
 # * exclude cells used to train models
 rf_bar_dat <- lec_so@meta.data %>%
@@ -1106,7 +1202,7 @@ rf_bar_1 <- rf_bar_dat %>%
   )
 ```
 
-```{r "RF module boxplots", fig.width = 10, fig.height = 4}
+```{r "ML module boxplots", fig.width = 10, fig.height = 4}
 # Format plot data
 # * exclude dual vaccination data
 clmns <- c(
@@ -1148,7 +1244,7 @@ mod_bxs <- rf_mod_args %>%
   })
 ```
 
-```{r "RF cLEC module UMAPs", fig.width = 8, fig.height = 6.5}
+```{r "ML cLEC module UMAPs", fig.width = 8, fig.height = 6.5}
 # Format plotting data
 u_dat <- lec_so@meta.data %>%
   as_tibble(rownames = ".cell_id") %>%
@@ -1183,7 +1279,7 @@ mod_u <- u_args %>%
   })
 ```
 
-```{r "RF top features examples", fig.height = 8, fig.width = 8}
+```{r "ML top features examples", fig.height = 8, fig.width = 8}
 # Calculate p-values
 # * use all features included in models, adjust based on this number of genes
 # * adjust p-values separately for each tm and pred_grp
@@ -1196,6 +1292,9 @@ p_vals <- MODULE_FEATS[[1]][rf_typs] %>%
     gns <- .x %>%
       imap(~ set_names(rep(.y, length(.x)), .x)) %>%
       reduce(c)
+    
+    ### FIX THIS, THERE SHOULD NOT BE DUPLICATES ###
+    # gns <- gns[!duplicated(names(gns))]
     
     dat <- lec_so %>%
       .subset_rf_data(subtype == typ) %>%
@@ -1346,7 +1445,7 @@ fig2
 
 <br>
 
-### Figure S3
+### Figure S4
 
 A.  Venn diagram shows the number of genes shared between the cLEC, fLEC and
     collecting LEC gene modules.
@@ -1356,21 +1455,17 @@ A.  The top gene ontology terms (biological process, cellular component) are
 B.  Top gene ontology terms are shown for Ag-low gene modules as described in A.
 C.  The expression of each Ag-high gene module is shown for naive LECs
     (0 days post vaccination) along with each time point.
-D.  The expression of each Ag-low gene module is shown as described in C.
-E.  The fraction of cells predicted to be Ag-low and Ag-high is shown for each
-    LEC subset.
-F.  Ag-low module score is shown for Ag-low, Ag-high, and predicted
-    Ag-competent LECs.
-    The Spearman correlation between Ag classes and Ag-high module score is
-    shown for each timepoint.
-    One-sided p values were calculated and adjusted using Benjamini-Hochberg
-    correction.
-    The number of cells plotted is shown below each boxplot.
-G.  UMAP projections show fLEC Ag-high module scores for each timepoint.
-H.  UMAP projections show collecting LEC Ag-high module scores for each
-    timepoint.
+D.  The expression of each Ag-low gene module is shown as described in D.
+F.  The expression of the cLEC Ag-high gene module is shown for LEC and DC
+    subsets for 14, 21, and 42 day post-immunization.
+    Two-sided p values were calculated comparing cLECs (marked by arrow)
+    with each cell subset using a Wilcoxon rank sum test and
+    adjusted using Benjamini-Hochberg correction.
+E.  The expression of the fLEC Ag-high gene module is shown as described in F.
+G.  The expression of the collecting LEC Ag-high gene module is shown as
+    described in F.
 
-```{r "RF venn diagram"}
+```{r "ML venn diagram"}
 rf_venn <- MODULE_FEATS[[1]][rf_typs] %>%
   map(~ c(.x, recursive = TRUE, use.names = FALSE)) %>%
   ggVennDiagram(set_size = ttl_pt2 / .pt) +
@@ -1382,7 +1477,7 @@ rf_venn <- MODULE_FEATS[[1]][rf_typs] %>%
   )
 ```
 
-```{r "RF GO"}
+```{r "ML GO"}
 # Term similarity for simplifying terms
 dbs <- set_names(c("BP", "CC", "MF"))
 
@@ -1419,8 +1514,7 @@ go_res <- rf_grps %>%
             max_term_size  = 1000,
             min_term_size  = 10,
             db             = .y,
-            simplify_terms = FALSE,  ## FIX THIS ##
-            # simplify_terms = TRUE,
+            simplify_terms = TRUE,
             sim_data       = .x,
             file           = file
           )
@@ -1437,11 +1531,11 @@ go_sig <- go_res %>%
   arrange(p.adjust)
 ```
 
-```{r "RF GO plot"}
+```{r "ML GO plot"}
 # Plot top CC GO terms
 # * only plot top BP and CC terms
 go_fig <- go_sig %>%
-  filter(db %in% c("CC", "BP")) %>%
+  # filter(db %in% c("CC", "BP")) %>%
   group_by(db, Cluster, ml_pred_1_grp) %>%
   slice(1:5) %>%
   ungroup() %>%
@@ -1471,7 +1565,7 @@ go_fig <- go_sig %>%
       
       facet_grid(space = "free", scales = "free_y", rows = vars(Cluster)) +
       labs(title = str_c("Ag-", .y), x = "-log10(p-value)") +
-      scale_x_continuous(expand = expansion(c(0, 0.15))) +
+      scale_x_continuous(expand = expansion(c(0, 0.35))) +
       scale_y_discrete(labels = y_labs) +
       scale_fill_manual(values = lec_clrs) +
       base_theme +
@@ -1502,7 +1596,7 @@ go_fig <- plot_grid(
 )
 ```
 
-```{r "RF naive expression", fig.width = 10, fig.height = 4}
+```{r "ML naive expression", fig.width = 10, fig.height = 4}
 naive_dat <- naive_dat %>%
   filter(subtype %in% rf_typs) %>%
   pivot_longer(all_of(ag_modules), names_to = "module_type") %>%
@@ -1532,17 +1626,249 @@ naive_fig <- naive_dat %>%
   })
 
 naive_fig <- plot_grid(
-  plotlist = append(naive_fig, list(NULL)),
+  plotlist = naive_fig,
   nrow  = 1,
   align = "h",
   axis  = "tb",
-  rel_widths = c(1, 1, 0.5),
-  labels     = c("D", "E", ""),
+  rel_widths = c(1, 1),
+  labels     = c("D", "E"),
   label_size = ttl_pt2 * 1.5
 )
+
+# naive_fig <- plot_grid(
+#   plotlist = append(naive_fig, list(NULL)),
+#   nrow  = 1,
+#   align = "h",
+#   axis  = "tb",
+#   rel_widths = c(1, 1, 0.5),
+#   labels     = c("D", "E", ""),
+#   label_size = ttl_pt2 * 1.5
+# )
 ```
 
-```{r "RF predicted Ag class", fig.width = 8, fig.height = 5}
+```{r "ML module specificity data", include = FALSE}
+mod_so <- dc_so %>%
+  subset(tm %in% rf_tms)
+
+mod_so <- lec_so %>%
+  subset(tm %in% rf_tms) %>%
+  merge(mod_so)
+
+# Add module scores
+# * need to recalculate scores since we are now including the mock-infected data
+feats <- MODULE_FEATS$`1`
+
+feats %>%
+  iwalk(~ {
+    clmn_nms <- str_c(.y, "_", names(.x))
+
+    clmn_nms <- set_names(
+      str_c(clmn_nms, seq_along(clmn_nms)),
+      clmn_nms
+    )
+    
+    mod_so <<- mod_so %>%
+      mutate_meta(dplyr::select, -any_of(names(clmn_nms))) %>%
+      AddModuleScore(
+        features = .x,
+        name     = names(clmn_nms)
+      ) %>%
+      mutate_meta(dplyr::rename, !!!syms(clmn_nms))
+  })
+
+mod_dat <- mod_so@meta.data %>%
+  as_tibble(rownames = ".cell_id") %>%
+  mutate(tm = str_c("day ", tm))
+
+rm(mod_so)
+gc()
+```
+
+```{r "ML module specificity plots", fig.width = 10, fig.height = 6}
+# Set module names
+module_nms <- MODULE_FEATS$`1`[rf_typs] %>%
+  imap(~ str_c(.y, "_", names(.x))) %>%
+  flatten()
+
+module_nms <- set_names(
+  str_c(module_nms, seq_along(module_nms)),
+  module_nms
+)
+
+# Format n labels
+dat <- mod_dat %>%
+  pivot_longer(all_of(names(module_nms)), names_to = "module") %>%
+  mutate(tm_type = str_c(tm, "_", subtype))
+
+n_dat <- dat %>%
+  group_by(tm, subtype, tm_type) %>%
+  summarize(n = n_distinct(.cell_id), .groups = "drop") %>%
+  mutate(
+    n_lab = ifelse(n > 1000, str_c(round(n / 1000, 1), "k"), as.character(n)),
+    n_lab = str_c(subtype, " (", n_lab, ")")
+  )
+
+n_labs <- set_names(n_dat$n_lab, n_dat$tm_type)
+
+# Calculate p values
+p_dat <- dat %>%
+  group_by(tm, module) %>%
+  nest() %>%
+  mutate(
+    p = map(data, ~ {
+      pairwise.wilcox.test(
+        .x$value, .x$subtype,
+        p.adjust.method = "none"
+      )
+    }),
+    p = map2(p, module, ~ {
+      typ <- str_extract(.y, "^[^_]+")
+      
+      .x %>%
+        tidy() %>%
+        filter(group1 == typ | group2 == typ) %>%
+        mutate(module_type = typ)
+    })
+  ) %>%
+  select(-data) %>%
+  unnest(p) %>%
+  ungroup()
+
+# Adjust p values
+p_dat <- p_dat %>%
+  mutate(
+    p_adj = p.adjust(
+      p.value,
+      method = "BH"
+    )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    p_lab = case_when(
+      p_adj < 0.0001  ~ "***",
+      p_adj < 0.001   ~ "**",
+      p_adj < 0.05    ~ "*"
+    ),
+    subtype = c(group1, group2)[!c(group1, group2) %in% module_type]
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(p_lab)) %>%
+  select(-group1, -group2) %>%
+  mutate(tm_type = str_c(tm, "_", subtype))
+
+# Plot module scores
+# * only plot Ag-high modules
+plts <- names(module_nms) %>%
+  grep("_high$", ., value = TRUE) %>%
+  set_names() %>%
+  map(~ {
+    ttl   <- str_replace(.x, "_(?=high|low)", " Ag-")
+    ttl   <- str_c(ttl, " module expression")
+    y_ttl <- str_remove(ttl, "^[^ ]+ ")
+    typ   <- str_extract(.x, "^[^_]+")
+    lvls  <- str_c("day ", rf_tms)
+    
+    dat <- mod_dat %>%
+      mutate(
+        tm_type = str_c(tm, "_", subtype),
+        tm_type = fct_reorder(tm_type, !!sym(.x), .desc = TRUE),
+        tm      = fct_relevel(tm, lvls)
+      )
+    
+    mx_dat <- dat %>%
+      group_by(tm, subtype, tm_type) %>%
+      summarize(max = max(!!sym(.x)), .groups = "drop") %>%
+      mutate(max = max(max)) %>%
+      filter(subtype == typ)
+    
+    p <- p_dat %>%
+      filter(module == .x) %>%
+      mutate(
+        max = max(mx_dat$max),
+        tm  = fct_relevel(tm, lvls)
+      )
+    
+    dat %>%
+      ggplot(aes(x = tm_type, y = !!sym(.x), fill = subtype)) +
+      geom_violin(color = "black", scale = "width", alpha = 0.75) +
+      stat_summary(geom = "point", fun = median) +
+      facet_wrap(~ tm, scales = "free_x") +
+      scale_fill_manual(values = c(lec_clrs, dc_clrs)) +
+      geom_text(
+        aes(x = tm_type, y = max, label = p_lab),
+        data  = p,
+        color = "black",
+        vjust = 0,
+        size  = 12 / .pt
+      ) +
+      geom_point(
+        aes(x = tm_type, y = max, fill = NULL),
+        data     = mx_dat,
+        position = position_nudge(y = 0.2),
+        color    = "black",
+        size     = 3,
+        shape    = 25,
+        stroke   = 1
+      ) +
+      scale_y_continuous(expand = expansion(c(0.05, 0.07))) +
+      scale_x_discrete(labels = n_labs) +
+      labs(title = ttl, y = y_ttl) +
+      base_theme +
+      theme(
+        aspect.ratio    = 0.5,
+        legend.position = "none",
+        axis.title.x    = element_blank(),
+        axis.text.x     = element_text(angle = 70, hjust = 1, color = "black")
+      )
+  })
+
+mod_spec_plts <- plts %>%
+  plot_grid(
+    plotlist   = .,
+    ncol       = 1,
+    align      = "v",
+    axis       = "rl",
+    labels     = c("F", "G", "H"),
+    label_size = ttl_pt2 * 1.5, label_y = 1.03
+  )
+
+# mod_spec_plts <- plot_grid(
+#   mod_spec_plts, NULL,
+#   nrow = 1,
+#   rel_widths = c(2, 0.5)
+# )
+```
+
+```{r "Fig S3", fig.width = 17, fig.height = 22}
+figS3 <- plot_grid(
+  go_fig, NULL, naive_fig, NULL, mod_spec_plts,
+  ncol = 1,
+  rel_heights = c(0.7, 0.1, 0.4, 0.1, 1.75)
+)
+
+figS3
+```
+
+<br>
+
+<br>
+
+### Figure S5
+
+A.  The fraction of cells predicted to be Ag-low and Ag-high is shown for each
+    LEC subset.
+B.  Ag-low module score is shown for Ag-low, Ag-high, and predicted
+    Ag-competent LECs.
+    The Spearman correlation between Ag classes and Ag-high module score is
+    shown for each timepoint.
+    One-sided p values were calculated and adjusted using Benjamini-Hochberg
+    correction.
+    The number of cells plotted is shown below each boxplot.
+C.  UMAP projections show fLEC Ag-high module scores for each timepoint.
+D.  UMAP projections show collecting LEC Ag-high module scores for each
+    timepoint.
+
+```{r "ML predicted Ag class", fig.width = 8, fig.height = 5}
 # Plot fraction predicted groups
 rf_bar_2 <- rf_bar_dat %>%
   ggplot(aes(tm, fill = ml_pred_1, alpha = ml_pred_1_correct)) +
@@ -1559,11 +1885,11 @@ rf_bar_2 <- rf_bar_dat %>%
   bar_thm
 ```
 
-```{r "Fig S3", fig.width = 20, fig.height = 22}
+```{r "Fig S4 NEW", fig.width = 20, fig.height = 13}
 top <- plot_grid(
   rf_bar_2, mod_bxs[[2]],
   rel_widths = c(0.75, 1),
-  labels = c("F", "G"),
+  labels = c("A", "B"),
   label_size = ttl_pt2 * 1.5,
   align = "h",
   axis  = "tb"
@@ -1585,20 +1911,20 @@ right <- plot_grid(
 
 bot <- plot_grid(
   left, right,
-  labels = c("H", "I"),
+  labels = c("C", "D"),
   label_size = ttl_pt2 * 1.5,
   nrow  = 1,
   align = "h",
   axis  = "tb"
 )
 
-figS3 <- plot_grid(
-  go_fig, naive_fig, top, bot,
+figS4 <- plot_grid(
+  top, bot,
   ncol = 1,
-  rel_heights = c(0.5, 0.5, 0.5, 1)
+  rel_heights = c(0.5, 1)
 )
 
-figS3
+figS4
 ```
 
 ```{r "GENE SIMILARITY", eval = FALSE, inclue = FALSE}
@@ -1781,20 +2107,29 @@ res <- get_go(
 
 ### Table S1
 
-Stats are included for each random forest model.
+Stats are included for classification models.
 
-```{r, eval = FALSE}
+```{r "Table S1"}
 rf_clmns <- c(
   "F1", "Balanced Accuracy",
-  "Precision", "Recall",
-  "mtry", "min.node.size", "num.trees"
+  "Specificity", "Sensitivity",
+  "Precision"
 )
 
-tbl_s1 <- best_mls %>%
+tbl_s1 <- BEST_MLS %>%
   filter(subtype %in% rf_typs) %>%
-  select(cell_type = subtype, all_of(rf_clmns)) %>%
-  mutate(cell_type = fct_relevel(cell_type, rf_typs)) %>%
-  arrange(cell_type)
+  select(
+    cell_type = subtype,
+    algorithm,
+    model_id,
+    model_name = model_label,
+    all_of(rf_clmns)
+  ) %>%
+  mutate(
+    cell_type  = fct_relevel(cell_type, rf_typs),
+    model_name = str_c("model ", model_name)
+  ) %>%
+  arrange(cell_type, model_name)
 
 tbl_s1 %>%
   write_tsv(here(params$table_dir, "table_s1.tsv"))
@@ -1808,33 +2143,23 @@ tbl_s1
 
 ### Table S2
 
-Genes used to train random forest models are included along with p-values
-indicating overall feature importance.
+Variables used to train models are listed along with relative importance.
+The top genes contributing to 99% of the cumulative importance were used for
+the Ag-low and Ag-high gene modules.
 
-```{r, eval = FALSE}
-tbl_s2 <- best_mls %>%
-  filter(subtype %in% rf_typs) %>%
-  mutate(subtype = fct_relevel(subtype, rf_typs)) %>%
-  arrange(subtype) %>%
+```{r "Table S2"}
+tbl_s2 <- BEST_MLS %>%
+  filter(model_label == 1) %>%
   pmap_dfr(~ {
     args <- list(...)
-    typ  <- as.character(args$subtype)
     
-    gns <- args$feats_p %>%
-      names() %>%
-      str_replace_all("_", "-") %>%  # names were adjusted when training models
-      str_remove("^x")               # fix names here
-    
-    tibble(
-      cell_type = args$subtype,
-      gene      = gns,
-      p_value   = args$feats_p
-    ) %>%
+    args$model@model$variable_importances %>%
+      as_tibble() %>%
       mutate(
-        Ag_class = case_when(
-          gene %in% MODULE_FEATS[[1]][[typ]]$high ~ "Ag-high",
-          gene %in% MODULE_FEATS[[1]][[typ]]$low  ~ "Ag-low"
-        )
+        subtype   = args$subtype,
+        algorithm = args$algorithm,
+        rank      = row_number(),
+        .before   = 1
       )
   })
 
@@ -1853,7 +2178,7 @@ tbl_s2
 Gene ontology terms are shown for
 Ag-low and Ag-high cells.
 
-```{r}
+```{r "Table S3"}
 ex_clmns <- c(
   "bgID", "n_ovlp", "tot_genes",
   "n_bg_ovlp", "tot_bg_genes",
@@ -1879,7 +2204,7 @@ tbl_s3
 
 <br>
 
-## Figure 3
+## Figure 4
 
 *Antigen archiving is enhanced by sequential vaccinations*
 
@@ -1898,11 +2223,17 @@ F.  UMAP projections show 42 day Ag-scores for LEC subsets as described in B.
 G.  Successive vaccinations enhances retention of previously archived antigen.
     Ag-score is shown for the 42 day timepoint as described in C.
 H.  21 day and 42 day Ag-score is compared for LEC subsets.
-I.  Ag-high module scores described in Figure 2 are shown for LECs that archived
-    antigens from both vaccinations (double-high), from only one vaccination
-    (single-high), or have low levels of both antigens (Ag-low). Module scores
-    are shown for the corresponding LEC subset. P values were calculated using
-    a one-sided Wilcoxon rank sum test with Benjamini-Hochberg correction.
+I.  The fraction of cells that archived antigens from one vaccination (Ag-high)
+    or both vaccinations (double-high) is shown for single (day 14, 21, 42)
+    and dual-immunized mice (dual).
+I.  The expression of Ag-high modules described in Figure 2 is shown for LECs
+    that archived antigens from both vaccinations (double-high),
+    from only one vaccination (single-high),
+    or that have low levels of both antigens (Ag-low).
+    Module scores are shown for the LEC subset matching the identified gene
+    module.
+    P values were calculated using a one-sided Wilcoxon rank sum test with
+    Benjamini-Hochberg correction.
 J.  Ag-low module scores are shown for LEC subset as described in H.
 
 ```{r "exchange UMAPs", fig.width = 16, fig.height = 4}
@@ -2063,8 +2394,46 @@ ex_mod_bxs <- rf_mod_args %>%
         p_x          = args$p_x,
         p_hjust      = args$p_hjust
       ) +
-      theme(plot.margin = margin(15, 15, 5, 15))
+      theme(plot.margin = margin(5, 5, 5, 15))
   })
+```
+
+```{r "exchange Ag-competent bars"}
+# Format data
+lvls <- c("Ag-low", "Ag-competent", "double-high", "Ag-high")
+
+new_clrs <- pred_clrs
+new_clrs["double-high"]  <- pred_clrs["Ag-competent"]
+new_clrs["Ag-competent"] <- "grey75"
+
+dat <- ex_mod_bx_dat %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(
+    ml_pred_1_grp = Ag_class_dual,
+    ml_pred_1_grp = recode(ml_pred_1_grp, `single-high` = "Ag-high"),
+    tm = "dual"
+  ) %>%
+  bind_rows(rf_bar_dat) %>%
+  mutate(
+    ml_pred_1_grp = fct_relevel(ml_pred_1_grp, rev(lvls)),
+    subtype       = fct_relevel(subtype, rf_typs)
+  )
+
+# Create bargraphs
+dual_ag_class_brs <- dat %>%
+  ggplot(aes(tm, fill = ml_pred_1_grp)) +
+  geom_bar(position = "fill", key_glyph = draw_key_point) +
+  facet_grid(~ subtype) +
+  scale_fill_manual(values = new_clrs) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  guides(fill = guide_legend(override.aes = list(shape = 22, size = 5))) +
+  labs(y = "fraction of cells", x = "days post vaccination") +
+  bar_thm +
+  theme(
+    aspect.ratio = 1.2,
+    legend.title = element_blank(),
+    legend.position = "right"
+  )
 ```
 
 ```{r "Fig 3 diagram", fig.width = 15.5, fig.height = 10}
@@ -2093,13 +2462,15 @@ fig3_dsgn <- plot_grid(
 )
 ```
 
-```{r "Fig 3", fig.width = 15.5, fig.height = 23}
+```{r "Fig 3", fig.width = 15.5, fig.height = 27}
 fig3 <- fig3_dsgn /
   (ex_heat[[1]] + ex_u[[1]]) / ex_bxs[[1]] /
   (ex_heat[[2]] + ex_u[[2]]) / ex_bxs[[2]] /
   ex_scat[[ag_exps$LEC]] /
+  (dual_ag_class_brs + plot_spacer() + plot_layout(widths = c(1, 1))) /
   (ex_mod_bxs[[1]] + ex_mod_bxs[[2]]) +
-  plot_layout(heights = c(1.1, 1, 0.55, 1, 0.55, 0.8, 0.95)) +
+  # (dual_ag_class_brs + ex_mod_bxs[[1]]) / (plot_spacer() + ex_mod_bxs[[2]]) +
+  plot_layout(heights = c(1.1, 1, 0.55, 1, 0.55, 0.8, 0.6, 0.8)) +
   plot_annotation(tag_levels = "A") &
   theme(
     plot.tag = element_text(size = ttl_pt2 * 1.5, face = "bold"),
@@ -2113,7 +2484,7 @@ fig3
 
 <br>
 
-### Figure S4
+### Figure S6
 
 A.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
     for DC subsets from a biological replicate.
@@ -2128,6 +2499,10 @@ C.  Ag-score is shown for the 42 day timepoint for DC subsets from a biological
     replicate, as described in A.
 D.  21 day and 42 day Ag-score is compared for LEC subsets from a biological
     replicate.
+D.  The correlation between Ag-high module scores and the 21 and 42 day Ag
+    scores is shown for LEC subsets.
+D.  The correlation between Ag-low module scores and Ag scores is shown as
+    described in F.
 
 ```{r "rep exchange boxes", include = FALSE}
 # Set input data
@@ -2180,7 +2555,7 @@ rm(ag_objs)
 gc()
 ```
 
-```{r "RF module exchange correlation", fig.height = 8}
+```{r "ML module exchange correlation", fig.height = 8}
 # Set plot colors
 ex_ag_clrs <- c(
   `double-high` = "#D7301F",
@@ -2221,7 +2596,7 @@ ex_mod_scat <- scat_args %>%
   })
 ```
 
-```{r "Fig S4", fig.width = 13, fig.height = 15}
+```{r "Fig S4", fig.width = 13, fig.height = 16}
 # Create final figure
 top <- wrap_plots(rep_ex_bxs, ncol = 1) /
   ex_scat$`exp-2` /
@@ -2236,14 +2611,23 @@ top <- wrap_plots(rep_ex_bxs, ncol = 1) /
 bot <- plot_grid(
   plotlist = ex_mod_scat[1:2],
   nrow = 1,
-  labels = c("E", "F"),
+  labels = c("F", "G"),
   label_size = ttl_pt2 * 1.5 
 )
+
+# dual_ag_class_brs <- plot_grid(
+#   dual_ag_class_brs, NULL,
+#   nrow = 1,
+#   rel_widths = c(1, 0.1),
+#   labels = "E", "",
+#   label_size = ttl_pt2 * 1.5
+# )
 
 figS4 <- plot_grid(
   top, bot,
   ncol = 1,
   rel_heights = c(4.5, 2.7)
+  # rel_heights = c(4.5, 1.5, 2.7)
 )
 
 figS4
@@ -2255,7 +2639,7 @@ figS4
 
 <br>
 
-## Figure 4
+## Figure 5
 
 *Antigen exchange with DCs correlates with levels of antigen archiving*
 
@@ -2265,8 +2649,10 @@ B.  Localization of Ag+ and Ag- cells is shown for LECs for tissue sections
     from A.
 C.  Localization of Ag+ and Ag- cells is shown for DCs for tissue sections from
     A.
-C.  The distance to the closest Ag+ LEC is shown for Ag+ and Ag- DCs for tissue
-    sections from A.
+D.  Cell-cell interaction enrichment results are shown for section 1 from A for
+    Ag+/- LECs and DCs.
+C.  The distance to the closest Ag+ LEC is shown for Ag+ and Ag- DCs for
+    section 1 from A.
 D.  Mean 21 day Ag-score is shown for DCs from mice that received a single
     vaccination (21 day or 42 day) or dual vaccination (21 day and 42 day).
 E.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
@@ -2357,6 +2743,54 @@ ag_pos_fig <- c("lec_ag", "dc_ag") %>%
   })
 ```
 
+```{r "xenium giotto proximity"}
+# Format data
+prox <- read_tsv("~/Projects/antigen-exchange-xenium/results/prox.tsv.gz")
+
+dat <- prox %>%
+  filter(type_int == "hetero") %>%
+  arrange(slide, enrichm) %>%
+  mutate(
+    lec_dc = grepl("LEC", unified_int) & grepl("DC", unified_int),
+    top    = int_ranking < min(int_ranking[lec_dc]),
+    x      = str_c(slide, "-", unified_int),
+    x      = fct_inorder(x)
+  )
+
+# Create bargraphs
+prox_clrs <- c(
+  `TRUE`  = typ_clrs[["LEC"]],
+  `FALSE` = typ_clrs[["unassigned"]]
+)
+
+prox_brs <- dat %>%
+  split(.$slide) %>%
+  map(~ {
+    .x %>%
+      ggplot(aes(x, enrichm, fill = lec_dc)) +
+      geom_col(width = 1) +
+      geom_text_repel(
+        aes(label = unified_int),
+        data    = ~ filter(.x, lec_dc),
+        nudge_y = 0.7,
+        hjust   = 1
+      ) +
+      facet_wrap(~ slide, nrow = 1, scales = "free") +
+      scale_fill_manual(values = prox_clrs) +
+      labs(
+        y = "cell-cell interaction\nenrichment",
+        x = "cell-cell interactions"
+      ) +
+      base_theme +
+      theme(
+        legend.position = "none",
+        axis.title.x = element_text(vjust = 5),
+        axis.text.x  = element_blank(),
+        axis.ticks.x = element_blank()
+      )
+  })
+```
+
 ```{r "xenium LEC proximity", fig.width = 18, fig.height = 13}
 # Format data for histograms
 hist_dat <- xen_dat %>%
@@ -2406,54 +2840,65 @@ p_dat <- hist_dat %>%
   ungroup()
 
 # Plot distance from nearest Ag+ LEC
-hist <- hist_dat %>%
+prox_hists <- hist_dat %>%
   mutate(lec_dist = lec_dist + 1) %>%  # ADD 1
-  ggplot(aes(lec_dist, fill = Ag_class, alpha = Ag_class)) +
-  
-  geom_density(aes(color = Ag_class)) +
-  geom_vline(
-    aes(xintercept = lec_dist, color = Ag_class, alpha = NULL),
-    data      = ln_dat,
-    linetype  = 2,
-    linewidth = 0.75,
-    show.legend = FALSE
-  ) +
-  
-  geom_text(
-    aes(x = 1, y = Inf, label = n_lab, fill = NULL, alpha = NULL),
-    data = n_dat,
-    hjust = 0,
-    vjust = 1.2,
-    size  = txt_pt2 / .pt,
-    show.legend = FALSE
-  ) +
-  
-  geom_text(
-    aes(x = Inf, y = Inf, label = p_lab, fill = NULL, alpha = NULL),
-    data  = p_dat,
-    parse = TRUE,
-    hjust = 1.1,
-    vjust = 1.2,
-    size  = txt_pt2 / .pt,
-    show.legend = FALSE
-  ) +
-  
-  facet_wrap(~ slide, nrow = 1) +
-  labs(x = "distance from nearest Ag+ LEC (\U00B5m)", y = "density") +
-  scale_fill_manual(values  = c(`Ag-` = other_clr, `Ag+` = xen_clrs[["LEC"]])) +
-  scale_color_manual(values = c(`Ag-` = "black",  `Ag+` = xen_clrs[["LEC"]])) +
-  scale_alpha_manual(values = c(`Ag-` = 0.5,      `Ag+` = 0.85)) +
-  scale_x_log10() +
-  scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
-  base_theme +
-  theme(
-    aspect.ratio    = 0.5,
-    legend.position = "right",
-    legend.title    = element_blank(),
-    strip.text      = element_text(size = ttl_pt2),
-    legend.text     = element_text(size = ttl_pt2),
-    axis.title      = element_text(size = ttl_pt2)
-  )
+  split(.$slide) %>%
+  imap(~ {
+    dat <- list(
+      n  = n_dat,
+      p  = p_dat,
+      ln = ln_dat
+    ) %>%
+      map(filter, slide == .y)
+    
+    .x %>%  
+      ggplot(aes(lec_dist, fill = Ag_class, alpha = Ag_class)) +
+      
+      geom_density(aes(color = Ag_class)) +
+      geom_vline(
+        aes(xintercept = lec_dist, color = Ag_class, alpha = NULL),
+        data      = dat$ln,
+        linetype  = 2,
+        linewidth = 0.75,
+        show.legend = FALSE
+      ) +
+      
+      geom_text(
+        aes(x = 1, y = Inf, label = n_lab, fill = NULL, alpha = NULL),
+        data = dat$n,
+        hjust = 0,
+        vjust = 1.2,
+        size  = txt_pt2 / .pt,
+        show.legend = FALSE
+      ) +
+      
+      geom_text(
+        aes(x = Inf, y = Inf, label = p_lab, fill = NULL, alpha = NULL),
+        data  = dat$p,
+        parse = TRUE,
+        hjust = 1.1,
+        vjust = 1.2,
+        size  = txt_pt2 / .pt,
+        show.legend = FALSE
+      ) +
+      
+      facet_wrap(~ slide, nrow = 1) +
+      labs(x = "distance from nearest Ag+ LEC (\U00B5m)", y = "density") +
+      scale_fill_manual(values  = c(`Ag-` = other_clr, `Ag+` = xen_clrs[["LEC"]])) +
+      scale_color_manual(values = c(`Ag-` = "black",  `Ag+` = xen_clrs[["LEC"]])) +
+      scale_alpha_manual(values = c(`Ag-` = 0.5,      `Ag+` = 0.85)) +
+      scale_x_log10() +
+      scale_y_continuous(expand = expansion(c(0.05, 0.2))) +
+      base_theme +
+      theme(
+        aspect.ratio    = 0.5,
+        legend.position = "right",
+        legend.title    = element_blank(),
+        strip.text      = element_text(size = ttl_pt2),
+        legend.text     = element_text(size = ttl_pt2),
+        axis.title      = element_text(size = ttl_pt2)
+      )
+  })
 ```
 
 ```{r "xenium figure", fig.width = 14, fig.height = 8.5}
@@ -2461,10 +2906,17 @@ top <- append(list(ag_sig_fig), ag_pos_fig) %>%
   imap(~ .x + labs(tag = LETTERS[.y])) %>%
   wrap_plots(nrow = 1)
 
+# bot <- wrap_plots(
+#   plot_spacer(), hist + labs(tag = "D"), plot_spacer(),
+#   nrow = 1,
+#   widths = c(0.3, 1, 0.3)
+# )
+
 bot <- wrap_plots(
-  plot_spacer(), hist + labs(tag = "D"), plot_spacer(),
-  nrow = 1,
-  widths = c(0.3, 1, 0.3)
+  prox_brs$`section 1`   + labs(tag = "D"),
+  prox_hists$`section 1` + labs(tag = "E"),
+  nrow = 1
+  # widths = c(0.3, 1, 0.3)
 )
 
 xen_fig <- wrap_plots(
@@ -2537,10 +2989,10 @@ dc_ex_bxs <- ex_bx_args %>%
 
 ```{r "Fig 4", fig.width = 14, fig.height = 21}
 bot <- list(
-  E   = dc_ex_heat[[1]],
-  `F` = dc_ex_bxs[[1]],
-  G   = dc_ex_heat[[2]],
-  H   = dc_ex_bxs[[2]]
+  `F` = dc_ex_heat[[1]],
+  G   = dc_ex_bxs[[1]],
+  H   = dc_ex_heat[[2]],
+  I   = dc_ex_bxs[[2]]
 )
 
 bot <- bot %>%
@@ -2569,7 +3021,7 @@ fig4
 
 <br>
 
-### Figure S6
+### Figure S7
 
 A.  Localization of annotated cell types is shown for replicate tissue sections
     analyzed with the Xenium platform.
@@ -2584,6 +3036,27 @@ B.  Total Ag counts are shown for the 21 day and 42 day Ag tags, for mice
     (section 1, section 2).
 B.  The fraction of Ag+ cells is shown for each cell type for tissue sections
     shown in Figure 4A.
+D.  Cell-cell interaction enrichment results are shown for section 2 from A for
+    Ag+/- LECs and DCs.
+C.  The distance to the closest Ag+ LEC is shown for Ag+ and Ag- DCs for
+    section 2 from A.
+A.  Sample identity is shown for all regions analyzed using the GeoMx DSP
+    platform.
+B.  Annotated regions are shown as described in F.
+C.  Relative antigen tag signal is shown for each sample and each
+    region segmented based on Lyve1 (LECs) and CD11C (DCs).
+    Normalized 21 day antigen signal was scaled across all regions from 21 day
+    mice and dual immunized mice,
+    42 day antigen signal was scaled across all regions from 42 day mice and
+    dual immunized mice.
+    The number of plotted segments is shown above each boxplot.
+    P values were calculated using a one-sided Wilcoxon rank sum test with
+    Benjamini-Hochberg correction, p values <0.05 are shown.
+D.  Normalized antigen tag signal is shown for regions that included both Lyve1+
+    and CD11C+ segments.
+    21 day antigen signal is shown for 21 day and dual immunized mice,
+    42 day signal is shown for 42 day and dual immunized mice.
+    The Spearman correlation coefficient is shown.    
 
 ```{r "xenium cell type sections", fig.width = 14, fig.height = 10}
 # Format data for plots
@@ -2742,13 +3215,12 @@ xen_typ_bars <- bar_dat %>%
   ) +
   base_theme +
   theme(
-    # aspect.ratio = 1,
     legend.position = "none",
     axis.title.y = element_blank()
   )
 ```
 
-```{r "Fig S6", fig.width = 14, fig.height = 16}
+```{r "xenium supp figure", fig.width = 14, fig.height = 20}
 bot <- wrap_plots(
   xen_bars + labs(tag = "B"),
   xen_typ_bars + labs(tag = "C"),
@@ -2757,48 +3229,22 @@ bot <- wrap_plots(
 ) &
   theme(plot.tag = element_text(face = "bold", size = ttl_pt2 * 1.5))
 
-# bot <- plot_grid(
-#   xen_bars, xen_typ_bars,
-#   nrow   = 1,
-#   align  = "h",
-#   axis   = "tb",
-#   labels = c("B", "C"),
-#   label_size = ttl_pt2 * 1.5,
-#   rel_widths = c(0.7, 1)
-# )
+prox <- wrap_plots(
+  prox_brs$`section 2`   + labs(tag = "D"),
+  prox_hists$`section 2` + labs(tag = "E"),
+  nrow = 1,
+  widths = c(1, 1)
+) &
+  theme(plot.tag = element_text(face = "bold", size = ttl_pt2 * 1.5))
 
-plot_grid(
-  typ_plts, bot,
+xen_supp_fig <- plot_grid(
+  typ_plts, bot, prox,
   ncol = 1,
-  rel_heights = c(1, 0.4),
-  labels = c("A", ""),
+  rel_heights = c(1, 0.4, 0.4),
+  labels = c("A", "", ""),
   label_size = ttl_pt2 * 1.5
 )
 ```
-
-<br>
-
-<br>
-
-### Figure S7
-
-A.  Sample identity is shown for all regions analyzed using the GeoMx DSP
-    platform.
-B.  Annotated regions are shown as described in A.
-C.  Relative antigen tag signal is shown for each sample and each
-    region segmented based on Lyve1 (LECs) and CD11C (DCs).
-    Normalized 21 day antigen signal was scaled across all regions from 21 day
-    mice and dual immunized mice,
-    42 day antigen signal was scaled across all regions from 42 day mice and
-    dual immunized mice.
-    The number of plotted segments is shown above each boxplot.
-    P values were calculated using a one-sided Wilcoxon rank sum test with
-    Benjamini-Hochberg correction, p values <0.05 are shown.
-D.  Normalized antigen tag signal is shown for regions that included both Lyve1+
-    and CD11C+ segments.
-    21 day antigen signal is shown for 21 day and dual immunized mice,
-    42 day signal is shown for 42 day and dual immunized mice.
-    The Spearman correlation coefficient is shown.    
 
 ```{r "geomx knit setup", include = FALSE}
 knit(here(params$template_dir, "setup-geomx.Rmd"), "")
@@ -2849,7 +3295,7 @@ all_img_fig <- plot_grid(
   nrow     = 1,
   align    = "h",
   axis     = "tb",
-  labels   = c("A", "B"),
+  labels   = c("F", "G"),
   label_size = ttl_pt2 * 1.5
 )
 ```
@@ -3075,32 +3521,37 @@ geo_sct <- sct_dat %>%
   )
 ```
 
-```{r "Fig S7", fig.width = 14, fig.height = 11.5}
+```{r "Fig S7", fig.width = 14, fig.height = 27}
 bot <- plot_grid(
   geo_bxs, geo_sct,
   nrow   = 1,
   align  = "h",
   axis   = "tb",
-  labels = c("C", "D"),
+  labels = c("H", "I"),
   label_size = ttl_pt2 * 1.5
 )
 
-figS6 <- plot_grid(
+geo_fig <- plot_grid(
   all_img_fig, bot,
+  ncol = 1,
+  rel_heights = c(1, 0.7)
+)
+
+# Create final figure
+figS7 <- plot_grid(
+  xen_supp_fig, geo_fig,
   ncol = 1,
   rel_heights = c(1, 0.5)
 )
 
-figS6
+figS7
 ```
 
----
-
 <br>
 
 <br>
 
-## Figure 5
+## Figure 6
 
 *Antigen archiving is impaired during CHIKV infection*
 
@@ -3113,10 +3564,11 @@ C.  The fraction of predicted Ag-competent cLECs is shown for mock and
 D.  UMAP projections show cLEC Ag-high module scores for mock and CHIKV-infected
     mice.
 E.  cLEC Ag-high module scores are shown for mock and CHIKV-infected mice for
-    each biological replicate. P values were calculated
-    using a two-sided Wilcoxon rank sum test with Benjamini-Hochberg correction.
-F.  Expression of the cLEC Ag-high gene module is shown for mock and CHIKV-infected
-    mice for cLECs from each biological replicate.
+    each biological replicate.
+    P values were calculated using a two-sided Wilcoxon rank sum test with
+    Benjamini-Hochberg correction.
+F.  Expression of the top 70 genes from the cLEC Ag-high gene module is shown
+    for mock and CHIKV-infected mice for cLECs from three biological replicates.
 
 ```{r "chikv knit setup", include = FALSE}
 knit(here(params$template_dir, "setup-chikv.Rmd"), "")
@@ -3253,7 +3705,9 @@ heat <- heat_dat %>%
   )
 ```
 
-```{r "cormac figure"}
+```{r "cormac figure", eval = FALSE}
+# DROPPED FROM PAPER
+
 img_g <- readPNG(here("results/figures/morrison_chikv/fig5g.png"))
 img_h <- readPNG(here("results/figures/morrison_chikv/fig5h.png"))
 
@@ -3367,7 +3821,7 @@ pzfx_plt <- pzfx_dat %>%
   )
 ```
 
-```{r "Fig 5", fig.width = 12, fig.height = 20}
+```{r "Fig 5", fig.width = 12, fig.height = 18}
 # Combine and annotate center panels
 c("D", "B") %>%
   iwalk(~ {
@@ -3393,13 +3847,13 @@ mid <- wrap_plots(
 
 # Final figure
 fig5 <- plot_grid(
-  top, mid, heat, fig5gh,
+  top, mid, heat,
   ncol       = 1,
-  labels     = c("A", "", "F", ""),
+  labels     = c("A", "", "F"),
   label_size = ttl_pt2 * 1.5,
   hjust      = c(0, 0, -0.5),
   vjust      = c(1.5, 1, 0),
-  rel_heights = c(1, 2.5, 1, 1)
+  rel_heights = c(1, 2.5, 1)
 )
 
 fig5
@@ -3409,7 +3863,7 @@ fig5
 
 <br>
 
-### Figure S8
+### Figure S9
 
 A.  Ag-high and Ag-low module scores are shown for the predicted Ag classes.
     P values were calculated using a two-sided Wilcoxon rank sum test with
@@ -3418,14 +3872,50 @@ B.  Ag-high and Ag-low module scores are shown for mock and CHIKV-infected mice
     for each biological replicate. P values were calculated using a two-sided
     Wilcoxon rank sum test with Benjamini-Hochberg correction.
 C.  The total fraction of cLECs, fLECs, and collecting LECs predicted to be
-    Ag-competent is shown for mock and CHIKV-infected mice for each biological
-    replicate.
+    Ag-competent is shown for mock and CHIKV-infected mice for two sets of
+    predictions made using independent models.
     P values were calculated using Fisher's exact test with Benjamini-Hochberg
     correction.
-D.  The fraction of fLECs and collecting LECs predicted to be Ag-competent is
-    shown as described in C.
+D.  The fraction of cLECs, fLECs, and collecting LECs predicted to be
+    Ag-competent is shown as described in C.
 
-```{r "Fig S8", fig.width = 13.5, fig.height = 13}
+```{r "CHIKV NEW BARGRAPHS", eval = FALSE}
+# Format data for bargraphs
+icam_dat <- CHIKV_DAT %>%
+  filter(subtype %in% rf_typs) %>%
+  mutate(subtype = icam_grp)
+
+# Create bargraphs
+.adjust_axis_theme <- function(plt, idx) {
+  if (idx == 1) {
+    plt <- plt +
+      theme(
+        axis.text.x  = element_blank(),
+        axis.ticks.x = element_blank()
+      )
+  } else {
+    plt <- plt +
+      theme(strip.text = element_blank())
+  }
+  
+  plt
+}
+
+icam_bars <- pred_clmns %>%
+  imap(~ {
+    plt <- icam_dat %>%
+      create_chikv_class_bars(
+        x         = "treatment",
+        n_p       = n_distinct(chikv_bar_dat$subtype),
+        ttl       = str_c("model ", .y, "\nfraction Ag-competent"),
+        pred_clmn = .x
+      ) %>%
+      .adjust_axis_theme(.y)
+  }) %>%
+  wrap_plots(ncol = 1)
+```
+
+```{r "Fig S8", fig.width = 13.5, fig.height = 15}
 # Plot Ag module scores for predicted classes
 all_chikv_bxs_1 <- chikv_bx_dat %>%
   create_chikv_module_boxes(
@@ -3444,48 +3934,69 @@ all_chikv_bxs_2 <- chikv_bx_dat %>%
   )
 
 # Bargraphs for combined LEC subsets
-all_chikv_bars <- chikv_bar_dat %>%
-  mutate(subtype = "cLEC, fLEC, Collecting") %>%
-  create_chikv_class_bars(
-    x         = "treatment",
-    n_p       = n_distinct(chikv_bar_dat$subtype),
-    ttl       = "fraction Ag-competent",
-    pred_clmn = "ml_pred_1_grp"
-  )
+.adjust_axis_theme <- function(plt, idx) {
+  if (idx == 1) {
+    plt <- plt +
+      theme(
+        axis.text.x  = element_blank(),
+        axis.ticks.x = element_blank()
+      )
+  } else {
+    plt <- plt +
+      theme(strip.text = element_blank())
+  }
+  
+  plt
+}
 
-# Bargraphs for other LEC subtypes
-other_chikv_bars <- pred_clmns %>%
-  map(~ {
+all_chikv_bars <- pred_clmns %>%
+  imap(~ {
     chikv_bar_dat %>%
-      filter(subtype != rf_cell_type) %>%
+      mutate(subtype = "cLEC, fLEC, Collecting") %>%
       create_chikv_class_bars(
         x         = "treatment",
         n_p       = n_distinct(chikv_bar_dat$subtype),
-        ttl       = "fraction Ag-competent",
+        ttl       = str_c("model ", .y, "\nfraction Ag-competent"),
         pred_clmn = .x
-      )
-  })
+      ) %>%
+      .adjust_axis_theme(.y)
+  }) %>%
+  wrap_plots(ncol = 1)
+
+# Bargraphs for other LEC subtypes
+other_chikv_bars <- pred_clmns %>%
+  imap(~ {
+    plt <- chikv_bar_dat %>%
+      create_chikv_class_bars(
+        x         = "treatment",
+        n_p       = n_distinct(chikv_bar_dat$subtype),
+        ttl       = str_c("model ", .y, "\nfraction Ag-competent"),
+        pred_clmn = .x
+      ) %>%
+      .adjust_axis_theme(.y)
+  }) %>%
+  wrap_plots(ncol = 1)
 
 # Create final figure
-figS6 <- plot_grid(
+figS8 <- plot_grid(
   all_chikv_bxs_1, all_chikv_bxs_2,
-  all_chikv_bars,  other_chikv_bars[[1]],
+  all_chikv_bars,  other_chikv_bars,
   labels = c("A", "B", "C", "D"),
   label_size = ttl_pt2 * 1.5,
   nrow  = 2,
   align = "vh",
   axis  = "trbl",
-  rel_heights = c(1, 0.6)
+  rel_heights = c(1, 1)
 )
 
-figS6
+figS8
 ```
 
 <br>
 
 <br>
 
-### Figure S9
+### Figure S10
 
 A.  Mean expression is shown for LEC marker genes for
     metastasis-free control lymph node (MFLN) and follicular lymphoma (FL)
@@ -3493,7 +4004,9 @@ A.  Mean expression is shown for LEC marker genes for
 B.  The fraction of cLECs predicted to be Ag-competent is shown for each 
     MFLN and FL sample with at least 20 identified cLECs (left).
     P values were calculated using a two-sided Wilcoxon rank sum test with
-    Benjamini-Hochberg correction (right).
+    Benjamini-Hochberg correction (middle).
+    The fraction of predicted Ag-competent cells is shown for a second
+    independent model (right).
 C.  The fraction of fLECs predicted to be Ag-competent is shown as in A.
 D.  The fraction of collecting LECs predicated to be Ag-compentent is shown as
     in A.
@@ -3565,57 +4078,94 @@ abe_gn_heat <- abe_heat_dat %>%
 # Format Abe data
 # * cLECs are the LEC1 population
 # * only include samples with at least 20 cLECs
-abe_bars <- pred_clmns %>%
+abe_bar_dat <- pred_clmns %>%
+  set_names() %>%
   map(~ {
-    pred_clmn <- .x
+    abe_lec_so@meta.data %>%
+      as_tibble(rownames = "cell_id") %>%
+      filter(subtype %in% rf_typs) %>%
+      mutate(
+        tissue = fct_relevel(tissue, names(abe_clrs)),
+        sample = str_remove(sample, "_NHC$")
+      ) %>%
+      group_by(sample, tissue, subtype) %>%
+      mutate(n = n_distinct(cell_id)) %>%
+      filter(n > 20) %>%
+      group_by(sample, tissue, subtype, n) %>%
+      summarize(
+        n_high = sum(!!sym(.x) == "Ag-competent"),
+        .groups = "drop"
+      ) %>%
+      mutate(
+        frac_high = n_high / n,
+        n_lab     = str_c(sample, "\nn = ", label_comma()(n))
+      )
+  })
+
+# Create full bargraphs
+abe_bars_1 <- abe_bar_dat %>%
+  unname() %>%
+  imap(~ {
+    dat       <- .x
+    mod_idx   <- .y
+    pred_clmn <- pred_clmns[.y]
+    
+    brs <- rf_typs %>%
+      imap(~ {
+        abe_type <- .x
+        
+        y_ttl <- str_c(abe_type, " - model ", mod_idx, "\nfraction Ag-competent")
+        
+        dat <- dat %>%
+          filter(subtype == abe_type)
+        
+        # Create bar graph for all samples
+        dat %>%
+          ggplot(aes(n_lab, frac_high, fill = tissue)) +
+          geom_col() +
+          facet_grid(
+            ~ tissue,
+            scales = "free_x",
+            space = "free_x",
+            labeller = as_labeller(tissue_nms)
+          ) +
+          scale_fill_manual(values = abe_clrs) +
+          scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
+          labs(y = y_ttl, tag = LETTERS[-1][.y]) +
+          base_theme +
+          theme(
+            legend.position = "none",
+            plot.tag        = element_text(size = ttl_pt2 * 1.5, face = "bold"),
+            strip.clip      = "off",
+            axis.title.x    = element_blank(),
+            axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5)
+          )
+      }) %>%
+      wrap_plots(ncol = 1)
+    
+    brs
+  })
+    
+# Create bargraphs for combined samples
+# * use wilcox test instead of fisher's exact test since there is a large
+#   difference in the number of cells for each sample
+# * this will cause one sample to disproportionately influence the results
+abe_bars_2 <- abe_bar_dat %>%
+  unname() %>%
+  imap(~ {
+    dat     <- .x
+    mod_idx <- .y
     
     brs <- set_names(rf_typs) %>%
       map(~ {
         abe_type <- .x
         
-        y_ttl <- str_c(abe_type, "\nfraction Ag-competent")
+        y_ttl <- str_c(abe_type, " - model ", mod_idx, "\nfraction Ag-competent")
         
-        abe_bar_dat <- abe_lec_so@meta.data %>%
-          as_tibble(rownames = "cell_id") %>%
-          filter(subtype == abe_type) %>%
-          mutate(
-            tissue = fct_relevel(tissue, names(abe_clrs)),
-            sample = str_remove(sample, "_NHC$")
-          ) %>%
-          group_by(sample, tissue) %>%
-          mutate(n = n_distinct(cell_id)) %>%
-          filter(n > 20) %>%
-          group_by(sample, tissue, n) %>%
-          summarize(
-            frac_high = sum(!!sym(pred_clmn) == "Ag-competent"),
-            .groups = "drop"
-          ) %>%
-          mutate(
-            frac_high = frac_high / n,
-            n_lab     = str_c(sample, "\nn = ", label_comma()(n))
-          )
+        dat <- dat %>%
+          filter(subtype == abe_type)
         
-        # Create bar graph for all samples
-        abe_bars_1 <- abe_bar_dat %>%
-          ggplot(aes(n_lab, frac_high, fill = tissue)) +
-          geom_col() +
-          facet_grid(~ tissue, scales = "free_x", space = "free_x", labeller = as_labeller(tissue_nms)) +
-          scale_fill_manual(values = abe_clrs) +
-          scale_y_continuous(breaks = c(0, 0.5, 1), limits = c(0, 1)) +
-          labs(y = y_ttl) +
-          base_theme +
-          theme(
-            legend.position = "none",
-            strip.clip      = "off",
-            axis.title.x    = element_blank(),
-            axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5)
-          )
-        
-        # Bargraphs for combined samples
-        # * use wilcox test instead of fisher's exact test since there is a large
-        #   difference in the number of cells for each sample
-        # * this will cause one sample to disproportionately influence the results
-        p_dat <- abe_bar_dat %>%
+        p_dat <- dat %>%
           mutate(
             p = wilcox.test(
               frac_high[tissue == "FL"],
@@ -3635,12 +4185,12 @@ abe_bars <- pred_clmns %>%
         
         set.seed(1)
         
-        abe_bars_2 <- abe_bar_dat %>%
+        p <- dat %>%
           group_by(tissue) %>%
           summarize(frac_high = median(frac_high), .groups = "drop") %>%
           ggplot(aes(tissue, frac_high, fill = tissue)) +
           geom_col() +
-          geom_jitter(data = abe_bar_dat, size = 1.5, width = 0.03) +
+          geom_jitter(data = dat, size = 1.5, width = 0.03) +
           geom_text(
             aes(1.5, Inf),
             label = unique(p_dat$p_lab),
@@ -3660,40 +4210,30 @@ abe_bars <- pred_clmns %>%
           theme(
             aspect.ratio    = 1.75,
             legend.position = "none",
-            axis.title      = element_blank()
+            axis.title.x    = element_blank()
           )
         
-        # Create final figure
-        res <- plot_grid(
-          abe_bars_1, abe_bars_2,
-          rel_widths = c(1, 0.35),
-          align      = "h",
-          axis       = "tb"
-        )
-        
-        res
-      })
+        p
+      }) %>%
+      wrap_plots(ncol = 1)
     
-    res <- plot_grid(
-      plotlist   = brs,
-      ncol       = 1,
-      labels     = c("B", "C", "D"),
-      label_size = ttl_pt2 * 1.5,
-      label_x    = -0.01,
-      label_y    = 1.03
-    )
-    
-    res
+    brs
   })
+
+# Create final figure
+abe_bars <- wrap_plots(
+  append(list(abe_bars_1[[1]]), abe_bars_2),
+  widths = c(1, 0.3, 0.3)
+)
 
 rm(abe_lec_so)
 gc()
 ```
 
-```{r "Fig S9", fig.width = 9, fig.height = 12}
+```{r "Fig S9", fig.width = 13, fig.height = 12}
 plot_grid(
   abe_gn_heat,
-  abe_bars[[1]],
+  abe_bars,
   ncol        = 1,
   rel_heights = c(0.4, 1),
   labels      = c("A", ""),

@@ -78,58 +78,25 @@ However, this prediction system has several limitations:
   * **P values indicating overall feature (gene) importance are included in
     [Table S2]**
 
+* The prediction accuracy dramatically drops for the day 21 and day 42
+  timepoints, suggesting these cells could be missclassified.
+  * **Point out that accuracy of negative predictions remains high for all
+    timepoints.
+    This suggests that the model is not simply misclassifying cells for the
+    other timepoints.**
+
 * The authors use an algorithm to predict which cells are better at archiving
   Ag, however, it is not shown that the identified cells are really better at
   capturing and retaining the antigen.
   
-  * **Include a bargraph similar to [Figure 2]B that includes dual immunized
-    mice, to show that predicted Ag-competent cells are taking up Ag after the
-    2nd immunization.**
+  * **A bargraph similar to [Figure 2]B that includes dual immunized mice
+    was added as [Figure S5]E.
+    Highlight that the fraction of predicted Ag-competent cells decreases in the
+    dual-immunized sample, suggesting that predicted Ag-competent cells are
+    taking up Ag after the 2nd immunization.**
   * **Need to explain better why there is increased dual antigen positive LECs
     and that we think it is because the increased inflammatory response in LECs
     results in increased archiving. Re-work the text around this figure.**
-
-<br>
-
-[Figure 2]B was modified to include the dual vaccinated sample.
-The fraction of cells predicted to be Ag-competent is shown for each LEC subset.
-For dual-immunized mice, Ag-high refers to cells that took up both antigens.
-
-```{r "dual vax bars", fig.width = 6, fig.height = 4, out.width = "50%", eval = generate_plots}
-# Format data
-lvls <- c("Ag-low", "Ag-competent", "double-high", "Ag-high")
-
-new_clrs <- pred_clrs
-new_clrs["double-high"]  <- pred_clrs["Ag-competent"]
-new_clrs["Ag-competent"] <- "grey75"
-
-dat <- ex_mod_bx_dat %>%
-  filter(subtype %in% rf_typs) %>%
-  mutate(
-    pred_grp = Ag_class_dual,
-    pred_grp = recode(pred_grp, `single-high` = "Ag-high"),
-    tm = "dual"
-  ) %>%
-  bind_rows(rf_bar_dat) %>%
-  mutate(pred_grp = fct_relevel(pred_grp, rev(lvls)))
-
-# Create bargraphs
-dat %>%
-  ggplot(aes(tm, fill = pred_grp)) +
-  geom_bar(position = "fill", alpha = 0.85, key_glyph = draw_key_point) +
-  geom_bar(position = "fill", key_glyph = draw_key_point) +
-  facet_grid(~ subtype) +
-  scale_fill_manual(values = new_clrs) +
-  scale_y_continuous(breaks = c(0, 0.5, 1)) +
-  guides(fill = guide_legend(override.aes = list(shape = 22, size = 5))) +
-  labs(y = "fraction of cells", x = "days post vaccination") +
-  bar_thm +
-  theme(
-    aspect.ratio = 1.2,
-    legend.title = element_blank(),
-    legend.position = "bottom"
-  )
-```
 
 <br>
 
@@ -143,8 +110,8 @@ However, as the random forest algorithm was trained on the antigen score at day
 14, for this time point the outcome results strongly biased by the input data.
 For this reason, it is not clear why this comparison is shown.
 
-* **Not all day 14 LECs were used to train the models.
-  The cells used for training have been removed from the [Figure 2] plots.**
+* **Cells shown in [Figure 2] were not used for training the models, these cells
+  were only used for final validation of the models and to generate plots.**
 
 <br>
 
@@ -157,7 +124,7 @@ In line 348 sentence “Taken together, our spatial transcriptomics results
 
 <br>
 
-### Comment 4 (e)
+### Comment 4 (a, e) {#R1C4}
 
 [Figure 5]
 
@@ -180,14 +147,16 @@ but this timepoint will only show differences in Ag uptake.
 It is not shown how Ag archiving is impacted for different populations during
 CHIKV infection.
   
-* **Perform CHIKV flow experiment using a better panel to look at
-  archiving in different LEC subsets.**
+* **To better assess the impact of CHIKV infection on Ag archiving,
+  we immunized with ova488 and infected with CHIKV 24 hrs later.
+  We then assessed Ag archiving 14 days after immunization using flow
+  cytometry.**
 * **CHIKV infection for 24 hours followed by ova488 immunization for 2 days, or
-  2 weeks with OT1 transfer to look at antigen presentation.**
+  2 weeks with OT1 transfer to look at antigen presentation. DID WE DO THIS??**
 
 <br>
 
-### Comment 5 (t)
+### Comment 5 (a, t) {#R1C5}
 
 [Figure S9]
 
@@ -207,6 +176,8 @@ Otherwise, the statement needs to be strongly resized.
   suggestive rather than conclusive.**
 * **Add in existing human LN data showing that RBD protein is present in lung
   LECs and not pancreatic LECs from human LNs.**
+* **We trained more robust models that are able to identify Ag-compent cells for
+  collecting LECs.**
 
 <br>
 
@@ -241,7 +212,7 @@ with LECs.
 * **CCR7hi DCs might include some cDC1s, but since we do not distinguish between
   cDC1 and cDC2 in this subset we can clarify the text.
   We can also further investigate the CCR7hi DCs to see if we can
-  identify cDC1s in this populations (working on this).**
+  identify cDC1s in this populations.**
 
 <br>
 
@@ -256,9 +227,9 @@ demonstrate claims on the function of the cells identified by RNA sequencing
 analysis.
 
 * **Downplay the language and include in vitro studies, described in more detail
-  for reviewer 2.**
+  for [R2C1](#R2C1).**
 * **Cite new experiments with ova488 and CHIKV looking at LEC subsets by flow
-  cytometry (comment 4).**
+  cytometry [R1C4](#R1C4).**
 
 ---
 
@@ -279,7 +250,7 @@ experiments.
 
 <br>
 
-### Comment 1 (e, t)
+### Comment 1 (e, t) {#R2C1}
 
 [Figure 2]
 
@@ -300,6 +271,8 @@ Relevant in vitro data includes:**
     find that inactivation of CTSD results in accumulation of cholesterol in
     late endosomes/lysosomes, potentially linking the in vitro cholesterol data
     with the Ag-high gene module**
+  * **Cav-/- mice show higher rate of ova488 degradation between day 2 and
+    day 17**
     
 <br>
 

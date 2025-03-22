@@ -19,20 +19,24 @@ pred_clrs <- c(
 rf_dat_clmn  <- "Ag_class_ml"
 rf_cell_type <- "cLEC"
 rf_mouse     <- "d14"
+ml_tm        <- str_remove(rf_mouse, "^d")
 rf_typs      <- c("cLEC", "fLEC", "Collecting")
 
 ag_lvls <- c("high", "low")
 
 # Check for RF predictions
-TRAIN_MODELS <- !file.exists(here(params$mod_dir, "ag-high_preds.tsv.gz"))
+TRAIN_MODELS <- !file.exists(here(params$mod_dir, "ag-high_preds.qs"))
 
 # Start h2o session
 library(h2o)
+library(parallel)
 
-invisible(h2o.init())
+ncpus <- detectCores(logical = TRUE)
+
+invisible(h2o.init(nthreads = ncpus - 2))
 ```
 
-```{r "h2o functions"}
+```{r "h2o main functions"}
 # Filter RF data to include correct cell types, timepoints, and to remove cells
 # that were used to train models 
 .filter_rf_data <- function(df, filt, timepoints = rf_tms, cell_types = rf_typs) {
@@ -55,7 +59,7 @@ invisible(h2o.init())
 }
 
 .prepare_ml_data <- function(obj, feats, class_clmn = rf_dat_clmn, scale = TRUE,
-                             lvls = ag_lvls, missing_value = NA) {
+                             lvls = rev(ag_lvls), missing_value = NA) {
   # Identify missing features
   feats <- unique(feats)
   
@@ -72,14 +76,14 @@ invisible(h2o.init())
   
   dat[, missing_feats] <- as.numeric(missing_value)
   
-  # Scale data separately for each cell
   dat <- dat %>%  
     as_tibble(rownames = ".cell_id") %>%
     pivot_longer(all_of(feats))
-    
+  
+  # Per-feature scaling
   if (scale) {
     dat <- dat %>%
-      group_by(.cell_id) %>%
+      group_by(name) %>%
       mutate(value = as.numeric(scale(value))) %>%
       ungroup()
   }
@@ -92,41 +96,162 @@ invisible(h2o.init())
   dat
 }
 
+.predict_ml <- function(dat, predict_fn, features = ML_FEATS,
+                        lvls = ag_lvls, class_clmn = rf_dat_clmn) {
+  dat <- dat %>%
+    .prepare_ml_data(
+      feats      = features,
+      class_clmn = class_clmn
+    )
+  
+  pred <- predict_fn(as.h2o(dat)) %>%
+    pull(adj_pred) %>%
+    factor(lvls)
+  
+  res <- dat %>%
+    select(any_of(class_clmn)) %>%
+    mutate(pred = pred)
+  
+  res
+}
+
+#' Train models using h2o.automl()
+#' 
+#' @param ml_dat Named list containing H2OFrames for training ("train") and
+#' validating ("valid") models
+#' @param class_clmn Column in data containing binary classes to use for
+#' classification
+#' @param ml_dir Directory to use for saving models
+.train_mls <- function(ml_dat, class_clmn = rf_dat_clmn, ml_dir = NULL, ...) {
+  
+  args <- list(
+    y                  = class_clmn,
+    training_frame     = ml_dat$train,
+    leaderboard_frame  = ml_dat$valid,
+    ...
+  )
+  
+  args$nfolds          <- args$nfolds          %||% 10
+  args$max_models      <- args$max_models      %||% 50
+  args$seed            <- args$seed            %||% 42
+  args$sort_metric     <- args$sort_metric     %||% "logloss"
+  args$stopping_metric <- args$stopping_metric %||% "logloss"
+  args$balance_classes <- args$balance_classes %||% TRUE
+  args$keep_cross_validation_predictions <- args$keep_cross_validation_predictions %||% TRUE
+  
+  # Train models
+  # * 10-fold cross-validation
+  # * sort models based on logloss
+  # * balance classes
+  ml <- purrr::lift_dl(h2o.automl)(args)
+  
+  # Save models
+  lb <- ml@leaderboard
+  
+  if (!is.null(ml_dir)) {
+    pth <- path.expand(ml_dir)
+    
+    lb["model_id"] %>%
+      as.vector() %>%
+      walk(~ {
+        .x %>%
+          h2o.getModel() %>%
+          h2o.saveModel(pth)
+      })
+  }
+  
+  # Calculate metrics for leaderboard
+  # * return metrics for training and validation data
+  # * use validation for setting classification cutoff
+  lb_df <- lb %>%
+    as_tibble() %>%
+    select(-any_of("logloss"))  # this is calculated by .assess_ml()
+  
+  lb <- lb["model_id"] %>%
+    as.vector() %>%
+    map_dfr(~ {
+      m <- .load_ml(ml_dir, .x)
+      
+      c("train", "valid", "test") %>%
+        keep(~ .x %in% names(ml_dat)) %>%
+        map_dfr(~ {
+          m %>%
+            .assess_ml(
+              valid_data = ml_dat$valid %||% ml_dat$train,  # used to set classification cutoff
+              test_data  = ml_dat[[.x]],                    # used to calculate accuracy metrics
+              class_clmn = class_clmn
+            ) %>%
+            mutate(data = .x)
+        })
+    }) %>%
+    left_join(lb_df, by = "model_id")
+    
+  # Format final output
+  res <- list(
+    model       = list(ml),
+    leaderboard = lb
+  )
+  
+  res
+}
+
 # Performs final performance assessment using test data
 # * also identifies optimal classification cutoff based on validation data
 # * returns data frame with final model and metrics
+# * class levels and positive class are set during model training,
+#   the first class is the negative class
+# * Ag-high is set as the negative class for model training and when selecting
+#   the classfication threshold
+# * the returned F1 score uses Ag-high as the positive class
 .assess_ml <- function(ml, metric = "f1", valid_data, test_data,
-                       class_clmn = rf_dat_clmn, class_lvls = ag_lvls) {
+                       class_clmn = rf_dat_clmn) {
   
   # Identify optimal classification threshold using validation data
   perf <- ml %>%
     h2o.performance(newdata = valid_data) %>%
     h2o.metric() %>%
     as_tibble() %>%
-    arrange(desc(!!sym(metric)))
+    arrange(desc(!!sym(metric)), desc(specificity))
   
   threshold <- perf %>%
-    filter(!!sym(metric) == max(!!sym(metric))) %>%
+    head(1) %>%
     pull(threshold)
   
   # Perform final test using optimized threshold
+  # * the last output column from h2o.predict is the positive class
+  # * but confusionMatrix() uses the first level as the positive class
   predict_fn <- function(dat) {
-    h2o.predict(ml, dat) %>%
-      as.data.frame() %>%
-      mutate(adj_pred = if_else(
-        !!sym(class_lvls[2]) > threshold, class_lvls[2], class_lvls[1]
-      ))
+    p <- h2o.predict(ml, dat) %>%
+      as.data.frame()
+    
+    lvls <- colnames(p)[-1]
+    pos  <- lvls[2]
+    neg  <- lvls[1]
+    
+    p %>%
+      mutate(
+        adj_pred = if_else(!!sym(pos) > threshold, pos, neg),
+        adj_pred = factor(adj_pred, lvls)
+      )
   }
   
   pred <- test_data %>%
     predict_fn() %>%
-    pull(adj_pred) %>%
-    factor(levels = class_lvls)
+    pull(adj_pred)
   
-  final_stats <- confusionMatrix(
-    pred,
-    factor(as.vector(test_data[[class_clmn]]), class_lvls)
-  )
+  class_lvls <- levels(pred)
+  
+  final_stats <- pred %>%
+    confusionMatrix(
+      reference = factor(as.vector(test_data[[class_clmn]]), class_lvls),
+      positive  = class_lvls[1]
+    )
+  
+  # Calculate logloss
+  ll <- ml %>%
+    h2o.performance(newdata = test_data)
+  
+  ll <- ll@metrics$logloss
   
   # Function to predict using optimized threshold
   # Format output tibble
@@ -135,45 +260,53 @@ invisible(h2o.init())
     as_tibble() %>%
     mutate(
       model_id   = ml@model_id,
+      algorithm  = ml@algorithm,
       model      = list(ml),
       predict_fn = list(predict_fn),
       .before    = 1
+    ) %>%
+    mutate(
+      logloss = ll,
+      F1_neg = 2 * (
+        (`Neg Pred Value` * Specificity) /
+          (`Neg Pred Value` + Specificity)
+      )
     )
-  
+
   res
 }
 
 # Pulls the top models from an H2OAutoML object
 # * Uggghhh have to grab the top models from the printed output of the
 #   leaderboard since the leaderboard h2o.frame was not saved to disk
-.select_best_models <- function(ml, n = 2, model_path, load = FALSE) {
-  if (load) {
-    if (n > 6) cli_abort("n must be less than 7")
-    
-    str_cap <- capture.output(ml@leaderboard) %>%
-      str_extract("(?<= )[^ ]+(?= )")
-    
-    top_mls <- str_cap[str_cap != "model_id"]
-    
-  } else {
-    top_mls <- ml@leaderboard %>%
-      as_tibble() %>%
-      pull(model_id)
-  }
+.select_best_models <- function(lb, n = 2, model_path, metric = "logloss",
+                                desc = FALSE) {
   
-  top_mls <- head(top_mls, n)
+  sort_fn <- function(df) arrange(df, !!sym(metric))
+  
+  if (desc) sort_fn <- function(df) arrange(df, desc(!!sym(metric)))
+  
+  top_mls <- lb %>%
+    as_tibble() %>%
+    sort_fn() %>%
+    pull(model_id) %>%
+    head(n)
   
   res <- top_mls %>%
     set_names() %>%
-    map(~ {
-      here(model_path, .x) %>%
-        path.expand() %>%
-        h2o.loadModel()
-    })
+    map(~ .load_ml(model_path, .x))
   
   res
 }
 
+.load_ml <- function(ml_dir, ml_id) {
+  file.path(ml_dir, ml_id) %>%
+    path.expand() %>%
+    h2o.loadModel()
+}
+```
+
+```{r "h2o other functions"}
 create_gn_plots <- function(so_in, p_data,
                             x = "ml_pred_1_grp", plt_clrs, x_lvls,
                             n_gns = 10, top_gns = NULL,
@@ -1312,7 +1445,6 @@ lec_so %>%
 
 ```{r "h2o data splits", eval = TRAIN_MODELS}
 # Split cells into train, validate, test
-# * 30% train, 20% validate, 50% test/analysis
 # * caret::createDataPartition() will maintain the class ratio for splits
 data_splits <- list(
   train = 0.5,
@@ -1320,7 +1452,7 @@ data_splits <- list(
   test  = 0.3
 )
 
-p_train_valid <- data_splits$train + data_splits$valid
+prop_train_valid <- data_splits$train + data_splits$valid
 
 data_splits <- rf_typs %>%
   set_names() %>%
@@ -1334,64 +1466,213 @@ data_splits <- rf_typs %>%
     set.seed(42)
     
     train_idx <- outcomes %>%
-      createDataPartition(p = p_train_valid) %>%
+      createDataPartition(p = prop_train_valid) %>%
       unlist(use.names = FALSE)
     
     valid_idx <- outcomes[train_idx] %>%
-      createDataPartition(p = data_splits$valid / p_train_valid) %>%
+      createDataPartition(p = data_splits$valid / prop_train_valid) %>%
       unlist(use.names = FALSE)
-      
-    splits <- list(
-      train = cells[train_idx][-valid_idx],
-      valid = cells[train_idx][valid_idx]
-    )
+    
+    # Set training cells
+    train_cells <- cells[train_idx]
+    
+    if (!is_empty(valid_idx)) train_cells <- train_cells[-valid_idx]
+    
+    # Create split
+    splits <- list(train = train_cells)
+    
+    if (!is_empty(valid_idx)) splits$valid <- cells[train_idx][valid_idx]
     
     splits$test <- cells[!cells %in% unlist(splits)]
     
     splits
   })
 
-TRAINING_CELLS <- data_splits %>%
-  map(~ .x$train) %>%
+# Include cells from the 21 and 42 day timepoints for feature selection
+data_splits %>%
+  iwalk(~ {
+    dat <- lec_so@meta.data %>%
+      filter(tm %in% c(21, 42), subtype == .y)
+
+    cells <- dat %>%
+      split(.$tm) %>%
+      map(~ {
+        cells    <- rownames(.x)
+        outcomes <- pull(.x, rf_dat_clmn)
+
+        set.seed(42)
+
+        feat_idx <- outcomes %>%
+          createDataPartition(p = 0.1) %>%
+          unlist(use.names = FALSE)
+
+        cells[feat_idx]
+      }) %>%
+      unlist(use.names = FALSE)
+    
+    data_splits[[.y]]$feature <<- cells
+  })
+
+# Save cell IDs
+TRAINING_CELLS <- c("train", "valid", "feature") %>%
+  map(~ map(data_splits, pluck, .x)) %>%
   unlist(use.names = FALSE)
 
-VALID_CELLS <- data_splits %>%
-  map(~ .x$valid) %>%
-  unlist(use.names = FALSE)
-
-testing_cells <- data_splits %>%
-  map(~ .x$test) %>%
-  unlist(use.names = FALSE)
+data_splits %>%
+  qsave(here(params$mod_dir, "data_splits.qs"))
 ```
 
-```{r "h2o feature selection", eval = TRAIN_MODELS}
+```{r "h2o fLEC data splits", eval = TRAIN_MODELS}
+# Split cells into train, validate, test
+# * caret::createDataPartition() will maintain the class ratio for splits
+new_splits <- list(
+  train = 0.7,
+  valid = 0.15,
+  test  = 0.15
+)
+
+prop_train_valid <- new_splits$train + new_splits$valid
+
+new_splits <- set_names("fLEC") %>%
+  map(~ {
+    dat <- lec_so@meta.data %>%
+      filter(mouse == rf_mouse, subtype == .x)
+      
+    cells    <- rownames(dat)
+    outcomes <- pull(dat, rf_dat_clmn)
+    
+    set.seed(42)
+    
+    train_idx <- outcomes %>%
+      createDataPartition(p = prop_train_valid) %>%
+      unlist(use.names = FALSE)
+    
+    valid_idx <- outcomes[train_idx] %>%
+      createDataPartition(p = new_splits$valid / prop_train_valid) %>%
+      unlist(use.names = FALSE)
+    
+    # Set training cells
+    train_cells <- cells[train_idx]
+    
+    if (!is_empty(valid_idx)) train_cells <- train_cells[-valid_idx]
+    
+    # Create split
+    splits <- list(train = train_cells)
+    
+    if (!is_empty(valid_idx)) splits$valid <- cells[train_idx][valid_idx]
+    
+    splits$test <- cells[!cells %in% unlist(splits)]
+    
+    splits
+  })
+
+# Include cells from the 21 and 42 day timepoints for feature selection
+new_splits %>%
+  iwalk(~ {
+    dat <- lec_so@meta.data %>%
+      filter(tm %in% c(21, 42), subtype == .y)
+
+    cells <- dat %>%
+      split(.$tm) %>%
+      map(~ {
+        cells    <- rownames(.x)
+        outcomes <- pull(.x, rf_dat_clmn)
+
+        set.seed(42)
+
+        feat_idx <- outcomes %>%
+          createDataPartition(p = 0.1) %>%
+          unlist(use.names = FALSE)
+
+        cells[feat_idx]
+      }) %>%
+      unlist(use.names = FALSE)
+
+    new_splits[[.y]]$feature <<- cells
+  })
+
+# Update data_splits
+new_splits %>%
+  iwalk(~ {
+    data_splits[[.y]] <<- .x
+  })
+
+# Save cell IDs
+TRAINING_CELLS <- c("train", "valid", "feature") %>%
+  map(~ map(data_splits, pluck, .x)) %>%
+  unlist(use.names = FALSE)
+
+data_splits %>%
+  qsave(here(params$mod_dir, "data_splits.qs"))
+```
+
+```{r "h2o feature selection 1", eval = TRAIN_MODELS}
 # Identify top features to use for model training
-# * select top genes using ONLY training data to prevent data leakage
 
-# Identify Ag markers for all LECs from training data
-fc <- 0
-
+# Filter for cells to use for feature selection
 deg_so <- lec_so %>%
   subset(cells = TRAINING_CELLS)
 
-degs_1 <- deg_so %>%
-  wilcoxauc(group_by = rf_dat_clmn) %>%
-  mutate(subtype = "all") %>%
-  arrange(padj)
-
 # Identify Ag markers for each subtype separately
+.identify_degs <- function(obj, var = NULL, group_clmn = rf_dat_clmn) {
+  
+  multi_var <- length(var) > 1
+  
+  if (multi_var) {
+    obj <- obj %>%
+      mutate_meta(~ {
+        .x %>%
+          rowwise() %>%
+          mutate(var = str_c(!!!syms(var), sep = "-")) %>%
+          ungroup()
+      })
+    
+    orig_clmns <- var
+    var <- "var"
+  }
+  
+  res <- list(obj)
+  
+  if (!is.null(var)) {
+    res <- obj %>%
+      SplitObject(var)
+  }
+  
+  res <- res %>%
+    imap_dfr(~ {
+      res <- .x %>%
+        wilcoxauc(group_by = group_clmn)
+      
+      if (nrow(res) == 0) return(NULL)
+      
+      res %>%
+        as_tibble() %>%
+        filter(logFC > 0) %>%
+        arrange(padj, pval, desc(logFC))
+    }, .id = var)
+  
+  if (multi_var) {
+    res <- res %>%
+      separate_wider_delim(var, delim = "-", names = orig_clmns)
+  }
+  
+  res
+}
+
+degs_1 <- deg_so %>%
+  .identify_degs() %>%
+  mutate(subtype = "all", tm = "all")
+
 degs_2 <- deg_so %>%
-  SplitObject("subtype") %>%
-  imap_dfr(~ {
-    res <- .x %>%
-      wilcoxauc(group_by = rf_dat_clmn)
+  .identify_degs("subtype") %>%
+  mutate(tm = "all")
 
-    if (nrow(res) == 0) return(NULL)
+degs_3 <- deg_so %>%
+  .identify_degs("tm") %>%
+  mutate(subtype = "all")
 
-    res %>%
-      mutate(subtype = .y) %>%
-      arrange(padj)
-  })
+degs_4 <- deg_so %>%
+  .identify_degs(c("subtype", "tm"))
 
 # Filter based on differential expression
 # * exclude ribosomal protein genes
@@ -1399,217 +1680,212 @@ degs_2 <- deg_so %>%
 # * exclude genes that are lowly expressed <20% of cells
 exclude_feats <- c("Malat1", "Xist")
 
-degs <- bind_rows(degs_1, degs_2) %>%
+fc <- log(1)
+
+degs <- bind_rows(degs_1, degs_2, degs_3, degs_4) %>%
   filter(
-    pval  < 0.05,
     logFC > fc,
     (pct_in > 20 | pct_out > 20),
+    
     !grepl("^(mt-|R[pls])", feature),
     !feature %in% exclude_feats
   ) %>%
   arrange(pval)
 
-# Remove highly correlated genes
-ML_FEATS <- unique(degs$feature)
-
-feat_dat <- lec_so %>%
-  subset(mouse == rf_mouse, cells = TRAINING_CELLS) %>%
-  FetchData(ML_FEATS)
-
-cor_mat <- h2o.cor(as.h2o(feat_dat))
-
-cor_feats <- caret::findCorrelation(cor_mat, cutoff = 0.75)
-cor_feats <- colnames(cor_mat)[cor_feats]
-
-ML_FEATS <- ML_FEATS[!ML_FEATS %in% cor_feats]
-
-degs <- degs %>%
-  filter(feature %in% ML_FEATS)
-
-# Write tables
-degs %>%
-  write_tsv(here(params$mod_dir, "ag-high_features.tsv.gz"))
-```
-
-```{r "h2o DEGs", eval = TRAIN_MODELS}
-# Identify DEGs using all cells
-# * these results will be used to classify genes into final Ag-low/high gene
-#   modules
-# * it is okay to use all cells since these results are not used for feature
-#   selection and are just used to classify final features
-
-# Identify Ag markers for all LECs from training data
-fc <- 0
-
-deg_so <- lec_so %>%
-  subset(subtype %in% rf_typs & mouse == rf_mouse)
-
-degs_1 <- deg_so %>%
-  wilcoxauc(group_by = rf_dat_clmn) %>%
-  mutate(subtype = "all") %>%
-  arrange(padj)
-
-# Identify Ag markers for each subtype separately
-degs_2 <- deg_so %>%
-  SplitObject("subtype") %>%
-  imap_dfr(~ {
-    res <- .x %>%
-      wilcoxauc(group_by = rf_dat_clmn)
-
-    if (nrow(res) == 0) return(NULL)
-
-    res %>%
-      mutate(subtype = .y) %>%
-      arrange(padj)
-  })
-
-# Filter for genes used for training
-degs <- bind_rows(degs_1, degs_2) %>%
-  filter(
-    feature %in% ML_FEATS,
-    logFC > fc
-  ) %>%
-  arrange(pval)
-
-# Write tables
+# Save features
 degs %>%
   write_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
 ```
 
+```{r "h2o feature selection 2", eval = TRAIN_MODELS}
+# Save features
+# * assign features to Ag-low/high modules
+ml_degs <- rf_typs %>%
+  map_dfr(~ {
+    degs %>%
+      filter(subtype %in% c(.x, "all")) %>%
+      mutate(
+        key = case_when(
+          subtype == .x & as.character(tm) == ml_tm    ~ 1,
+          subtype == .x                                ~ 2,
+          subtype == "all" & as.character(tm) == ml_tm ~ 3,
+          as.character(tm) == ml_tm                    ~ 4,
+          TRUE                                         ~ 5
+        )
+      ) %>%
+      group_by(feature) %>%
+      filter(key == min(key)) %>%
+      ungroup() %>%
+      mutate(list = .x)
+  })
+
+# Select equal number of top genes from Ag-low/high groups for each subtype
+ml_degs <- ml_degs %>%
+  filter(tm != "all", subtype == list) %>%
+  arrange(padj, pval, desc(logFC)) %>%
+  group_by(list, tm, group) %>%
+  slice(1:100) %>%
+  ungroup()
+
+ml_degs %>%
+  write_tsv(here(params$mod_dir, "ag-high_features.tsv.gz"))
+
+# All features
+ml_feats <- ml_degs %>%
+  split(.$list) %>%
+  map(~ unique(.x$feature))
+
+ML_FEATS <- unique(unlist(ml_feats))
+```
+
+```{r "h2o training data", eval = TRAIN_MODELS}
+# Create data.frames
+# * separate frame for each subtype and train/validate/test split
+ml_data <- data_splits %>%
+  map(~ .x[!names(.x) == "feature"]) %>%
+  imap(~ {
+    cells <- .x
+    typ   <- .y
+    
+    fts <- ml_feats[[typ]]
+    
+    cells %>%
+      map(~ {
+        dat <- lec_so %>%
+          subset(cells = .x) %>%
+          subset(subtype == typ) %>%
+          .prepare_ml_data(feats = fts) %>%
+          as.h2o()
+        
+        # the first level should be the negative class
+        # * want to train using Ag-low as the positive class since it is the
+        #   minority class
+        dat[[rf_dat_clmn]] <- dat[[rf_dat_clmn]] %>%
+          h2o.setLevels(ag_lvls, in.place = TRUE)
+        
+        dat
+      })
+  })
+```
+
 ```{r "h2o train models", eval = TRAIN_MODELS}
 # Train models
-mls <- rf_typs %>%
-  set_names() %>%
+# * set Ag-low as the positive class, since there are fewer Ag-low cells
+# * scale expression separately for training/validation/testing data
+# * train two separate batches, take the top model from each
+lb <- c(42, 43) %>%
   map_dfr(~ {
-    ml_dat <- lec_so %>%
-      subset(subtype == .x & mouse == rf_mouse) %>%
-      .prepare_ml_data(feats = ML_FEATS)
+    seed <- .x
     
-    # Create h2o frames for training/validating
-    cells <- data_splits[[.x]]
-    
-    ml_dat <- cells %>%
-      map(~ {
-        ml_dat %>%
-          filter(.cell_id %in% .x) %>%
-          select(-.cell_id) %>%
-          as.h2o()
+    rf_typs %>%
+      set_names() %>%
+      map_dfr(~ {
+        typ    <- .x
+        cells  <- data_splits[[typ]]
+        fts    <- ml_feats[[typ]]    
+        ml_dat <- ml_data[[typ]]
+        
+        res <- ml_dat %>%
+          .train_mls(
+            class_clmn    = rf_dat_clmn,
+            ml_dir        = here(params$mod_dir, typ),
+            include_algos = c("GLM", "StackedEnsemble", "GBM"),
+            # max_models      = 100,  # USED FOR FIRST PASS
+            # balance_classes = FALSE,
+            
+            max_models    = 100,
+            seed          = seed
+          ) %>%
+          .$leaderboard %>%
+          mutate(
+            features   = list(fts),
+            train_data = list(cells$train),
+            valid_data = list(cells$valid),
+            test_data  = list(cells$test)
+          ) %>%
+          mutate(
+            subtype = typ,
+            seed    = seed,
+            .before = 1
+          )
+        
+        res
       })
-    
-    # Train models
-    # * 10-fold cross-validation
-    ml <- h2o.automl(
-      y                 = rf_dat_clmn,
-      training_frame    = ml_dat$train,
-      leaderboard_frame = ml_dat$valid,
-      # exclude_algos     = "DeepLearning",
-      nfolds            = 10,
-      max_models        = 50,
-      seed              = 42,
-      sort_metric       = "AUCPR",
-      balance_classes   = TRUE
-    )
-    
-    # Test top model
-    mod <- ml@leader
-
-    # Format final output
-    res <- tibble(
-      subtype    = .x,
-      leader_id  = mod@model_id,
-      model      = list(ml),
-      train_data = list(cells$train),
-      valid_data = list(cells$valid),
-      test_data  = list(cells$test)
-    )
-    
-    res
   })
+
+lb %>%
+  qsave(here(params$mod_dir, "ag-high_all_models.qs"))
+
+lb %>%
+  select(-where(is.list)) %>%
+  write_tsv(here(params$mod_dir, "ag-high_leaderboard.tsv.gz"))
 ```
 
 ```{r "h2o final test", eval = TRAIN_MODELS}
-BEST_MLS <- mls %>%
+# Select best models
+# * Use GLM and top GBM
+BEST_MLS <- lb %>%
+  filter(
+    data == "valid",
+    algorithm %in% c("glm", "gbm")
+  ) %>%
+  group_by(algorithm, subtype) %>%
+  slice_max(F1, n = 10) %>%
+  slice_max(Specificity, n = 1) %>%
+  slice_min(logloss, n = 1, with_ties = FALSE) %>%
+
+  group_by(subtype) %>%
+  arrange(desc(F1), desc(Specificity), logloss) %>%
+  mutate(training_rank = row_number()) %>%
+  ungroup() %>%
+  
   pmap_dfr(~ {
     args <- list(...)
+    typ  <- args$subtype
+    dat  <- ml_data[[typ]]
     
-    ml_dat <- lec_so %>%
-      subset(subtype == args$subtype & mouse == rf_mouse) %>%
-      .prepare_ml_data(feats = ML_FEATS)
-    
-    # Create h2o frames for training/validating
-    cells <- list(
-      train = args$train_data,
-      valid = args$valid_data,
-      test  = args$test_data
+    ml <- .load_ml(
+      here(params$mod_dir, typ),
+      args$model_id
     )
-    
-    ml_dat <- cells %>%
-      map(~ as.h2o(ml_dat[.x, ]))
-    
-    # Test best model
-    # * find the threshold that maximizes F1-score
-    top_mls <- args$model %>%
-      .select_best_models(
-        model_path = here(params$mod_dir, args$subtype),
-        n    = 2,
-        load = FALSE
-      )
-    
-    res <- top_mls %>%
-      map_dfr(~ {
-        .x %>%
-          .assess_ml(
-            valid_data = ml_dat$valid,
-            test_data  = ml_dat$test
-          )
-      }) %>%
-      mutate(
-        subtype    = args$subtype,
-        train_data = list(args$train_data),
-        valid_data = list(args$valid_data),
-        test_data  = list(args$test_data)
+      
+    res <- ml %>%
+      .assess_ml(
+        valid_data = dat$valid,
+        test_data  = dat$test
       ) %>%
       mutate(
-        training_rank = row_number(),
-        .after = model_id
+        train_data = list(dat$train),
+        valid_data = list(dat$valid),
+        test_data  = list(dat$test)
+      ) %>%
+      mutate(
+        subtype       = typ,
+        seed          = args$seed,
+        training_rank = args$training_rank,
+        .before = 1
       )
     
     res
   })
-```
 
-```{r "h2o save models", eval = TRAIN_MODELS}
+BEST_MLS <- BEST_MLS %>%
+  arrange(desc(Specificity)) %>%
+  group_by(subtype) %>%
+  mutate(model_label = row_number()) %>%
+  ungroup()
+
 # Save models
-# * save all models
-# * save testing stats
-mls %>%
-  pull(model, subtype) %>%
-  iwalk(~ {
-    pth <- path.expand(here(params$mod_dir, .y))
-    
-    .x@leaderboard["model_id"] %>%
-      as.vector() %>%
-      walk(~ {
-        .x %>%
-          h2o.getModel() %>%
-          h2o.saveModel(pth)
-      })
-  })
-
-mls %>%
-  qsave(here(params$mod_dir, "ag-high_all_models.qs"))
-
 BEST_MLS %>%
   qsave(here(params$mod_dir, "ag-high_best_models.qs"))
 ```
 
-```{r "h2o top features", eval = TRAIN_MODELS}
+```{r "h2o Ag module features", eval = TRAIN_MODELS}
 # Filter for top features
 # * include features based on cumulative feature importance
 # * keep top features that account for 90% of overall importance
-# * do not filter features if top features have already been selected by model
 MODULE_FEATS <- BEST_MLS %>%
-  split(.$training_rank) %>%
+  split(.$model_label) %>%
   map(~ {
     .x %>%
       pull(model, subtype) %>%
@@ -1628,11 +1904,9 @@ MODULE_FEATS <- BEST_MLS %>%
         imprts <- ml@model$variable_importances %>%
           as_tibble()
         
-        if (nrow(imprts) == length(ML_FEATS)) {
-          imprts <- imprts %>%
-            filter(cumsum(percentage) <= 0.9)
-        }
-        
+        imprts <- imprts %>%
+          filter(cumsum(percentage) <= 0.99)  # remove any features not used by
+                                              # model
         imprts$variable
       })
   })
@@ -1647,13 +1921,14 @@ MODULE_FEATS <- MODULE_FEATS %>%
         fts <- .x
         typ <- .y
         
-        res <- degs %>%
-          filter(
-            subtype %in% c(typ, "all"),
-            feature %in% fts,
-            padj < 0.05
-          )
-        
+        res <- ml_degs %>%
+          filter(list == typ, feature %in% fts) %>%
+          group_by(feature) %>%
+          filter(key == min(key)) %>%
+          filter(n_distinct(group) == 1) %>%
+          slice_max(logFC) %>%
+          ungroup()
+          
         res %>%
           split(.$group) %>%
           map(~ {
@@ -1671,34 +1946,33 @@ MODULE_FEATS %>%
 
 ```{r "h2o predict Ag class", eval = TRAIN_MODELS}
 # Predict Ag class
+# * THIS RETURNS WARNINGS
+# * Test/Validation dataset is missing column 'Orai10': substituting in a column of NaN
+# * suggests there are genes used for training that are not present in data
+#   for predictions
 lec_so <- lec_so %>%
   mutate_meta(
     mutate,
-    training_data = .cell_id %in% c(TRAINING_CELLS, VALID_CELLS)
+    training_data = .cell_id %in% TRAINING_CELLS
   )
  
 ML_PREDS <- BEST_MLS %>%
-  split(.$training_rank) %>%
+  split(.$model_label) %>%
   map(~ {
     .x %>%
       pmap_dfr(~ {
         args <- list(...)
         
-        cells <- lec_so@meta.data %>%
+        dat <- lec_so@meta.data %>%
           filter(!training_data, subtype == args$subtype) %>%
-          rownames()
-        
-        dat <- lec_so %>%
-          subset(cells = cells) %>%
-          .prepare_ml_data(feats = ML_FEATS)
-        
-        pred <- args$predict_fn(as.h2o(dat)) %>%
-          pull(adj_pred) %>%
-          factor(levels = ag_lvls)
+          split(.$mouse) %>%
+          map(~ subset(lec_so, cells = rownames(.x)))
         
         res <- dat %>%
-          select(!!sym(rf_dat_clmn)) %>%
-          mutate(pred = pred)
+          map_dfr(
+            .predict_ml,
+            predict_fn = args$predict_fn,
+          )
         
         res
       })
@@ -1711,7 +1985,8 @@ ML_PREDS %>%
 
 ```{r "h2o load models"}
 # Load models
-# mls <- qread(here(params$mod_dir, "ag-high_all_models.qs"))
+# lb <- qread(here(params$mod_dir, "ag-high_all_models.qs"))
+lb       <- read_tsv(here(params$mod_dir, "ag-high_leaderboard.tsv.gz"))
 BEST_MLS <- qread(here(params$mod_dir, "ag-high_best_models.qs"))
 
 BEST_MLS$model <- BEST_MLS %>%
@@ -1722,12 +1997,20 @@ BEST_MLS$model <- BEST_MLS %>%
       h2o.loadModel()
   })
 
-TRAINING_CELLS <- unlist(BEST_MLS$train_data, use.names = FALSE)
-VALID_CELLS    <- unlist(BEST_MLS$valid_data, use.names = FALSE)
-TEST_CELLS     <- unlist(BEST_MLS$test_data, use.names = FALSE)
+# Load data splits used for training models
+data_splits <- qread(here(params$mod_dir, "data_splits.qs"))
+
+TRAINING_CELLS <- c("train", "valid", "feature") %>%
+  map(~ map(data_splits, pluck, .x)) %>%
+  unlist(use.names = FALSE)
 
 # Differentially expressed genes
-degs <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
+ml_degs <- read_tsv(here(params$mod_dir, "ag-high_features.tsv.gz"))
+degs    <- read_tsv(here(params$mod_dir, "ag-high_degs.tsv.gz"))
+
+ml_feats <- ml_degs %>%
+  split(.$list) %>%
+  map(~ unique(.x$feature))
 
 # RF features
 ML_FEATS <- read_tsv(here(params$mod_dir, "ag-high_features.tsv.gz"))

@@ -2,6 +2,7 @@
 ```{r "chikv setup"}
 # Check for saved predictions
 # * compare modification times to make sure models have not been re-trained
+# * will return TRUE if new_file is missing or is older than upstream_file
 predict_cells <- .check_mtime(
   upstream_file = here(params$mod_dir, "ag-high_best_models.qs"),
   new_file      = here(params$mod_dir, "ag-high_chikv_preds.qs")
@@ -43,7 +44,7 @@ chikv_clmns <- c(
 ```{r "chikv predict Ag-competent", eval = predict_cells}
 # Predict using models for each LEC subset
 chikv_preds <- BEST_MLS %>%
-  split(.$training_rank) %>%
+  split(.$model_label) %>%
   map(~ {
     .x %>%
       pmap_dfr(~ {
@@ -54,16 +55,13 @@ chikv_preds <- BEST_MLS %>%
           rownames()
         
         dat <- chikv_so %>%
-          subset(cells = cells) %>%
-          .prepare_ml_data(feats = ML_FEATS, class_clmn = NULL)
-        
-        pred <- args$predict_fn(as.h2o(dat)) %>%
-          pull(adj_pred) %>%
-          factor(levels = ag_lvls)
+          subset(cells = cells)
         
         res <- dat %>%
-          mutate(pred = pred) %>%
-          select(pred)
+          .predict_ml(
+            predict_fn = args$predict_fn,
+            class_clmn = NULL
+          )
         
         res
       })
@@ -74,7 +72,7 @@ chikv_preds %>%
   qsave(here(params$mod_dir, "ag-high_chikv_preds.qs"))
 ```
 
-```{r "chikv format data", include = FALSE}
+```{r "chikv format data 1", include = FALSE}
 # Load CHIKV predictions
 chikv_preds <- qread(here(params$mod_dir, "ag-high_chikv_preds.qs"))
 
@@ -120,17 +118,21 @@ CHIKV_FEATS %>%
       ) %>%
       mutate_meta(dplyr::rename, !!!syms(clmn_nms))
   })
+```
 
+```{r "chikv format data 2", include = FALSE}
 # Data for plotting
 # * cLEC Ag-high heatmap data, not all genes are in CHIKV object
 # * only pull module features for top model
-CHIKV_FEATS <- CHIKV_FEATS$cLEC$high
+# * include top 75 genes for figures
+CHIKV_FEATS <- CHIKV_FEATS[[rf_cell_type]]$high
 CHIKV_FEATS <- CHIKV_FEATS[CHIKV_FEATS %in% rownames(chikv_so)]
+CHIKV_FEATS <- head(CHIKV_FEATS, 70)
 
 fetch_feats <- c(
   "treatment", "rep", "lec_subtype",
   colnames(chikv_so@meta.data),
-  CHIKV_FEATS
+  unique(c(CHIKV_FEATS, "Icam1", "Mrc1"))
 ) %>%
   unique()
 
@@ -138,6 +140,19 @@ CHIKV_DAT <- chikv_so %>%
   FetchData(fetch_feats) %>%
   as_tibble(rownames = ".cell_id")
 
+# Add Icam1 groups
+CHIKV_DAT <- CHIKV_DAT %>%
+  mutate(
+    is_LEC = !(!!sym(CHIKV_TYPE_CLMN) %in% c("BEC", "unassigned")),
+    cut    = median(Icam1[is_LEC & Icam1 > 0]),
+    icam_grp = case_when(
+      Icam1 == 0   ~ "ICAM-lo",
+      Icam1 < cut  ~ "ICAM-mid",
+      Icam1 >= cut ~ "ICAM-hi"
+    ),
+    icam_grp = fct_relevel(icam_grp, c("ICAM-hi", "ICAM-mid", "ICAM-lo"))
+  )
+  
 rm(chikv_so)
 gc()
 ```

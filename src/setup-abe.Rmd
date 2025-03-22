@@ -310,7 +310,7 @@ hu_modules %>%
 # Predicate Ag-competent cells
 # * predictions are made only for the specific cell type
 abe_preds <- BEST_MLS %>%
-  split(.$training_rank) %>%
+  split(.$model_label) %>%
   map(~ {
     .x %>%
       pmap_dfr(~ {
