@@ -3141,6 +3141,23 @@
       ],
       "Hash": "88bb96eaf7140cdf29e374ef74182220"
     },
+    "h2o": {
+      "Package": "h2o",
+      "Version": "3.44.0.3",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "RCurl",
+        "graphics",
+        "jsonlite",
+        "methods",
+        "stats",
+        "tools",
+        "utils"
+      ],
+      "Hash": "abc5f6816dcdbe20daf85199eec2189c"
+    },
     "hardhat": {
       "Package": "hardhat",
       "Version": "1.3.0",
@@ -4442,16 +4459,6 @@
         "vctrs"
       ],
       "Hash": "1cba04a4e9414bdefc9dcaa99649a8dc"
-    },
-    "pzfx": {
-      "Package": "pzfx",
-      "Version": "0.3.0",
-      "Source": "Repository",
-      "Repository": "RSPM",
-      "Requirements": [
-        "xml2"
-      ],
-      "Hash": "c58e424997ba04370d99176d20002364"
     },
     "qs": {
       "Package": "qs",
@@ -5932,6 +5939,13 @@
         "R"
       ],
       "Hash": "5d4545e140e36476f35f20d0ca87963e"
+    },
+    "writexl": {
+      "Package": "writexl",
+      "Version": "1.5.2",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Hash": "63042aa8d4405d7bcefd8ae5e9027e44"
     },
     "xfun": {
       "Package": "xfun",

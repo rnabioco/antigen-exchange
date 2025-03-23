@@ -806,10 +806,11 @@ fetch_genes <- function(terms, mart) {
 #' @param sim_data Similarity data to use for simplifying GO terms, generated
 #' using [clusterProfiler::godata()]
 #' @param file Path to output file for saving results, do not include extension
-get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
-                   min_term_size = 10, db = "BP", simplify_terms = TRUE,
-                   n_bkgd = Inf, exclude_genes = "^(Rp[sl]|mt-)",
-                   org_db = org.Mm.eg.db, sim_data = go_sim_data, file = NULL) {
+get_go <- function(genes, so_in, cell_types = NULL, type_clmn = "subtype",
+                   max_term_size = 750, min_term_size = 10, db = "BP",
+                   simplify_terms = TRUE, n_bkgd = Inf,
+                   exclude_genes = "^(Rp[sl]|mt-)", org_db = org.Mm.eg.db,
+                   sim_data = go_sim_data, file = NULL) {
   
   # Check for save GO file
   # this function will save a tsv and a GO object
@@ -822,10 +823,18 @@ get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
     return(qread(obj_file))
   }
   
+  # Set cell types to use for background genes
+  if (is.null(cell_types)) {
+    cell_types <- names(genes)
+    
+  } else if (length(cell_types) != length(genes)) {
+    cli_abort("The length of `cell_types` must match the length of `genes`")
+  }
+  
   # Identify background gene set for each cell type
   # this includes all genes with >0 counts for any cell
   bkgd <- genes %>%
-    imap(~ {
+    map2(cell_types, ~ {
       bkgd <- NULL
       
       # so_in is required to determine background gene list
@@ -835,6 +844,8 @@ get_go <- function(genes, so_in, type_clmn = "subtype", max_term_size = 750,
           bkgd <- subset(so_in, !!sym(type_clmn) == .y)
           
         } else {
+          cli_warn("{.y} not in {type_clmn}, all genes used for background.")
+          
           bkgd <- so_in
         }
         
@@ -1890,18 +1901,7 @@ MODULE_FEATS <- BEST_MLS %>%
     .x %>%
       pull(model, subtype) %>%
       imap(~ {
-        ml <- .x
-        
-        if (grepl("^StackedEnsemble", .x@model_id)) {
-          ml <- .x@model$metalearner_model %>%
-            h2o.varimp() %>%
-            as_tibble() %>%
-            head(1) %>%
-            pull(variable) %>%
-            h2o.getModel()
-        }
-        
-        imprts <- ml@model$variable_importances %>%
+        imprts <- .x@model$variable_importances %>%
           as_tibble()
         
         imprts <- imprts %>%
@@ -1925,16 +1925,17 @@ MODULE_FEATS <- MODULE_FEATS %>%
           filter(list == typ, feature %in% fts) %>%
           group_by(feature) %>%
           filter(key == min(key)) %>%
-          filter(n_distinct(group) == 1) %>%
+          slice_min(padj) %>%
+          slice_min(pval) %>%
           slice_max(logFC) %>%
           ungroup()
           
         res %>%
           split(.$group) %>%
           map(~ {
-            gns <- unique(pull(.x, feature))
+            gns <- unique(.x$feature)
             
-            fts[fts %in% gns]
+            fts[fts %in% gns]  # keep previous feature ordering
           })
       })
   })

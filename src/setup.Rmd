@@ -55,9 +55,9 @@ library(ggtree)
 library(qs)
 library(openxlsx)
 library(xlsx)
+library(writexl)
 library(ComplexHeatmap)
 library(png)
-library(pzfx)
 
 # Tidyverse
 library(tidyverse)
@@ -2006,6 +2006,195 @@ markers <- markers %>%
 ```
 
 ```{r "theme"}
+# Plot levels
+mice <- unique(sam_info$mouse)
+tms  <- as.character(na.omit(unique(sam_info$tm)))
+vacs <- unique(sam_info$vaccination)
+
+# ggplot2 themes
+txt_pt1  <- 10
+txt_pt2  <- 12
+ttl_pt1  <- 14
+ttl_pt2  <- 16
+ln_pt    <- 0.5
+ln_col   <- "grey85"
+cir_size <- 3.5
+sqr_size <- 4
+
+txt_theme_1 <- theme(
+  strip.text   = element_text(size = ttl_pt2),
+  legend.text  = element_text(size = ttl_pt1),
+  axis.title   = element_text(size = ttl_pt2),
+  axis.text    = element_text(size = txt_pt2, color = "black"),
+  legend.title = element_text(size = ttl_pt2),
+)
+
+line_theme <- theme(
+  axis.line.x  = element_line(linewidth = ln_pt, color = ln_col),
+  axis.line.y  = element_line(linewidth = ln_pt, color = ln_col),
+  axis.ticks.x = element_line(linewidth = ln_pt, color = ln_col),
+  axis.ticks.y = element_line(linewidth = ln_pt, color = ln_col)
+)
+
+base_theme <- djvdj_theme() +
+  theme(
+    plot.title       = element_text(face = "plain", size = ttl_pt2),
+    strip.background = element_blank(),
+    strip.text       = element_text(face = "plain")
+  ) +
+  txt_theme_1
+
+umap_theme <- base_theme +
+  theme(
+    aspect.ratio = 0.9,
+    panel.border = element_rect(color = NA, fill = NA),
+    axis.title   = element_blank(),
+    axis.line.x  = element_blank(),
+    axis.line.y  = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text    = element_blank()
+  )
+
+umap_theme_2 <- umap_theme %+replace%
+  theme(panel.border = element_rect(colour = ln_col, linewidth = ln_pt, fill = NA))
+
+fade_0 <- "#FAFAFA"
+fade_1 <- "#F0F0F0"
+fade_2 <- "#D9D9D9"
+
+# Base colors
+typs <- unique(all_meta$cell_type)
+typs <- typs[typs != "unassigned"]
+
+ito_clrs <- c(
+  palette_OkabeIto[c(1:3, 5)], "#D7301F",
+  palette_OkabeIto[c(4, 6)],   "#6A51A3",
+  palette_OkabeIto[7],
+  "black"
+  # "#875C04",
+  # "#065D43", "#F7AF34", "#00446E"
+)
+
+clrs <- ito_clrs %>%
+  sort_colors("hue") %>%
+  interp_colors(n = length(typs)) %>%
+  spruce_colors(
+    difference = Inf,
+    order      = TRUE
+  )
+
+# Cell type colors
+other_clr <- "grey80"
+
+set_typs <- c(
+  "LEC", "DC", "Fibroblasts",
+  "BEC", "B cells", "unassigned"
+)
+
+set_clrs <- set_names(
+  c("#E7301F", "#56B4E9", "#BF73A6", "#0072B2", "#F0E442", other_clr),
+  set_typs
+)
+
+rm_clrs <- compare_colors(
+  set_clrs, clrs,
+  return_mat = TRUE
+) %>%
+  as_tibble(rownames = "other") %>%
+  pivot_longer(-other) %>%
+  filter(value < 15) %>%
+  pull(other)
+
+clrs <- clrs[!clrs %in% rm_clrs]
+
+clrs <- clrs %>%
+  assign_colors(names = typs[!typs %in% set_typs])
+
+typ_clrs <- c(set_clrs, clrs) %>%
+  spruce_colors(
+    difference     = Inf, 
+    order          = TRUE,
+    filter         = "deutan",
+    adjust_colors  = "ILC"
+  )
+
+# LEC colors
+lec_typs <- lec_so@meta.data %>%
+  pull(subtype) %>%
+  unique()
+
+set_typs <- c(
+  "cLEC", "fLEC", "Ptx3_LEC",
+  "Collecting", "tzLEC", "BEC",
+  "unassigned"
+)
+
+lec_clrs <- c()
+
+lec_clrs[set_typs] <- c(
+  "#E69F00", "#56B4E9", "#F0E442",
+  "#E7301F", "#000000", typ_clrs[["BEC"]],
+  other_clr
+)
+
+other_clrs <- typ_clrs[!typ_clrs %in% lec_clrs]
+
+other_clrs <- other_clrs %>%
+  assign_colors(lec_typs[!lec_typs %in% names(lec_clrs)])
+
+lec_clrs <- c(lec_clrs, other_clrs)
+
+lec_clrs <- lec_clrs %>%
+  sort_colors("hue") %>%
+  spruce_colors(
+    difference = Inf,
+    filter = "deutan",
+    exclude_colors = set_typs
+  )
+
+# DC colors
+dc_clrs <- dc_so@meta.data %>%
+  pull(subtype) %>%
+  unique()
+
+dc_clrs <- typ_clrs[!typ_clrs %in% lec_clrs] %>%
+  assign_colors(
+    dc_clrs,
+    difference = Inf,
+    filter = "deutan"
+  ) %>%
+  spruce_colors(
+    difference = Inf,
+    filter = "deutan"
+  )
+
+dc_clrs["unassigned"] <- other_clr
+
+# Tm colors
+tm_clrs <- set_names(
+  clrs[seq_along(tms)],
+  unname(tms)
+)
+
+tm_clrs[3] <- "#6A51A3"
+tm_clrs[4] <- "#E7301F"
+
+# Sample keys
+mouse_key <- lec_so@meta.data %>%
+  distinct(mouse, orig.ident)
+
+mouse_key <- set_names(
+  mouse_key$mouse, mouse_key$orig.ident
+)
+
+tm_key <- sam_info %>%
+  distinct(tm, mouse)
+
+tm_key <- set_names(tm_key$tm, tm_key$mouse)
+```
+
+```{r "theme OLD", eval = FALSE}
 # Plot levels
 mice <- unique(sam_info$mouse)
 tms  <- as.character(na.omit(unique(sam_info$tm)))

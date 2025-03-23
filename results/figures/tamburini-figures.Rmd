@@ -1478,6 +1478,8 @@ rf_venn <- MODULE_FEATS[[1]][rf_typs] %>%
 ```
 
 ```{r "ML GO"}
+# ## DOUBLE CHECK GO ANALYSIS ##
+
 # Term similarity for simplifying terms
 dbs <- set_names(c("BP", "CC", "MF"))
 
@@ -1499,9 +1501,25 @@ go_res <- rf_grps %>%
   map_dfr(~ {
     grp <- .x
     
-    go_feats <- MODULE_FEATS[[1]][rf_typs] %>%
-      map(pluck, grp)
+    # Set features to test
+    go_feats <- MODULE_FEATS %>%
+      imap(~ {
+        .x[rf_typs] %>%
+          map(pluck, grp)
+      })
     
+    go_types <- go_feats %>%
+      map(names) %>%
+      c(recursive = TRUE, use.names = FALSE)
+    
+    go_feats <- go_feats %>%
+      imap(~ {
+        nms <- str_c(names(.), "-Ag-", grp, "-model ", .y)
+        set_names(.x, nms)
+      }) %>%
+      flatten()
+    
+    # Run GO analysis
     go_sim_data %>%
       imap_dfr(~ {
         file <- str_c("ag-", grp, "_", .y, "_go")
@@ -1510,6 +1528,7 @@ go_res <- rf_grps %>%
         res <- go_feats %>%
           get_go(
             lec_so,
+            cell_types     = go_types,
             type_clmn      = "subtype",
             max_term_size  = 1000,
             min_term_size  = 10,
@@ -1521,7 +1540,13 @@ go_res <- rf_grps %>%
         
         res@compareClusterResult %>%
           as_tibble() %>%
-          mutate(db = .y, ml_pred_1_grp = grp)
+          mutate(
+            cell_type   = str_extract(Cluster, "^[^-]+"),
+            model_name  = str_extract(Cluster, "model [0-9]+"),
+            gene_module = str_extract(Cluster, "Ag-[^-]+"),
+            .after      = Cluster
+          ) %>%
+          mutate(db = .y, .after = Description)
       })
   })
 
@@ -1535,12 +1560,12 @@ go_sig <- go_res %>%
 # Plot top CC GO terms
 # * only plot top BP and CC terms
 go_fig <- go_sig %>%
-  # filter(db %in% c("CC", "BP")) %>%
-  group_by(db, Cluster, ml_pred_1_grp) %>%
+  filter(model_name == "model 1") %>%
+  group_by(db, Cluster, gene_module) %>%
   slice(1:5) %>%
   ungroup() %>%
   arrange(p.adjust) %>%
-  split(.$ml_pred_1_grp) %>%
+  split(.$gene_module) %>%
   imap(~ {
     dat <- .x %>%
       mutate(
@@ -1555,7 +1580,7 @@ go_fig <- go_sig %>%
     y_labs <- set_names(y_labs$Description, y_labs$y_var)
     
     dat %>%
-      ggplot(aes(-log10(p.adjust), y_var, fill = Cluster)) +
+      ggplot(aes(-log10(p.adjust), y_var, fill = cell_type)) +
       geom_col() +
       geom_vline(xintercept = -log10(0.05), color = "black", linetype = 2) +
       geom_text(
@@ -1563,8 +1588,8 @@ go_fig <- go_sig %>%
         hjust = -0.1
       ) +
       
-      facet_grid(space = "free", scales = "free_y", rows = vars(Cluster)) +
-      labs(title = str_c("Ag-", .y), x = "-log10(p-value)") +
+      facet_grid(space = "free", scales = "free_y", rows = vars(cell_type)) +
+      labs(title = .y, x = "-log10(p-value)") +
       scale_x_continuous(expand = expansion(c(0, 0.35))) +
       scale_y_discrete(labels = y_labs) +
       scale_fill_manual(values = lec_clrs) +
@@ -1634,16 +1659,6 @@ naive_fig <- plot_grid(
   labels     = c("D", "E"),
   label_size = ttl_pt2 * 1.5
 )
-
-# naive_fig <- plot_grid(
-#   plotlist = append(naive_fig, list(NULL)),
-#   nrow  = 1,
-#   align = "h",
-#   axis  = "tb",
-#   rel_widths = c(1, 1, 0.5),
-#   labels     = c("D", "E", ""),
-#   label_size = ttl_pt2 * 1.5
-# )
 ```
 
 ```{r "ML module specificity data", include = FALSE}
@@ -2107,32 +2122,51 @@ res <- get_go(
 
 ### Table S1
 
-Stats are included for classification models.
+Training, validation, and testing metrics are included for classification
+models.
 
 ```{r "Table S1"}
 rf_clmns <- c(
   "F1", "Balanced Accuracy",
   "Specificity", "Sensitivity",
-  "Precision"
+  "Precision", "Prevalence",
+  "Detection Rate", "Detection Prevalence"
 )
 
 tbl_s1 <- BEST_MLS %>%
-  filter(subtype %in% rf_typs) %>%
   select(
-    cell_type = subtype,
+    subtype,
     algorithm,
     model_id,
+    model_label
+  ) %>%
+  left_join(lb, by = c("subtype", "model_id", "algorithm")) %>%
+  select(
+    cell_type = subtype,
     model_name = model_label,
+    model_id,
+    algorithm,
+    data_split = data,
     all_of(rf_clmns)
   ) %>%
   mutate(
+    data_split = recode(
+      data_split,
+      train = "training",
+      valid = "validation",
+      test  = "testing"
+    ),
     cell_type  = fct_relevel(cell_type, rf_typs),
+    data_split = fct_relevel(data_split, c("training", "validation", "testing")),
     model_name = str_c("model ", model_name)
   ) %>%
-  arrange(cell_type, model_name)
+  arrange(cell_type, model_name, data_split)
 
 tbl_s1 %>%
-  write_tsv(here(params$table_dir, "table_s1.tsv"))
+  write_xlsx(
+    here(params$table_dir, "table_s1.xlsx"),
+    format_headers = FALSE
+  )
 
 tbl_s1
 ```
@@ -2149,24 +2183,46 @@ the Ag-low and Ag-high gene modules.
 
 ```{r "Table S2"}
 tbl_s2 <- BEST_MLS %>%
-  filter(model_label == 1) %>%
-  pmap_dfr(~ {
-    args <- list(...)
+  mutate(subtype = fct_relevel(subtype, rf_typs)) %>%
+  arrange(subtype) %>%
+  mutate(
+    across(c(model_label, subtype), ~ as.character(.x)),
+    sheet = str_c(subtype, "-model ", model_label)
+  ) %>%
+  split(.$sheet) %>%
+  map(~ {
+    fts <- MODULE_FEATS[[.x$model_label]][[.x$subtype]]
     
-    args$model@model$variable_importances %>%
+    tbl <- .x$model[[1]]@model$variable_importances %>%
       as_tibble() %>%
       mutate(
-        subtype   = args$subtype,
-        algorithm = args$algorithm,
-        rank      = row_number(),
-        .before   = 1
+        rank       = row_number(),
+        subtype    = .x$subtype,
+        model_name = str_c("model ", .x$model_label),
+        algorithm  = .x$algorithm,
+        .before    = 1
+      ) %>%
+      mutate(
+        gene_module = map_chr(variable, ~ {
+          case_when(
+            .x %in% fts$high ~ "Ag-high",
+            .x %in% fts$low  ~ "Ag-low",
+            TRUE             ~ "none"
+          )
+        }),
+        .before = variable
       )
+    
+    tbl
   })
 
 tbl_s2 %>%
-  write_tsv(here(params$table_dir, "table_s2.tsv"))
+  write_xlsx(
+    here(params$table_dir, "table_s2.xlsx"),
+    format_headers = FALSE
+  )
 
-tbl_s2
+bind_rows(tbl_s2)
 ```
 
 <br>
@@ -2175,8 +2231,7 @@ tbl_s2
 
 ### Table S3
 
-Gene ontology terms are shown for
-Ag-low and Ag-high cells.
+Gene ontology terms are shown for Ag-low and Ag-high cells.
 
 ```{r "Table S3"}
 ex_clmns <- c(
@@ -2186,14 +2241,16 @@ ex_clmns <- c(
 )
 
 tbl_s3 <- go_sig %>%
-  rename(Ag_class = ml_pred_1_grp, cell_type = Cluster) %>%
-  mutate(Ag_class = str_c("Ag-", Ag_class)) %>%
-  arrange(cell_type, Ag_class, p.adjust) %>%
-  select(-all_of(c(ex_clmns))) %>%
-  relocate(Ag_class, .after = cell_type)
+  mutate(cell_type = fct_relevel(cell_type, rf_typs)) %>%
+  arrange(cell_type, p.adjust) %>%
+  select(-all_of(c(ex_clmns)))
   
 tbl_s3 %>%
-  write_tsv(here(params$table_dir, "table_s3.tsv"))
+  split(.$Cluster) %>%
+  write_xlsx(
+    here(params$table_dir, "table_s3.xlsx"),
+    format_headers = FALSE
+  )
 
 tbl_s3
 ```

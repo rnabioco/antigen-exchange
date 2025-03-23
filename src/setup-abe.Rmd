@@ -80,8 +80,7 @@ abe_clrs <- c(
 ```{r "abe process data", eval = create_sobjs}
 # Load matrices
 data_dir <- here("data/abe")
-
-meta <- read_tsv(here(data_dir, "metadata/sample_file.tsv"))
+meta     <- read_tsv(here(data_dir, "metadata/sample_file.tsv"))
 
 # For some reason there are duplicate files with the same name/MD5
 # remove these duplicates
@@ -247,7 +246,7 @@ abe_lec_so <- load_obj(here(params$abe_dir, "abe_lec_so.qs"))
 # * get server error when using default host
 host   <- "https://dec2021.archive.ensembl.org"
 biomrt <- "ensembl"
-h_mart <- useEnsembl(biomrt, dataset = "hsapiens_gene_ensembl", host = host)
+h_mart <- useEnsembl(biomrt, dataset = "hsapiens_gene_ensembl",  host = host)
 m_mart <- useEnsembl(biomrt, dataset = "mmusculus_gene_ensembl", host = host)
 
 hlogs <- getLDS(
