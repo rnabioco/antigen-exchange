@@ -1012,17 +1012,19 @@ create_module_scatter <- function(df_in, ag_clmns, module_clmns, module_title,
     ) %>%
     group_by(subtype, ag_clmn, min_score, max_score) %>%
     summarize(
-      cor_res = list(cor.test(!!sym(module_title), `Ag-score`, method = "spearman")),
-      cor     = map_dbl(cor_res, ~ .x$estimate[[1]]),
-      p_val   = map_dbl(cor_res, ~ .x$p.value),
-      n       = n_distinct(.cell_id),  # tricky to include commas with plotmath
-      # n       = label_comma()(n_distinct(.cell_id)),
+      s_res = list(cor.test(!!sym(module_title), `Ag-score`, method = "spearman")),
+      s     = map_dbl(s_res, ~ .x$estimate[[1]]),
+      s_p   = map_dbl(s_res, ~ .x$p.value),
+      p_res = list(cor.test(!!sym(module_title), `Ag-score`, method = "pearson")),
+      p     = map_dbl(p_res, ~ .x$estimate[[1]]),
+      p_p   = map_dbl(p_res, ~ .x$p.value),
+      n     = n_distinct(.cell_id),  # tricky to include commas with plotmath
       .groups = "drop"
     ) %>%
-    mutate(p_adj = p.adjust(p_val, method = "BH")) %>%
+    mutate(p_adj = p.adjust(s_p, method = "BH")) %>%
     rowwise() %>%
     mutate(
-      r_lab = str_c("italic(r[s]) == ", round(cor, digits = 2)),
+      r_lab = str_c("italic(r[s]) == ", round(s, digits = 2)),
       p_lab = str_c("italic(p) == ", .format_pvalue(p_adj)),
       n_lab = str_c("n == ", n)
     )
@@ -1577,6 +1579,17 @@ cd45neg_so <- cd45neg_so %>%
     cell_type = recode(cell_type, `Stromal cells` = "Fibroblasts"),
     subtype   = cell_type
   )
+
+# Group monocytes and macrophages together
+cd45neg_so <- cd45neg_so %>%
+  mutate_meta(
+    mutate,
+    cell_type = recode(
+      cell_type,
+      Macrophages = "Mon/Mac",
+      Monocytes   = "Mon/Mac"
+    )
+  )
 ```
 
 ```{r "CD45+ samples", eval = create_sobjs}
@@ -1651,6 +1664,17 @@ cd45pos_so <- cd45pos_so %>%
     cell_type = str_remove(rough_type, " \\(.+$"),
     subtype   = cell_type,
     cell_type = ifelse(grepl("DC", cell_type), "DC", cell_type)
+  )
+
+# Group monocytes and macrophages together
+cd45pos_so <- cd45pos_so %>%
+  mutate_meta(
+    mutate,
+    cell_type = recode(
+      cell_type,
+      Macrophages = "Mon/Mac",
+      Monocytes   = "Mon/Mac"
+    )
   )
 ```
 
@@ -1836,12 +1860,12 @@ cd45neg_so <- cd45neg_so %>%
   })
 ```
 
-```{r "epithelial cells", eval = create_sobjs}
+```{r "assess epithelial cells", eval = create_sobjs}
 # Re-assess epithelial cell annotations
 # * Re-annotate epithelial cells using a merged reference containing Immgen
 #   data and FRC subsets
-# * FRC object will not include updated annotations, but these subsets are not
-#   included in the paper
+# * FRC object will not include updated annotations, this is okay since FRC
+#   subsets are not included in the paper
 
 # Cluster epithelial cells
 epi_so <- cd45neg_so %>%
@@ -1855,7 +1879,7 @@ epi_so <- epi_so %>%
   FindNeighbors(dims = 1:40) %>%
   FindClusters(resolution = c(0.2, 0.5, 1))
 
-# Re-annotate cell clusters
+# Merge annotations
 # * used merged annotation that includes immgen and frc cell types
 ref_gns   <- rownames(ref_frc)
 ref_gns   <- ref_gns[ref_gns %in% rownames(ref_immgen)]
@@ -1865,18 +1889,22 @@ ref_types <- ref_types[!ref_types %in% colnames(ref_immgen)]
 ref_merge <- ref_frc[ref_gns, ref_types]
 ref_merge <- bind_cols(ref_merge, ref_immgen[ref_gns, ])
 
+# Re-annotate cell clusters
+epi_clsts <- "RNA_snn_res.1"
+
 epi_so <- epi_so %>%
   mutate_meta(
     select,
     -any_of(c("type", "r", "UMAP_1", "UMAP_2"))
   ) %>%
   clustify(
-    ref_mat     = ref_merge,
-    cluster_col = "RNA_snn_res.1",
-    n_genes     = 2000
+    ref_mat     = ref_immgen,
+    cluster_col = epi_clsts,
+    n_genes     = 2000,
+    threshold   = 0.55
   )
 
-epi_ann <- epi_so %>%
+epi_so <- epi_so %>%
   mutate_meta(
     mutate,
     cell_type = str_remove(type, " \\(.+$"),
@@ -1885,10 +1913,21 @@ epi_ann <- epi_so %>%
       cell_type,
       "Fibroblasts"
     )
-  ) %>%
-  FetchData("cell_type")
+  )
+
+epi_so <- epi_so %>%
+  classify_markers(
+    feats    = c("Ptprc", "Pdpn", "Pecam1"),
+    filt     = Ptprc < 0.5 & Pdpn > 0.5 & Pecam1 < 0.5,
+    type     = "Fibroblasts",
+    clst_col = epi_clsts,
+    type_col = "cell_type"
+  )
 
 # Add adjusted annotations back to original object
+epi_ann <- epi_so %>%
+  FetchData("cell_type")
+
 cd45neg_so <- cd45neg_so %>%
   AddMetaData(epi_ann, col.name = "new_type") %>%
   mutate_meta(~ {
@@ -1954,7 +1993,7 @@ dc_so <- dc_so %>%
   AddMetaData(ag_data)
 ```
 
-```{r "save seurat objects", eval = create_sobjs}
+```{r "save seurat objects", include = FALSE, eval = create_sobjs}
 # Save meta.data for all cells combined
 all_meta <- list(cd45neg_so, cd45pos_so) %>%
   map_dfr(~ .x@meta.data) %>%
@@ -1970,7 +2009,17 @@ save_objs(lec_so,     ob_dir = params$so_dir)
 save_objs(frc_so,     ob_dir = params$so_dir)
 save_objs(dc_so,      ob_dir = params$so_dir)
 
+# Save small objects
+cd45neg_so %>%
+  DietSeurat(counts = FALSE, dimreducs = NULL) %>%
+  save_objs(prfx = "cd45neg_small", ob_dir = params$so_dir)
+
+cd45pos_so %>%
+  DietSeurat(counts = FALSE, dimreducs = NULL) %>%
+  save_objs(prfx = "cd45pos_small", ob_dir = params$so_dir)
+
 rm(all_meta, cd45neg_so, cd45pos_so, lec_so, frc_so, dc_so)
+gc()
 ```
 
 ```{r "load seurat objects"}
@@ -2062,7 +2111,9 @@ umap_theme_2 <- umap_theme %+replace%
 fade_0 <- "#FAFAFA"
 fade_1 <- "#F0F0F0"
 fade_2 <- "#D9D9D9"
+```
 
+```{r "colors"}
 # Base colors
 typs <- unique(all_meta$cell_type)
 typs <- typs[typs != "unassigned"]
@@ -2072,17 +2123,10 @@ ito_clrs <- c(
   palette_OkabeIto[c(4, 6)],   "#6A51A3",
   palette_OkabeIto[7],
   "black"
-  # "#875C04",
-  # "#065D43", "#F7AF34", "#00446E"
 )
 
 clrs <- ito_clrs %>%
-  sort_colors("hue") %>%
-  interp_colors(n = length(typs)) %>%
-  spruce_colors(
-    difference = Inf,
-    order      = TRUE
-  )
+  sort_colors("hue")
 
 # Cell type colors
 other_clr <- "grey80"
@@ -2093,7 +2137,7 @@ set_typs <- c(
 )
 
 set_clrs <- set_names(
-  c("#E7301F", "#56B4E9", "#BF73A6", "#0072B2", "#F0E442", other_clr),
+  c("#D7301F", "#56B4E9", "#BF73A6", "#0072B2", "#F0E442", other_clr),
   set_typs
 )
 
@@ -2112,247 +2156,50 @@ clrs <- clrs %>%
   assign_colors(names = typs[!typs %in% set_typs])
 
 typ_clrs <- c(set_clrs, clrs) %>%
-  spruce_colors(
-    difference     = Inf, 
-    order          = TRUE,
-    filter         = "deutan",
-    adjust_colors  = "ILC"
-  )
+  sort_colors("hue")
 
 # LEC colors
 lec_typs <- lec_so@meta.data %>%
   pull(subtype) %>%
   unique()
 
-set_typs <- c(
-  "cLEC", "fLEC", "Ptx3_LEC",
-  "Collecting", "tzLEC", "BEC",
-  "unassigned"
+lec_clrs <- c(
+  cLEC       = "#E69F00",
+  fLEC       = "#56B4E9",
+  Ptx3_LEC   = "#F0E442",
+  Collecting = "#D7301F",
+  tzLEC      = "#000000",
+  Marco_LEC  = "#009E73",
+  Valve      = "#6A51A3",
+  BEC        = typ_clrs[["BEC"]],
+  unassigned = other_clr
 )
 
-lec_clrs <- c()
-
-lec_clrs[set_typs] <- c(
-  "#E69F00", "#56B4E9", "#F0E442",
-  "#E7301F", "#000000", typ_clrs[["BEC"]],
-  other_clr
-)
-
-other_clrs <- typ_clrs[!typ_clrs %in% lec_clrs]
-
-other_clrs <- other_clrs %>%
-  assign_colors(lec_typs[!lec_typs %in% names(lec_clrs)])
-
-lec_clrs <- c(lec_clrs, other_clrs)
-
-lec_clrs <- lec_clrs %>%
-  sort_colors("hue") %>%
-  spruce_colors(
-    difference = Inf,
-    filter = "deutan",
-    exclude_colors = set_typs
-  )
+if (!all(lec_typs %in% names(lec_clrs))) cli_abort("Need more colors")
 
 # DC colors
-dc_clrs <- dc_so@meta.data %>%
+dc_typs <- dc_so@meta.data %>%
   pull(subtype) %>%
   unique()
 
-dc_clrs <- typ_clrs[!typ_clrs %in% lec_clrs] %>%
-  assign_colors(
-    dc_clrs,
-    difference = Inf,
-    filter = "deutan"
-  ) %>%
-  spruce_colors(
-    difference = Inf,
-    filter = "deutan"
-  )
+dc_clrs <- c(
+  "#6A51A3",
+  "#009E73",
+  "#D7301F",
+  "#0072B2",
+  "#CC79A7"
+)
+
+dc_clrs <- dc_clrs %>%
+  assign_colors(dc_typs)
 
 dc_clrs["unassigned"] <- other_clr
 
 # Tm colors
 tm_clrs <- set_names(
-  clrs[seq_along(tms)],
+  c("grey55", "#E69F00", "#6A51A3", "#D7301F"),
   unname(tms)
 )
-
-tm_clrs[3] <- "#6A51A3"
-tm_clrs[4] <- "#E7301F"
-
-# Sample keys
-mouse_key <- lec_so@meta.data %>%
-  distinct(mouse, orig.ident)
-
-mouse_key <- set_names(
-  mouse_key$mouse, mouse_key$orig.ident
-)
-
-tm_key <- sam_info %>%
-  distinct(tm, mouse)
-
-tm_key <- set_names(tm_key$tm, tm_key$mouse)
-```
-
-```{r "theme OLD", eval = FALSE}
-# Plot levels
-mice <- unique(sam_info$mouse)
-tms  <- as.character(na.omit(unique(sam_info$tm)))
-vacs <- unique(sam_info$vaccination)
-
-# ggplot2 themes
-txt_pt1  <- 10
-txt_pt2  <- 12
-ttl_pt1  <- 14
-ttl_pt2  <- 16
-ln_pt    <- 0.5
-ln_col   <- "grey85"
-cir_size <- 3.5
-sqr_size <- 4
-
-txt_theme_1 <- theme(
-  strip.text   = element_text(size = ttl_pt2),
-  legend.text  = element_text(size = ttl_pt1),
-  axis.title   = element_text(size = ttl_pt2),
-  axis.text    = element_text(size = txt_pt2, color = "black"),
-  legend.title = element_text(size = ttl_pt2),
-)
-
-line_theme <- theme(
-  axis.line.x  = element_line(linewidth = ln_pt, color = ln_col),
-  axis.line.y  = element_line(linewidth = ln_pt, color = ln_col),
-  axis.ticks.x = element_line(linewidth = ln_pt, color = ln_col),
-  axis.ticks.y = element_line(linewidth = ln_pt, color = ln_col)
-)
-
-base_theme <- djvdj_theme() +
-  theme(
-    plot.title       = element_text(face = "plain", size = ttl_pt2),
-    strip.background = element_blank(),
-    strip.text       = element_text(face = "plain")
-  ) +
-  txt_theme_1
-
-umap_theme <- base_theme +
-  theme(
-    aspect.ratio = 0.9,
-    panel.border = element_rect(color = NA, fill = NA),
-    axis.title   = element_blank(),
-    axis.line.x  = element_blank(),
-    axis.line.y  = element_blank(),
-    axis.ticks.x = element_blank(),
-    axis.ticks.y = element_blank(),
-    axis.text    = element_blank()
-  )
-
-umap_theme_2 <- umap_theme %+replace%
-  theme(panel.border = element_rect(colour = ln_col, linewidth = ln_pt, fill = NA))
-
-fade_0 <- "#FAFAFA"
-fade_1 <- "#F0F0F0"
-fade_2 <- "#D9D9D9"
-
-# Base colors
-typs <- unique(all_meta$cell_type)
-typs <- typs[typs != "unassigned"]
-
-ito_clrs <- c(
-  palette_OkabeIto[c(1:3, 5)], "#D7301F",
-  palette_OkabeIto[c(4, 6)],   "#6A51A3",
-  palette_OkabeIto[7],
-  "black"
-  # "#875C04",
-  # "#065D43", "#F7AF34", "#00446E"
-)
-
-clrs <- ito_clrs %>%
-  sort_colors("hue") %>%
-  interp_colors(n = length(typs)) %>%
-  spruce_colors(
-    difference = Inf,
-    order      = TRUE
-  )
-
-# Cell type colors
-other_clr <- "grey80"
-
-typ_clrs <- set_clrs <- clrs %>%
-  assign_colors(typs, filter = "deutan")
-
-# typ_clrs["unnassigned"] <- other_clr
-
-set_typs <- c(
-  "LEC", "DC", "Fibroblasts",
-  "BEC", "B cells", "unassigned"
-)
-
-typ_clrs[set_typs] <- c(
-  "#E7301F", "#56B4E9", "#BF73A6",
-  "#0072B2", "#F0E442", other_clr
-)
-
-typ_clrs <- typ_clrs %>%
-  spruce_colors(
-    difference = 15,
-    filter = "deutan",
-    exclude_colors = set_typs
-  )
-
-# LEC colors
-lec_typs <- lec_so@meta.data %>%
-  pull(subtype) %>%
-  unique()
-
-set_typs <- c(
-  "cLEC", "fLEC", "Ptx3_LEC",
-  "Collecting", "tzLEC", "BEC",
-  "unassigned"
-)
-
-lec_clrs <- c()
-
-lec_clrs[set_typs] <- c(
-  "#E69F00", "#56B4E9", "#F0E442",
-  "#E7301F", "#000000", "#0072B2",  # typ_clrs[["BEC"]],
-  other_clr
-)
-
-other_clrs <- typ_clrs[!typ_clrs %in% lec_clrs]
-
-other_clrs <- other_clrs %>%
-  assign_colors(lec_typs[!lec_typs %in% names(lec_clrs)])
-
-lec_clrs <- c(lec_clrs, other_clrs)
-
-lec_clrs <- lec_clrs %>%
-  sort_colors("hue") %>%
-  spruce_colors(
-    difference = Inf,
-    filter = "deutan",
-    exclude_colors = set_typs
-  )
-
-# DC colors
-dc_clrs <- dc_so@meta.data %>%
-  pull(subtype) %>%
-  unique()
-
-dc_clrs <- typ_clrs[!typ_clrs %in% lec_clrs] %>%
-  assign_colors(dc_clrs)
-
-dc_clrs["unassigned"] <- other_clr
-
-# Mouse colors
-m_clrs <- set_names(clrs[seq_along(mice)], mice)
-
-# Tm colors
-tm_clrs <- set_names(
-  clrs[seq_along(tms)],
-  unname(tms)
-)
-
-tm_clrs[3] <- "#6A51A3"
-tm_clrs[4] <- "#E7301F"
 
 # Sample keys
 mouse_key <- lec_so@meta.data %>%

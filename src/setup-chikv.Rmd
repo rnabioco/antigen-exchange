@@ -44,7 +44,7 @@ chikv_clmns <- c(
 ```{r "chikv predict Ag-competent", eval = predict_cells}
 # Predict using models for each LEC subset
 chikv_preds <- BEST_MLS %>%
-  split(.$model_label) %>%
+  split(.$model_name) %>%
   map(~ {
     .x %>%
       pmap_dfr(~ {

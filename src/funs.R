@@ -1,6 +1,31 @@
 
 # Utility ----
 
+#' Save figure as TIFF
+#' 
+#' @param plt Plot to save
+#' @param prefix File prefix to use for naming
+#' @param w Width
+#' @param h Height
+#' @param mtplyr Fraction to increase final image size by, this is helpful
+#' since for TIFFs the font size appears slightly larger when saved 
+#' @param dir Directory path to save file
+#' @param dev Device to use for saving image
+#' @export
+.save_fig <- function(plt, prefix, w = 13, h = 12, mtplyr = 0,
+                      dir = here("results/figures/tiffs"), dev = "tiff") {
+  
+  plt %>%
+    ggsave(
+      filename = here(dir, str_c(prefix, ".", dev)),
+      device   = dev,
+      width    = w + (w * mtplyr),
+      height   = h + (h * mtplyr),
+      dpi      = 600,
+      bg       = "white"
+    )
+}
+
 #' Save Seurat object and meta.data
 #' 
 #' @param ob_in Seurat object to save.
@@ -687,4 +712,66 @@ cluster_signal <- function(sobj_in, data_column, k = 2, grp_column = NULL,
     djvdj::mutate_meta(mutate, !!sym(clust_column) := replace_na(!!sym(clust_column), "other"))
   
   res
+}
+
+# Plotting ----
+
+.create_umap <- function(dat, dat_clmn = "subtype", clrs, ...) {
+  n_dat <- dat %>%
+    group_by(!!sym(dat_clmn)) %>%
+    summarize(
+      n       = n_distinct(.cell_id),
+      hUMAP_1 = mean(hUMAP_1),
+      hUMAP_2 = mean(hUMAP_2),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      !!sym(dat_clmn) := fct_reorder(!!sym(dat_clmn), n, .desc = TRUE),
+      !!sym(dat_clmn) := fct_relevel(!!sym(dat_clmn), "unassigned", after = Inf)
+    ) %>%
+    arrange(!!sym(dat_clmn)) %>%
+    mutate(
+      rank = row_number(!!sym(dat_clmn)),
+      rank = if_else(!!sym(dat_clmn) == "unassigned", NA, rank),
+      lgnd = if_else(
+        !!sym(dat_clmn) != "unassigned",
+        str_c(rank, "-", !!sym(dat_clmn)),
+        !!sym(dat_clmn)
+      ),
+      lgnd = str_c(lgnd, "\n   (", label_comma()(n), ")")
+    )
+  
+  plt <- dat %>%
+    plot_scatter(
+      dat_clmn, "hUMAP_1", "hUMAP_2",
+      size         = 0.1,
+      label_params = list(size = ttl_pt1),
+      panel_nrow   = 2,
+      plot_lvls    = levels(n_dat[[dat_clmn]])
+    ) +
+    geom_text_repel(
+      aes(label = rank),
+      data     = na.omit(n_dat),
+      color    = "black",
+      fontface = "bold",
+      size     = txt_pt2 / .pt,
+      seed     = 42,
+      force    = 0.001,
+      min.segment.length = Inf,
+      ...
+    ) +
+    guides(color = guide_legend(ncol = 1, override.aes = list(size = 4), reverse = TRUE)) +
+    scale_color_manual(
+      values = clrs,
+      labels = set_names(n_dat$lgnd, n_dat[[dat_clmn]])
+    ) +
+    umap_theme +
+    theme(
+      aspect.ratio    = 0.9,
+      legend.position = "right",
+      legend.title    = element_blank(),
+      legend.text     = element_text(size = txt_pt2)
+    )
+  
+  plt
 }

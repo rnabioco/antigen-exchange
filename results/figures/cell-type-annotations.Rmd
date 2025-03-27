@@ -1,20 +1,449 @@
 
-## Cell annotations
+```{r "cell type functions"}
+.create_marker_boxes <- function(dat, gns, clrs = unname(typ_clrs),
+                                 footer = "\n\n<br>\n\n") {
+  gns %>%
+    walk(~ {
+      cat("\n\n####", .x, "\n\n")
+      
+      dat <- dat %>%
+        filter(name == .x) %>%
+        group_by(cell_type, mouse) %>%
+        mutate(
+          n = n_distinct(.cell_id),
+          n_lab = str_c(cell_type, " (", label_comma()(n), ")")
+        ) %>%
+        group_by(cell_type) %>%
+        mutate(
+          med = median(value),
+          q3  = boxplot.stats(value)$stats[4],
+          q4  = boxplot.stats(value)$stats[5],
+          max = max(value)
+        ) %>%
+        ungroup() %>%
+        arrange(desc(med), desc(q3), desc(q4), desc(max)) %>%
+        mutate(n_lab = fct_inorder(n_lab))
+      
+      plt <- dat %>%
+        ggplot(aes(n_lab, value, fill = cell_type, color = cell_type)) +
+        geom_boxplot(alpha = 0.5, outlier.size = 0.25) +
+        facet_wrap(~ mouse, nrow = 1, scales = "free_x") +
+        scale_fill_manual(values = clrs) +
+        scale_color_manual(values = clrs) +
+        labs(y = str_c(.x, " expression")) +
+        base_theme +
+        theme(
+          aspect.ratio    = 1,
+          axis.text.x     = element_text(angle = 90, hjust = 1, vjust = 0.5),
+          axis.title.x    = element_blank(),
+          legend.position = "none"
+        )
+      
+      print(plt)
+      cat(footer)
+    })
+}
 
-```{r "format CD45- marker data", include = FALSE}
+.create_cluster_heats <- function(dat, x_clmn, n_min = 20, footer = "\n\n<br>\n\n<br>\n\n") {
+  dat <- dat %>%
+    group_by(!!sym(x_clmn), cell_type, mouse, name) %>%
+    summarize(
+      value = mean(value),
+      n = n_distinct(.cell_id),
+      .groups = "drop"
+    ) %>%
+    group_by(cell_type, mouse, name) %>%
+    filter(row_number(desc(n)) < 10 & n > n_min) %>%
+    group_by(name, mouse) %>%
+    mutate(value = as.numeric(scale(value))) %>%
+    group_by(cell_type, mouse, name) %>%
+    filter(!all(is.na(value))) %>%
+    ungroup() %>%
+    mutate(
+      x_var = str_c(mouse, "-", cell_type, "-", !!sym(x_clmn)),
+      x_lab = if_else(n >= 1000, str_c(round(n / 1000, 1), "k"), as.character(n)),
+      x_lab = str_c(!!sym(x_clmn), " (", x_lab, ")")
+    ) %>%
+    mutate(x_var = fct_reorder(x_var, n, .desc = TRUE))
+  
+  x_labs <- dat %>%
+    distinct(x_var, x_lab) %>%
+    pull(x_lab, x_var)
+  
+  # Create heatmaps
+  dat$mouse %>%
+    levels() %>%
+    rev() %>%
+    walk(~ {
+      cat("\n\n####", .x, "\n\n")
+      
+      plt <- dat %>%
+        filter(mouse == .x) %>%
+        ggplot(aes(x_var, name, fill = value)) +
+        geom_tile(color = ln_col) +
+        facet_grid(~ cell_type, space = "free_x", scales = "free_x") +
+        scale_fill_gradientn(colours = c("white", "red")) +
+        scale_x_discrete(labels = x_labs) +
+        labs(x = "cluster (# of cells)") +
+        base_theme +
+        theme(
+          legend.ticks = element_blank(),
+          legend.key.width = unit(7, "pt"),
+          legend.title = element_blank(),
+          strip.clip   = "off",
+          strip.text   = element_text(size = txt_pt2, angle = 90, hjust = 0.1, vjust = 0.5),
+          axis.title.y = element_blank(),
+          axis.text.x  = element_text(angle = 90, vjust = 0.5, hjust = 1),
+          axis.ticks.x = element_blank()
+        )
+      
+      print(plt)
+      cat(footer)
+    })
+}
+```
+
+```{r "format marker data", include = FALSE}
+# Gene lists to plot
+gns <- list(
+  cd45neg_small = c(
+    "Ptprc",
+    "Prox1", "Lyve1",
+    "Pdpn", "Pecam1",
+    "Cd3d", "Cd19",
+    "Ly6c2", "Nkg7", "Tbx21",
+    "Itgax",  # DCs
+    "Zbtb46", # DCs
+    "Fcgr1",  # CD64
+    "Epcam",
+    "Itgam", "Cd207"
+  ),
+  cd45pos_small = c(
+    "Ptprc",
+    "Cd3d", "Cd19", "H2-Aa",
+    "Itgax",  # DCs
+    "Zbtb46", # DCs
+    "Xcr1",
+    "Sirpa",
+    "Ccr7",
+    "Cd207",
+    "Ly6c2",
+    "Fcgr1",  # CD64, mon/mac
+    "Itgam",  # cDC2
+    "Cd14",   # mon/mac/neutrophils
+    "Ly6g",   # neutrophils
+    "Nkg7",   # NK cells
+    "Tbx21",  # NK cells
+    "Il7r"
+  ),
+  lec_so = c(
+    "Lyve1",
+    "Marco",
+    "Madcam1", "Vcam1", "Icam1",
+    "Ptx3",  "Ackr4"
+  ),
+  dc_so = c(
+    "Zbtb46", "Itgam",
+    "Xcr1", "Itgax", "Sirpa",
+    "Lyz2", "Ccr7",  "Siglech",
+    "Cd207"
+  )
+)
+
+# Cell type levels
+type_lvls <- list(
+  cd45neg_small = c(
+    "LEC", "Fibroblasts", "BEC", "Epithelial cells",
+    "T cells", "B cells",
+    "DC", "NK cells"
+  ),
+  cd45pos_small = c(
+    "T cells", "B cells",
+    "DC", "Monocytes", "Neutrophils",
+    "NK cells", "ILC"
+  )
+)
+
+# Cell clusters to plot
+clst_clmns <- list(
+  cd45neg_small = "RNA_snn_res.5",
+  cd45pos_small = "RNA_snn_res.5",
+  lec_so     = "RNA_snn_res.10",
+  dc_so      = "RNA_snn_res.5"
+)
+
+type_clmns <- list(
+  cd45neg_small = "cell_type",
+  cd45pos_small = "cell_type",
+  lec_so     = "subtype",
+  dc_so      = "subtype"
+)
+
+# Format data to plot
+dat <- gns %>%
+  imap(~ {
+    obj <- qread(here(params$so_dir, str_c(.y, ".qs")))
+    
+    DefaultAssay(obj) <- "RNA"
+    
+    vars <- c(
+      type_clmns[[.y]], "mouse",
+      clst_clmns[[.y]], .x
+    )
+    
+    res <- obj %>%
+      FetchData(vars) %>%
+      as_tibble(rownames = ".cell_id") %>%
+      rename(cell_type = !!sym(type_clmns[[.y]])) %>%
+      pivot_longer(all_of(.x)) %>%
+      mutate(
+        cell_type = fct_relevel(cell_type, type_lvls[[.y]]),
+        mouse     = fct_relevel(mouse, mice),
+        name      = fct_relevel(name, rev(.x))
+      )
+    
+    gc()
+    res
+  })
+```
+
+```{r "marker heatmaps"}
+heats <- dat %>%
+  imap(~ {
+    heat_dat <- .x %>%
+      group_by(cell_type, mouse, name) %>%
+      summarize(value = mean(value), .groups = "drop") %>%
+      group_by(name, mouse) %>%
+      mutate(value = as.numeric(scale(value))) %>%
+      ungroup()
+    
+    # Create heatmap
+    heat_dat %>%
+      ggplot(aes(cell_type, name, fill = value)) +
+      geom_tile() +
+      facet_wrap(~ mouse, nrow = 1) +
+      scale_fill_gradientn(colours = c("white", "red")) +
+      base_theme +
+      theme(
+        legend.title = element_blank(),
+        aspect.ratio = length(gns[[.y]]) / n_distinct(heat_dat$cell_type),
+        axis.title   = element_blank(),
+        axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5)
+      )
+  })
+```
+
+## Cell type markers
+
+### CD45- markers {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for CD45- scRNA-seq datasets.
+
+```{r "CD45- markers 1", fig.width = 10, fig.height = 4}
+heats$cd45neg_small
+```
+
+```{r "CD45- markers 2", fig.width = 10, fig.height = 4, results = "asis"}
+.create_marker_boxes(
+  dat$cd45neg_small,
+  gns$cd45neg_small,
+  clrs = typ_clrs
+)
+```
+
+### {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for each cell cluster.
+
+```{r, fig.width = 12, fig.height = 4.5, results = "asis"}
+.create_cluster_heats(
+  dat$cd45neg_small,
+  clst_clmns$cd45neg_small
+)
+```
+
+### CD45+ markers {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for CD45+ scRNA-seq datasets.
+
+```{r "CD45+ markers 1", fig.width = 10, fig.height = 4}
+heats$cd45pos_small
+```
+
+```{r "CD45+ markers 2", fig.width = 10, fig.height = 4.4, results = "asis"}
+.create_marker_boxes(
+  dat$cd45pos_small,
+  gns$cd45pos_small,
+  clrs = typ_clrs
+)
+```
+
+### {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for each cell cluster.
+
+```{r, fig.width = 12, fig.height = 4.5, results = "asis"}
+.create_cluster_heats(
+  dat$cd45pos_small,
+  clst_clmns$cd45pos_small
+)
+```
+
+### LEC markers {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for LEC scRNA-seq datasets.
+
+```{r "LEC markers 1", fig.width = 10, fig.height = 4}
+heats$lec_so
+```
+
+```{r "LEC markers 2", fig.width = 10, fig.height = 4, results = "asis"}
+.create_marker_boxes(
+  dat$lec_so,
+  gns$lec_so,
+  clrs = lec_clrs
+)
+```
+
+### {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for each cell cluster.
+
+```{r, fig.width = 10, fig.height = 3, results = "asis"}
+.create_cluster_heats(
+  dat$lec_so,
+  clst_clmns$lec_so,
+  n_min = 0
+)
+```
+
+### DC markers {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for DC scRNA-seq datasets.
+
+```{r "DC markers 1", fig.width = 10, fig.height = 4}
+heats$dc_so
+```
+
+```{r "DC markers 2", fig.width = 10, fig.height = 4, results = "asis"}
+.create_marker_boxes(
+  dat$dc_so,
+  gns$dc_so,
+  clrs = dc_clrs
+)
+```
+
+### {.tabset .tabset-pills}
+
+Mean expression is shown for key marker genes for each cell cluster.
+
+```{r, fig.width = 10, fig.height = 3.8, results = "asis"}
+.create_cluster_heats(
+  dat$dc_so,
+  clst_clmns$dc_so,
+  n_min = 0,
+  footer = "\n\n---\n\n<br>\n\n<br>\n\n"
+)
+```
+
+
+
+```{r "format CD45+ marker data", include = FALSE, eval = FALSE}
+cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
+
+cd45pos_gns <- c(
+  "Ptprc",
+  "Cd3d", "Cd19",
+  "H2-Aa",
+  "Itgax",  # DCs
+  "Zbtb46", # DCs
+  "Ly6c2",
+  "Fcgr1",  # CD64, mon/mac
+  "Itgam",  # cDC2
+  "Cd14",   # mon/mac/neutrophils
+  "Ly6g",   # neutrophils
+  "Nkg7",   # NK cells
+  "Tbx21",  # NK cells
+  "Il7r",
+  "Cd207"
+)
+
+lvls <- c(
+  "T cells", "B cells",
+  "DC", "Monocytes", "Neutrophils",
+  "NK cells", "ILC"
+)
+
+# Calculate mean expression
+cd45pos_marks <- cd45_so %>%
+  FetchData(c("cell_type", "mouse", cd45pos_gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(cd45pos_gns)) %>%
+  mutate(
+    cell_type = fct_relevel(cell_type, lvls),
+    mouse     = fct_relevel(mouse, mice),
+    name      = fct_relevel(name, rev(cd45pos_gns))
+  )
+
+rm(cd45_so)
+gc()
+```
+
+```{r "OLD format CD45- marker data", include = FALSE, eval = FALSE}
+cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
+
+DefaultAssay(cd45_so) <- "RNA"
+
+cd45neg_gns <- c(
+  "Ptprc",
+  "Prox1", "Lyve1",
+  "Pdpn", "Pecam1",
+  "Cd3d", "Cd19",
+  "Ly6c2",
+  "Nkg7",
+  "Tbx21",
+  "Itgax",  # DCs
+  "Zbtb46", # DCs
+  "Fcgr1",  # CD64
+  "Itgam",
+  "Cd207"
+)
+
+sub_gns <- c(
+  # "Marco", "Madcam1",
+  # "Ackr4", "Icam1"
+)
+
+lvls <- c(
+  "LEC", "Fibroblasts", "BEC", "Epithelial cells",
+  "T cells", "B cells",
+  "DC", "NK cells"
+)
+
+# Pull marker expression
+cd45neg_marks <- cd45_so %>%
+  FetchData(c("cell_type", "mouse", "RNA_snn_res.5", cd45neg_gns, sub_gns)) %>%
+  as_tibble(rownames = ".cell_id") %>%
+  pivot_longer(all_of(c(cd45neg_gns, sub_gns))) %>%
+  mutate(
+    cell_type = fct_relevel(cell_type, lvls),
+    mouse     = fct_relevel(mouse, mice),
+    name      = fct_relevel(name, rev(cd45neg_gns))
+  )
+
+rm(cd45_so)
+gc()
+```
+
+```{r "format CD45- marker data", include = FALSE, eval = FALSE}
 cd45_so <- qread(here(params$so_dir, "cd45neg_so.qs"))
 
 DefaultAssay(cd45_so) <- "RNA"
 ```
 
-To annotate cell types, clusters are first compared with ImmGen reference data.
-Cell types are then refined based on the expression of individual marker genes.
-Correlation coefficients are shown for all epithelial cells, grouped based on
-the original annotations from the ImmGen reference.
-In this plot, cells labeled as "unassigned" were later classified as epithelial
-cells based on Cdh1 and Krt8 expression.
-
-```{r "correlation", fig.width = 6, fig.height = 4, out.width = "50%"}
+```{r "correlation", fig.width = 6, fig.height = 4, out.width = "50%", eval = FALSE}
 typ <- "Epithelial cells"
 
 cd45_so@meta.data %>%
@@ -38,17 +467,7 @@ cd45_so@meta.data %>%
   )
 ```
 
-<br>
-
-Differentially expressed genes were identified separately for each
-timepoint by comparing annotated epithelial cells with all other cells in the
-CD45- datasets.
-Genes were filtered to only include genes with a p value < 0.05 for all
-timepoints.
-Mean expression (relative) is shown for the top 50 differentially expressed
-genes.
-
-```{r "DEGs"}
+```{r "DEGs", eval = FALSE}
 deg_file <- here(params$table_dir, "epithelial_degs.tsv.gz")
 
 # Identify DEGs
@@ -81,7 +500,7 @@ top_degs <- epi_degs %>%
   head(100)
 ```
 
-```{r "DEGs heatmap", fig.width = 10, fig.height = 9}
+```{r "DEGs heatmap", fig.width = 10, fig.height = 9, eval = FALSE}
 # Calculate average expression
 expr <- cd45_so %>%
   mutate_meta(
@@ -128,13 +547,7 @@ dat %>%
   )
 ```
 
-<br>
-
-Gene ontology terms (Biological Process) are shown for the top 100
-differentially expressed genes.
-The number of genes overlapping each term is shown to the right of each bar.
-
-```{r "GO", fig.width = 10, fig.height = 5}
+```{r "GO", fig.width = 10, fig.height = 5, eval = FALSE}
 n_degs <- length(top_degs)
 
 go <- top_degs %>%
@@ -171,16 +584,10 @@ dat %>%
   theme(axis.title.y = element_blank())
 ```
 
-```{r "cleanup environment", include = FALSE}
+```{r "cleanup environment", include = FALSE, eval = FALSE}
 rm(cd45_so)
 gc()
 ```
-
----
-
-<br>
-
-<br>
 
 ```{r "EPITHELIAL CLUSTERING", eval = FALSE}
 # * Re-cluster epithelial cells
@@ -216,32 +623,47 @@ so <- so %>%
   ) %>%
   clustify(
     ref_mat     = ref_merge,
-    cluster_col = "RNA_snn_res.0.2",
-    threshold   = 0,
+    cluster_col = "RNA_snn_res.1",
+    # threshold   = 0,
     n_genes     = 2000
   )
 
-# Identify DEGs
 so <- so %>%
   mutate_meta(
     mutate,
     new_type = str_remove(type, " \\(.+$")
   )
 
-Idents(so) <- so$new_type
-
-epi_degs <- so %>%
-  subset(tm != 2) %>%
-  FindConservedMarkers(
-    ident.1      = "Epithelial cells",
-    grouping.var = "mouse",
-    assay        = "RNA",
-    slot         = "data",
-    only.pos     = TRUE
+# Correlation matrix
+cor_mat <- so %>%
+  mutate_meta(
+    select,
+    -any_of(c("type", "r", "UMAP_1", "UMAP_2"))
+  ) %>%
+  clustify(
+    ref_mat     = ref_merge,
+    cluster_col = "new_type",
+    threshold   = 0,
+    n_genes     = 2000,
+    seurat_out  = FALSE
   )
 
-top_epi_degs <- epi_degs %>%
-  filter(max_pval < 0.05)
+
+# # Identify DEGs
+# Idents(so) <- so$new_type
+# 
+# epi_degs <- so %>%
+#   subset(tm != 2) %>%
+#   FindConservedMarkers(
+#     ident.1      = "Epithelial cells",
+#     grouping.var = "mouse",
+#     assay        = "RNA",
+#     slot         = "data",
+#     only.pos     = TRUE
+#   )
+# 
+# top_epi_degs <- epi_degs %>%
+#   filter(max_pval < 0.05)
 
 
 
@@ -279,7 +701,7 @@ top_epi_degs <- epi_degs %>%
 # )
 ```
 
-```{r "format CD45+ marker data", include = FALSE, eval = FALSE}
+```{r "OLD format CD45+ marker data", include = FALSE, eval = FALSE}
 cd45_so <- qread(here(params$so_dir, "cd45pos_so.qs"))
 
 DefaultAssay(cd45_so) <- "RNA"

@@ -30,10 +30,12 @@ geo_m_key <- c(
   naive     = "naive"
 )
 
-geo_m_clrs <- typ_clrs %>%
-  assign_colors(names(geo_m_key), filter = "colorblind")
-
-geo_m_clrs["naive"] <- "grey85"
+geo_m_clrs <- c(
+  `3wk`     = "#D7301F",
+  `6wk`     = "#F0E442",
+  `6wk-3wk` = "#0072B2",
+  naive     = "grey85"
+)
 
 # Label keys
 geo_seg_key      <- names(seg_clrs)

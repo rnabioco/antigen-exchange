@@ -1800,7 +1800,7 @@ lb <- c(42, 43) %>%
           .train_mls(
             class_clmn    = rf_dat_clmn,
             ml_dir        = here(params$mod_dir, typ),
-            include_algos = c("GLM", "StackedEnsemble", "GBM"),
+            # include_algos = c("GLM", "StackedEnsemble", "GBM"),
             # max_models      = 100,  # USED FOR FIRST PASS
             # balance_classes = FALSE,
             
@@ -1834,19 +1834,19 @@ lb %>%
 
 ```{r "h2o final test", eval = TRAIN_MODELS}
 # Select best models
-# * Use GLM and top GBM
 BEST_MLS <- lb %>%
   filter(
     data == "valid",
-    algorithm %in% c("glm", "gbm")
+    algorithm %in% c("gbm", "deeplearning")
   ) %>%
   group_by(algorithm, subtype) %>%
   slice_max(F1, n = 10) %>%
   slice_max(Specificity, n = 1) %>%
-  slice_min(logloss, n = 1, with_ties = FALSE) %>%
+  slice_max(`Balanced Accuracy`, n = 1) %>%
+  slice_min(logloss, n = 1) %>%
 
   group_by(subtype) %>%
-  arrange(desc(F1), desc(Specificity), logloss) %>%
+  arrange(desc(F1), desc(Specificity), desc(`Balanced Accuracy`), logloss) %>%
   mutate(training_rank = row_number()) %>%
   ungroup() %>%
   
@@ -1881,9 +1881,10 @@ BEST_MLS <- lb %>%
   })
 
 BEST_MLS <- BEST_MLS %>%
-  arrange(desc(Specificity)) %>%
+  mutate(algorithm = fct_relevel(algorithm, c("gbm", "deeplearning"))) %>%
+  arrange(subtype, algorithm) %>%
   group_by(subtype) %>%
-  mutate(model_label = row_number()) %>%
+  mutate(model_name = row_number(), .before = training_rank) %>%
   ungroup()
 
 # Save models
@@ -1896,7 +1897,7 @@ BEST_MLS %>%
 # * include features based on cumulative feature importance
 # * keep top features that account for 90% of overall importance
 MODULE_FEATS <- BEST_MLS %>%
-  split(.$model_label) %>%
+  split(.$model_name) %>%
   map(~ {
     .x %>%
       pull(model, subtype) %>%
@@ -1958,7 +1959,7 @@ lec_so <- lec_so %>%
   )
  
 ML_PREDS <- BEST_MLS %>%
-  split(.$model_label) %>%
+  split(.$model_name) %>%
   map(~ {
     .x %>%
       pmap_dfr(~ {
