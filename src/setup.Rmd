@@ -58,6 +58,7 @@ library(xlsx)
 library(writexl)
 library(ComplexHeatmap)
 library(png)
+library(jpeg)
 
 # Tidyverse
 library(tidyverse)
@@ -424,7 +425,7 @@ create_rf_module_boxes <- function(df_in, module_clmns, module_title, clrs,
     scale_fill_manual(values = clrs) +
     scale_y_continuous(expand = expansion(y_exp)) +
     facet_wrap(~ subtype, nrow = 1, scales = "free_y") +
-    labs(x = "days post vaccination", y = module_title) +
+    labs(x = "days post immunization", y = module_title) +
     guides(fill = guide_legend(override.aes = list(shape = 22, size = 5))) +
     base_theme +
     theme(
@@ -578,7 +579,8 @@ create_rf_module_umaps <- function(df_in, typ, module_clmn, module_title,
 #' 
 #' Used for figures 3 and 4
 create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
-                                  typs = NULL, clrs, facet_vars = "subtype",
+                                  typs = NULL, clrs, labs = waiver(),
+                                  facet_vars = "subtype",
                                   p_method = wilcox.test, p_vars = NULL,
                                   p_hjust = 0.5, p_vjust = 0.5, p_size = 10,
                                   p_cutoff = Inf) {
@@ -682,7 +684,10 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
       vjust = p_vjust
     ) +
     facet_grid(as.formula(facet_vars)) +
-    scale_alpha_manual(values = c(single = 0.35, dual = 1)) +
+    scale_alpha_manual(
+      values = c(single = 0.35, dual = 1),
+      labels = labs
+    ) +
     scale_fill_manual(values = clrs) +
     scale_color_manual(values = ln_clrs) +
     guides(
@@ -691,7 +696,7 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
         shape = 15, size = 4, color = lgnd_clr
       ))
     ) +
-    labs(x = "days post vaccination", y = "Ag-score") +
+    labs(x = "days post immunization", y = "Ag-score") +
     base_theme +
     theme(aspect.ratio = 0.7)
   
@@ -701,7 +706,10 @@ create_exchange_boxes <- function(df_in, tm = NULL, tm_clmn, ag_clmn,
 #' Create heatmaps comparing single and dual vaccinated mice
 #' 
 #' Used for figures 3 and 4
-create_exchange_heats <- function(df_in, ag_clmn, ttl, clr) {
+create_exchange_heats <- function(df_in, ag_clmn, ttl, clr,
+                                  # label_fn = ~ str_replace(.x, " day", "d")
+                                  label_fn = ~ str_remove(.x, "^Group ")
+                                  ) {
 
   # Format data for heatmaps  
   dat <- df_in %>%
@@ -711,9 +719,9 @@ create_exchange_heats <- function(df_in, ag_clmn, ttl, clr) {
   res <- dat %>%
     ggplot(aes(mouse, subtype, fill = !!sym(ag_clmn))) +
     geom_tile() +
-    labs(x = "vaccination group") +
+    labs(x = "immunization group") +
     scale_fill_gradientn(colours = c("lightblue", "white", clr)) +
-    scale_x_discrete(labels = ~ str_replace(.x, " day", "d")) +
+    scale_x_discrete(labels = label_fn) +
     guides(fill = guide_colorbar(
       ticks = FALSE,
       title = ttl,
@@ -1135,7 +1143,7 @@ create_ag_boxes <- function(df_in, clrs, facet_vars = "subtype") {
     facet_grid(as.formula(facet_vars)) +
     
     scale_fill_manual(values = clrs) +
-    labs(x = "days post vaccination", y = "Ag-score") +
+    labs(x = "days post immunization", y = "Ag-score") +
     base_theme +
     theme(
       aspect.ratio    = 0.9,
@@ -2209,8 +2217,9 @@ mouse_key <- set_names(
   mouse_key$mouse, mouse_key$orig.ident
 )
 
-tm_key <- sam_info %>%
+tm_info <- sam_info %>%
   distinct(tm, mouse)
 
-tm_key <- set_names(tm_key$tm, tm_key$mouse)
+tm_key   <- set_names(tm_info$tm,    tm_info$mouse)
+tm_key_2 <- set_names(tm_info$mouse, tm_info$tm)
 ```
