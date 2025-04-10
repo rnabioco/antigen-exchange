@@ -2022,4 +2022,18 @@ MODULE_FEATS <- qread(here(params$mod_dir, "ag-high_module_features.qs"))
 
 # Predictions
 ML_PREDS <- qread(here(params$mod_dir, "ag-high_preds.qs"))
+
+# Set module names
+MODULE_NAMES <- MODULE_FEATS[[1]][rf_typs] %>%
+  imap(~ {
+    typ <- .y
+    
+    imap_chr(.x, ~ str_c(typ, "_", .y))
+  }) %>%
+  unlist(use.names = FALSE)
+
+MODULE_NAMES <- MODULE_NAMES %>%
+  str_replace("_(?=high|low)", " Ag-") %>%
+  str_c(" module") %>%
+  set_names(MODULE_NAMES)
 ```

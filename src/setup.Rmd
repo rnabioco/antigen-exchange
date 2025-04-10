@@ -59,6 +59,7 @@ library(writexl)
 library(ComplexHeatmap)
 library(png)
 library(jpeg)
+library(tiff)
 
 # Tidyverse
 library(tidyverse)
@@ -985,14 +986,14 @@ create_module_boxes <- function(df_in, ag_class_clmn = "Ag_class_dual",
 
 #' Create scatter plots comparing RF module scores and Ag-scores
 #'
-#' Used for figure 3
+#' Used for figure 4
 create_module_scatter <- function(df_in, ag_clmns, module_clmns, module_title,
                                   ag_class_clmn = "Ag_class_dual", clrs,
                                   label_x = -Inf, label_hjust = -0.1,
                                   label_start = -0.5, label_pad = 0.15) {
   
   # Format plotting data
-  # cell types are filtered based on the module_clmns names
+  # * cell types are filtered based on the module_clmns names
   typs <- str_remove(module_clmns, "_[^_]+$")
   
   dat <- df_in %>%
@@ -1002,12 +1003,12 @@ create_module_scatter <- function(df_in, ag_clmns, module_clmns, module_title,
     ) %>%
     pivot_longer(
       all_of(module_clmns),
-      names_to = "module_name", values_to = module_title
+      names_to = "module_name", values_to = "module_score"
     ) %>%
     mutate(module_type = str_remove(module_name, "_[^_]+$")) %>%
     filter(subtype == module_type) %>%
     mutate(
-      subtype       = fct_relevel(subtype, typs),
+      subtype               = fct_relevel(subtype, typs),
       !!sym(ag_class_clmn) := fct_relevel(!!sym(ag_class_clmn), rev(names(clrs)))
     )
   
@@ -1018,22 +1019,14 @@ create_module_scatter <- function(df_in, ag_clmns, module_clmns, module_title,
       min_score = min(`Ag-score`),
       max_score = max(`Ag-score`)
     ) %>%
-    group_by(subtype, ag_clmn, min_score, max_score) %>%
-    summarize(
-      s_res = list(cor.test(!!sym(module_title), `Ag-score`, method = "spearman")),
-      s     = map_dbl(s_res, ~ .x$estimate[[1]]),
-      s_p   = map_dbl(s_res, ~ .x$p.value),
-      p_res = list(cor.test(!!sym(module_title), `Ag-score`, method = "pearson")),
-      p     = map_dbl(p_res, ~ .x$estimate[[1]]),
-      p_p   = map_dbl(p_res, ~ .x$p.value),
-      n     = n_distinct(.cell_id),  # tricky to include commas with plotmath
-      .groups = "drop"
+    .calc_cor_pvals(
+      format_data = FALSE,
+      keep_columns = c("min_score", "max_score")
     ) %>%
-    mutate(p_adj = p.adjust(s_p, method = "BH")) %>%
     rowwise() %>%
     mutate(
-      r_lab = str_c("italic(r[s]) == ", round(s, digits = 2)),
-      p_lab = str_c("italic(p) == ", .format_pvalue(p_adj)),
+      r_lab = str_c("italic(r[s]) == ", round(s_cor, digits = 2)),
+      p_lab = str_c("italic(p) == ", .format_pvalue(s_p_adj)),
       n_lab = str_c("n == ", n)
     )
   
@@ -1057,7 +1050,7 @@ create_module_scatter <- function(df_in, ag_clmns, module_clmns, module_title,
   
   # Create scatter plots
   res <- dat %>%
-    ggplot(aes(!!sym(module_title), `Ag-score`, color = !!sym(ag_class_clmn))) +
+    ggplot(aes(module_score, `Ag-score`, color = !!sym(ag_class_clmn))) +
     geom_point(size = 0.7) +
     geom_smooth(
       method = "lm", formula = y ~ x,
@@ -1070,6 +1063,7 @@ create_module_scatter <- function(df_in, ag_clmns, module_clmns, module_title,
     ) +
     scale_color_manual(values = clrs) +
     guides(color = guide_legend(override.aes = list(size = 4))) +
+    labs(x = module_title) +
     base_theme +
     theme(
       aspect.ratio    = 1,
@@ -1096,6 +1090,52 @@ create_module_scatter <- function(df_in, ag_clmns, module_clmns, module_title,
           show.legend = FALSE
         )
     })
+  
+  res
+}
+
+.calc_cor_pvals <- function(df_in, ag_clmns, module_clmns, format_data = TRUE,
+                            keep_columns = NULL) {
+  
+  if (format_data) {
+    df_in <- df_in %>%
+      pivot_longer(
+        all_of(ag_clmns),
+        names_to = "ag_clmn", values_to = "Ag-score"
+      ) %>%
+      pivot_longer(
+        all_of(module_clmns),
+        names_to = "module_name", values_to = "module_score"
+      ) %>%
+      mutate(module_type = str_remove(module_name, "_[^_]+$")) %>%
+      filter(subtype == module_type)
+  }
+  
+  .calc_cor_p <- function(df_in, x, y, prefix = "s", method = "spearman") {
+    df_in %>%
+      mutate(
+        res = list(cor.test(!!sym(x), !!sym(y), method = method)),
+        cor = map_dbl(res, ~ .x$estimate[[1]]),
+        p   = map_dbl(res, ~ .x$p.value)
+      ) %>%
+      select(-res) %>%
+      rename_with(.cols = all_of(c("cor", "p")), ~ str_c(prefix, "_", .x))
+  }
+  
+  keep_clmns <- c(
+    "subtype", "module_name", "ag_clmn",
+    "s_cor", "s_p", "p_cor", "p_p", "n"
+  )
+  
+  res <- df_in %>%
+    group_by(subtype, module_name, ag_clmn) %>%
+    .calc_cor_p("module_score", "Ag-score", prefix = "s", method = "spearman") %>%
+    .calc_cor_p("module_score", "Ag-score", prefix = "p", method = "pearson") %>%
+    mutate(n = n_distinct(.cell_id)) %>%
+    distinct(!!!syms(keep_clmns), .keep_all = TRUE) %>%
+    ungroup() %>%
+    select(all_of(c(keep_clmns, keep_columns))) %>%
+    mutate(across(c(s_p, p_p), ~ p.adjust(.x, method = "BH"), .names = "{.col}_adj"))
   
   res
 }

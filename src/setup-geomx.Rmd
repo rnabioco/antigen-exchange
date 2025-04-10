@@ -23,13 +23,6 @@ seg_clrs <- c(
   Other = "grey85"
 )
 
-geo_m_key <- c(
-  `3wk`     = "day 21",
-  `6wk`     = "day 42",
-  `6wk-3wk` = "dual",
-  naive     = "naive"
-)
-
 geo_m_clrs <- c(
   `3wk`     = "#D7301F",
   `6wk`     = "#F0E442",
@@ -38,6 +31,18 @@ geo_m_clrs <- c(
 )
 
 # Label keys
+geo_m_key <- c(
+  `3wk`     = "Group A",
+  `6wk`     = "Group B",
+  `6wk-3wk` = "Group C",
+  naive     = "naive"
+)
+
+geo_ag_labs <- c(
+  Ag_3wk_score = "Ag signal (BC2)",
+  Ag_6wk_score = "Ag signal (BC1)"
+)
+
 geo_seg_key      <- names(seg_clrs)
 idx              <- geo_seg_key != "Other"
 geo_seg_key[idx] <- str_c(geo_seg_key[idx], "+")
@@ -547,4 +552,7 @@ geomx_imgs <- geomx_imgs %>%
     
     img
   })
+
+# geomx_imgs %>%
+#   qsave(here(params$so_dir, "geomx.qs"))
 ```

@@ -12,13 +12,14 @@
 #' @param dir Directory path to save file
 #' @param dev Device to use for saving image
 #' @export
-.save_fig <- function(plt, prefix, w = 13, h = 12, mtplyr = 0,
-                      dir = here("results/figures/tiffs"), dev = "tiff") {
+.save_fig <- function(plt, filename, w = 13, h = 12, mtplyr = 0,
+                      dir = here("results/figures/tiffs"), dev = NULL) {
+  
+  if (!is.null(dev)) filename <- str_c(filename, ".", dev)
   
   plt %>%
     ggsave(
-      filename = here(dir, str_c(prefix, ".", dev)),
-      device   = dev,
+      filename = here(dir, filename),
       width    = w + (w * mtplyr),
       height   = h + (h * mtplyr),
       dpi      = 600,
@@ -716,6 +717,15 @@ cluster_signal <- function(sobj_in, data_column, k = 2, grp_column = NULL,
 
 # Plotting ----
 
+#' Format n values for plot labels
+.format_n_label <- function(n) {
+  ifelse(
+    n >= 1000,
+    str_c(round(n / 1000, 1), "k"),
+    as.character(n)
+  )
+}
+
 .create_umap <- function(dat, dat_clmn = "subtype", clrs, ...) {
   n_dat <- dat %>%
     group_by(!!sym(dat_clmn)) %>%
@@ -774,4 +784,30 @@ cluster_signal <- function(sobj_in, data_column, k = 2, grp_column = NULL,
     )
   
   plt
+}
+
+#' Plot image as ggplot2 object
+#'
+#' @param img Raster array, e.g. output from readTIFF
+#' @param t,r,b,l Plot margins  
+.plot_img <- function(img, t = 0, r = 0, b = 0, l = 0) {
+  
+  img <- rasterGrob(img, interpolate = TRUE)
+  
+  # Adjust plot limits if necessary
+  img_lims <- tibble(x = c(0, 1), y = c(0, 1))
+  
+  # Create an empty plot for placing the image, adjusted to fill the area
+  res <- ggplot(img_lims, aes(x, y)) + 
+    annotation_custom(
+      grob = img,
+      xmin = -Inf, xmax = Inf,
+      ymin = -Inf, ymax = Inf
+    ) +
+    xlim(c(-Inf, Inf)) +
+    ylim(c(-Inf, Inf)) +
+    theme_void() +
+    theme(plot.margin = margin(t, r, b, l))
+  
+  res
 }
