@@ -552,7 +552,4 @@ geomx_imgs <- geomx_imgs %>%
     
     img
   })
-
-# geomx_imgs %>%
-#   qsave(here(params$so_dir, "geomx.qs"))
 ```

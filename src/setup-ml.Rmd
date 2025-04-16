@@ -2032,8 +2032,10 @@ MODULE_NAMES <- MODULE_FEATS[[1]][rf_typs] %>%
   }) %>%
   unlist(use.names = FALSE)
 
-MODULE_NAMES <- MODULE_NAMES %>%
+module_labels <- MODULE_NAMES %>%
   str_replace("_(?=high|low)", " Ag-") %>%
-  str_c(" module") %>%
-  set_names(MODULE_NAMES)
+  str_c(" module")
+
+MODULE_NAMES_2 <- set_names(MODULE_NAMES, module_labels)
+MODULE_NAMES   <- set_names(module_labels, MODULE_NAMES)
 ```

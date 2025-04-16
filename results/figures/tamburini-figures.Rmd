@@ -45,7 +45,7 @@ params:
       Ag_tag_2: "GeoMx-Barcode02-ERCC00144"
   xen_custom_targets: "ref/QX42XM_mMulti_98g_custom_sequences.csv" # Custom non-endogenous targets in panel
 editor_options: 
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 ---
@@ -81,7 +81,7 @@ included below.
       spreadsheet.
 - [x] &nbsp;Adjust [Figure 1] and [Figure S1] colors to make them more distinguishable
       ([R2-minor](#R2-minor)).
-- [ ] &nbsp;Generate source data tables for all figures.
+- [x] &nbsp;Generate source data tables for all figures.
 
 ```{r "setup", include = FALSE}
 # Default chunk options
@@ -155,6 +155,11 @@ ex_key <- c(
 exps <- sort(unique(c(lec_so$exp, dc_so$exp)))
 
 ag_exps <- list(LEC = "exp-1", DC = "exp-2")
+
+rep_labs <- exps %>%
+  str_replace("exp-", "r") %>%
+  str_replace("0$", "1") %>%
+  set_names(exps)
 
 # LEC/DC subset colors
 subtype_clrs <- list(LEC = lec_clrs, DC = dc_clrs)
@@ -466,11 +471,6 @@ typ_heat <- heat_dat %>%
     axis.title.x = element_blank(),
     axis.text.x  = element_text(angle = 45, hjust = 1),
   )
-
-# Format source data
-SOURCE_DATA$fig1B <- heat_dat %>%
-  select(tm, cell_type, `Ag_score mean`) %>%
-  arrange(desc(tm), cell_type)
 ```
 
 ```{r "subtype Ag UMAPs"}
@@ -720,15 +720,19 @@ typ_u <- typ_dat %>%
   )
 
 # Format source data
-SOURCE_DATA$`figS2A` <- typ_dat %>%
+SOURCE_DATA$`fig1B,S2A` <- typ_dat %>%
+  mutate(replicate = rep_labs[as.character(exp)]) %>%
   select(
     cell_id = .cell_id,
     CD45    = cell_sort,
+    tm,
+    replicate,
     cell_type,
     UMAP_1 = hUMAP_1,
     UMAP_2 = hUMAP_2,
     Ag_score
-  )
+  ) %>%
+  mutate()
 ```
 
 ```{r "subtype UMAPs"}
@@ -747,7 +751,10 @@ typ_gns <- list(
 # Format data for subtype plots
 subtype_dat <- ag_objs %>%
   imap(~ {
-    clmns <- c("subtype", "tm", "vaccination", "hUMAP_1", "hUMAP_2")
+    clmns <- c(
+      "subtype", "tm", "exp", "vaccination",
+      "Ag_score", "hUMAP_1", "hUMAP_2"
+    )
     
     .x %>%
       FetchData(c(clmns, typ_gns[[.y]])) %>%
@@ -756,7 +763,8 @@ subtype_dat <- ag_objs %>%
         vaccination = str_c(vaccination, "\nimmunization"),
         tm          = ifelse(is.na(tm), vaccination, str_c("day ", tm)),
         tm          = fct_relevel(tm, str_c("day ", tms)),
-        subtype     = fct_relevel(subtype, levels(markers$annotation))
+        subtype     = fct_relevel(subtype, levels(markers$annotation)),
+        replicate   = rep_labs[as.character(exp)]
       )
   })
 
@@ -781,15 +789,18 @@ subtype_u <- subtype_dat %>%
   })
 
 # Format source data
-list(LEC = "figS2B,D", DC = "figS2C,E") %>%
+list(LEC = "fig1C-F,S2B,D", DC = "fig1G-J,S2C,E") %>%
   iwalk(~ {
     SOURCE_DATA[[.x]] <<- subtype_dat[[.y]] %>%
       mutate(tm = str_replace_all(tm, "\n", " ")) %>%
       select(
         cell_id   = .cell_id,
+        tm,
+        replicate,
         cell_type = subtype,
         UMAP_1    = hUMAP_1,
         UMAP_2    = hUMAP_2,
+        Ag_score,
         all_of(typ_gns[[.y]])
       )
   })
@@ -972,12 +983,12 @@ SOURCE_DATA$figS3A <- dat %>%
 
 ```{r "type Ag boxplots"}
 # Format data for boxplots
-dat <- c("exp-1", "exp-2") %>%
+dat <- exps[exps != "exp-0"] %>%
   map_dfr(~ {
     typ_ag_dat %>%
       filter(exp %in% c("exp-0", .x)) %>%
       mutate(
-        exp       = str_replace(.x, "exp-", "r"),
+        exp       = rep_labs[as.character(exp)],
         tm        = as.numeric(as.character(tm)),
         cell_sort = recode(cell_sort, CD45neg = "CD45-", CD45pos = "CD45+")
       )
@@ -1007,7 +1018,7 @@ list(`CD45-` = "figS3B", `CD45+` = "figS3C") %>%
   iwalk(~ {
     SOURCE_DATA[[.x]] <<- dat[[.y]] %>%
       select(
-        cell_id = .cell_id,
+        cell_id   = .cell_id,
         replicate = exp,
         tm,
         cell_type,
@@ -1031,11 +1042,11 @@ bx_dat <- ag_objs %>%
         subtype = fct_reorder(subtype, Ag_score, mean, .desc = TRUE)
       )
     
-    c("exp-1", "exp-2") %>%
+    exps[exps != "exp-0"] %>%
       map_dfr(~ {
         dat %>%
           filter(exp %in% c("exp-0", .x)) %>%
-          mutate(exp = str_replace(.x, "exp-", "r"))
+          mutate(exp = rep_labs[as.character(exp)])
       })
   })
 
@@ -1621,8 +1632,6 @@ rf_venn <- MODULE_FEATS[[1]][rf_typs] %>%
 ```
 
 ```{r "ML GO"}
-# ## DOUBLE CHECK GO ANALYSIS ##
-
 # Term similarity for simplifying terms
 dbs <- set_names(c("BP", "CC", "MF"))
 
@@ -1871,14 +1880,14 @@ gc()
 
 ```{r "ML module specificity plots", fig.width = 10, fig.height = 6}
 # Set module names
-module_nms <- set_names(
+module_clmns <- set_names(
   str_c(names(MODULE_NAMES), seq_along(MODULE_NAMES)),
   names(MODULE_NAMES)
 )
 
 # Format n labels
 dat <- mod_dat %>%
-  pivot_longer(all_of(names(module_nms)), names_to = "module") %>%
+  pivot_longer(all_of(names(module_clmns)), names_to = "module") %>%
   mutate(tm_type = str_c(tm, "_", subtype))
 
 n_dat <- dat %>%
@@ -1939,7 +1948,7 @@ p_dat <- p_dat %>%
 
 # Plot module scores
 # * only plot Ag-high modules
-plts <- names(module_nms) %>%
+plts <- names(module_clmns) %>%
   grep("_high$", ., value = TRUE) %>%
   set_names() %>%
   map(~ {
@@ -2243,7 +2252,7 @@ Gene ontology terms are shown for Ag-low and Ag-high cells.
 ex_clmns <- c(
   "bgID", "n_ovlp", "tot_genes",
   "n_bg_ovlp", "tot_bg_genes",
-  "Count", "enrichment"
+  "Count", "enrichment", "qvalue"
 )
 
 tbl_s3 <- go_sig %>%
@@ -2259,6 +2268,24 @@ tbl_s3 %>%
   )
 
 tbl_s3
+```
+
+---
+
+<br>
+
+<br>
+
+## Figure 3
+
+```{r "Fig 3", fig.height = 15, fig.width = 15}
+img <- here("results/figures/other_panels/Figure 3 Clathrin and caveolin inhibitors.tif")
+
+fig3 <- img %>%
+  readTIFF() %>%
+  .plot_img()
+
+fig3
 ```
 
 ---
@@ -2299,7 +2326,7 @@ I.  The expression of Ag-high modules described in Figure 2 is shown for LECs
     Benjamini-Hochberg correction.
 J.  Ag-low module scores are shown for LEC subset as described in H.
 
-```{r "exchange UMAPs", fig.width = 16, fig.height = 4}
+```{r "exchange UMAPs", fig.width = 16, fig.height = 4, include = FALSE}
 # Format Ag exchange plot data
 # * for LECs use experiment 1 since experiment 2 is missing 3wk LECs
 ex_dat <- ag_objs %>%
@@ -2319,7 +2346,7 @@ ex_dat <- ag_objs %>%
           mutate(
             mouse     = ex_key[as.character(mouse)],
             mouse     = fct_relevel(mouse, unname(ex_key)),
-            replicate = str_replace(.x, "exp-", "r"),
+            replicate = rep_labs[as.character(exp)],
             subtype   = fct_relevel(subtype, ag_plt_typs[[typ]]),
             tm        = as.character(tm)
           ) %>%
@@ -2390,7 +2417,6 @@ ex_source_dat <- ex_dat %>%
       map_dfr(~ {
         .x %>%
           filter(exp != "exp-0") %>%
-          rename_with(.cols = matches("_(low|high)$"), ~ MODULE_NAMES[.x]) %>%
           select(
             cell_id            = .cell_id,
             cell_type          = subtype,
@@ -2401,7 +2427,7 @@ ex_source_dat <- ex_dat %>%
             UMAP_2             = hUMAP_2,
             !!sym(ag_labs[[ag_clmns[[1]]]]) := !!sym(ag_clmns[[1]]),
             !!sym(ag_labs[[ag_clmns[[2]]]]) := !!sym(ag_clmns[[2]]),
-            matches("Ag-(high|low) module$")
+            any_of(MODULE_NAMES_2)
           )
       })
   })
@@ -2587,8 +2613,6 @@ dual_ag_class_brs <- dat %>%
 ```
 
 ```{r "Fig 4 diagram", fig.width = 15.5, fig.height = 10}
-# img <- "results/figures/experiment_design/fig3_exp_design_landscape-2.png"
-# img <- readPNG(here(img))
 img <- here("results/figures/experiment_design/Figure 4A.jpeg")
 
 fig4_dsgn <- img %>%
@@ -2690,7 +2714,7 @@ ex_mod_scat <- scat_args %>%
 #   comment
 scat_p_dat <- scat_dat %>%
   .calc_cor_pvals(
-    ag_clmns = ag_clmns,
+    ag_clmns     = ag_clmns,
     module_clmns = names(MODULE_NAMES)
   )
 
@@ -3428,6 +3452,44 @@ D.  Normalized antigen tag signal is shown for regions that included both Lyve1+
 
 ```{r "geomx knit setup", include = FALSE}
 knit(here(params$template_dir, "setup-geomx.Rmd"), "")
+
+# Format GeoMx data
+# * segments from 6wk-3wk sample are plotted twice, signal for each of the two
+#   tags is plotted separately
+geomx_dat <- geo_ag_labs %>%
+  imap_dfr(~ {
+    sam <- str_extract(.y, "(?<=Ag_)[0-9]+wk")
+    
+    geomx_dat %>%
+      filter(
+        sample  %in% c(sam, "6wk-3wk"),
+        Segment %in% c("Lyve1", "CD11C")
+      ) %>%
+      mutate(
+        key      = .y,
+        Segment  = fct_relevel(Segment, names(seg_clrs)),
+        Ag_score = !!sym(.y)
+      )
+  })
+
+# Format source data
+SOURCE_DATA$`figS8C-D` <- geomx_dat %>%
+  select(
+    Sample_ID,
+    `Slide Name`,
+    Segment,
+    Region = region_3,
+    lymph_node = rep,
+    Area,
+    Nuclei,
+    mouse = sample,
+    `Ag-tag` = key,
+    Ag_score
+  ) %>%
+  mutate(
+    mouse    = ex_key[as.character(mouse)],
+    `Ag-tag` = geo_ag_labs[as.character(`Ag-tag`)]
+  )
 ```
 
 ```{r "geomx uncropped images"}
@@ -3504,28 +3566,18 @@ geo_lab_fn <- function(x) {
 }
 
 # Calculate relative Ag signal
-# want to plot both Ag tags on same plot
-# this is not useful without scaling values since Ag-3wk signal is much higher
-# than Ag-6wk signal
-bx_dat <- geo_ag_labs %>%
-  imap_dfr(~ {
-    sam <- str_extract(.y, "(?<=Ag_)[0-9]+wk")
-    
-    geomx_dat %>%
-      filter(
-        sample %in% c(sam, "6wk-3wk"),
-        Segment %in% c("Lyve1", "CD11C")
-      ) %>%
-      mutate(
-        key = .y,
-        Ag_rel = as.numeric(scale(!!sym(.y))),
-        Segment = fct_relevel(Segment, names(seg_clrs))
-      )
-  })
+# * want to plot both Ag tags on same plot
+# * this is not useful without scaling values since Ag-3wk signal is much higher
+#   than Ag-6wk signal
+# * segments from 6wk-3wk sample are plotted twice, signal for each of the two
+#   tags is scaled and plotted
+geo_bx_dat <- geomx_dat %>%
+  group_by(key) %>%
+  mutate(Ag_rel = as.numeric(scale(Ag_score)))
 
 # Calculate p-values
 # * one-sided wilcox test with BH correction
-p_dat <- bx_dat %>%
+p_dat <- geo_bx_dat %>%
   split(.$Segment) %>%
   imap_dfr(~ {
     mx <- max(.x$Ag_rel)
@@ -3551,6 +3603,7 @@ p_dat <- bx_dat %>%
   rowwise() %>%
   mutate(p_lab = .format_pvalue(p_adj))
 
+# Calculate positions for each p value label
 p_dat <- p_dat %>%
   filter(p_adj < 0.05) %>%
   group_by(Segment) %>%
@@ -3577,13 +3630,13 @@ p_dat <- p_dat %>%
   mutate(Segment = fct_relevel(Segment, names(seg_clrs)))
 
 # Calculate n values
-n_dat <- bx_dat %>%
+n_dat <- geo_bx_dat %>%
   group_by(region_3, Segment) %>%
   summarize(n = n(), .groups = "drop") %>%
   mutate(n = str_c("n = ", n))
 
 # Create boxplots
-geo_bxs <- bx_dat %>%  
+geo_bxs <- geo_bx_dat %>%  
   ggplot(aes(region_3, Ag_rel, fill = region_3)) +
   geom_boxplot(
     linewidth = ln_pt * 1.5, alpha = 1, outlier.color = NA, width = 0.65,
@@ -3627,22 +3680,7 @@ geo_bxs <- bx_dat %>%
 ```{r "geomx Ag scatter"}
 # Format data
 # * want to plot both Ag tags on same plot
-sct_dat <- geo_ag_labs %>%
-  imap_dfr(~ {
-    sam <- str_extract(.y, "(?<=Ag_)[0-9]+wk")
-    
-    geomx_dat %>%
-      filter(
-        sample %in% c(sam, "6wk-3wk"),
-        Segment %in% c("Lyve1", "CD11C")
-      ) %>%
-      mutate(
-        key      = .y,
-        Ag_score = !!sym(.y)
-      )
-  })
-
-sct_dat <- sct_dat %>%
+sct_dat <- geomx_dat %>%
   dplyr::select(
     `ROI Coordinate X`, `ROI Coordinate Y`,
     region_3, Segment, sample, key,
@@ -3713,12 +3751,14 @@ top <- plot_grid(
   label_size = ttl_pt2 * 1.5
 )
 
+bxs <- ex_bxs$DC
+
 bxs <- plot_grid(
-  plotlist = rep_ex_bxs[names(rep_ex_bxs) == "DC"],
-  ncol   = 1,
-  align  = "v",
-  axis   = "rl",
-  labels = c("E", "F"),
+  plotlist   = bxs[names(bxs) != ag_exps$DC][[1]],
+  ncol       = 1,
+  align      = "v",
+  axis       = "rl",
+  labels     = c("E", "F"),
   label_size = ttl_pt2 * 1.5
 )
 
@@ -3748,7 +3788,7 @@ figS8
 
 <br>
 
-## Table S4
+### Table S4
 
 Cell-cell interaction enrichment results are shown for Ag+ and Ag- cells
 identified using the Xenium spatial transcriptomics platform.
@@ -3778,6 +3818,21 @@ F.  Expression of the top 70 genes from the cLEC Ag-high gene module is shown
 
 ```{r "chikv knit setup", include = FALSE}
 knit(here(params$template_dir, "setup-chikv.Rmd"), "")
+
+# Format source data
+SOURCE_DATA$`fig6,S9` <- CHIKV_DAT %>%
+  select(
+    cell_id = .cell_id,
+    treatment,
+    rep,
+    cell_type = !!sym(CHIKV_TYPE_CLMN),
+    UMAP_1    = hUMAP_1,
+    UMAP_2    = hUMAP_2,
+    Ag_class_model_1 = ml_pred_1_grp,
+    Ag_class_model_2 = ml_pred_2_grp,
+    all_of(MODULE_NAMES_2),
+    all_of(CHIKV_FEATS)
+  )
 ```
 
 ```{r "chikv subset UMAPs"}
@@ -3969,6 +4024,39 @@ F.  The fraction of predicted Ag-competent cells is shown for a second
 
 ```{r "abe knit setup", include = FALSE}
 knit(here(params$template_dir, "setup-abe.Rmd"), "")
+
+# Format Abe data
+# * include expression of key marker genes
+abe_gns <- c(
+  "ACKR4",
+  "MFAP4",
+  "SERPINE1",
+  "BMP2",
+  "CXCL5",
+  "MARCO",
+  "PTX3",
+  "CLDN11",
+  "GJA4"
+)
+
+abe_dat <- abe_lec_so %>%
+  FetchData(c("sample", "tissue", "subtype", pred_clmns, abe_gns)) %>%
+  as_tibble(rownames = "cell_id")
+
+# Format source data
+SOURCE_DATA$`fig7,S10` <- abe_dat %>%
+  select(
+    cell_id,
+    sample,
+    tissue,
+    cell_type = subtype,
+    Ag_class_model_1 = ml_pred_1_grp,
+    Ag_class_model_2 = ml_pred_2_grp,
+    all_of(abe_gns)
+  )
+
+rm(abe_lec_so)
+gc()
 ```
 
 ```{r "abe frac Ag-competent", include = FALSE}
@@ -3977,14 +4065,13 @@ tissue_nms <- c(
   "FL"   = "Follicular Lymphoma"
 )
 
-# Format Abe data
+# Format bargraph data
 # * cLECs are the LEC1 population
 # * only include samples with at least 20 cLECs
 abe_bar_dat <- pred_clmns %>%
   set_names() %>%
   map(~ {
-    abe_lec_so@meta.data %>%
-      as_tibble(rownames = "cell_id") %>%
+    abe_dat %>%
       filter(subtype %in% rf_typs) %>%
       mutate(
         tissue = fct_relevel(tissue, names(abe_clrs)),
@@ -3995,7 +4082,7 @@ abe_bar_dat <- pred_clmns %>%
       filter(n > 20) %>%
       group_by(sample, tissue, subtype, n) %>%
       summarize(
-        n_high = sum(!!sym(.x) == "Ag-competent"),
+        n_high  = sum(!!sym(.x) == "Ag-competent"),
         .groups = "drop"
       ) %>%
       mutate(
@@ -4132,8 +4219,6 @@ fig7 <- plot_grid(
   plotlist   = fig7,
   nrow       = 1,
   rel_widths = c(1, 0.3, 0.3),
-  # align      = "h",
-  # axis       = "tb",
   labels     = c("D", "E", "F"),
   label_size = ttl_pt2 * 1.5,
   label_x = -0.01,
@@ -4142,8 +4227,16 @@ fig7 <- plot_grid(
 
 fig7 %>%
   .save_fig("fig7.tif", w = 13, h = 3.5)
+```
 
-fig7
+```{r "Fig 7 complete", fig.width = 13, fig.height = 15}
+img <- here("results/figures/other_panels/Figure 7 New CHIKV figure with human LN data.tif")
+
+fig7_final <- img %>%
+  readTIFF() %>%
+  .plot_img()
+
+fig7_final
 ```
 
 <br>
@@ -4267,21 +4360,7 @@ D.  The fraction of collecting LECs predicated to be Ag-compentent is shown as
 
 ```{r "abe marker expression", include = FALSE}
 # Format marker data
-abe_gns <- c(
-  "ACKR4",
-  "MFAP4",
-  "SERPINE1",
-  "BMP2",
-  "CXCL5",
-  "MARCO",
-  "PTX3",
-  "CLDN11",
-  "GJA4"
-)
-
-abe_gn_dat <- abe_lec_so %>%
-  FetchData(c("tissue", "orig.ident", "subtype", abe_gns)) %>%
-  as_tibble(rownames = "cell_id") %>%
+abe_gn_dat <- abe_dat %>%
   filter(subtype != "unassigned") %>%
   pivot_longer(all_of(abe_gns)) %>%
   mutate(
@@ -4317,9 +4396,6 @@ abe_gn_heat <- abe_heat_dat %>%
     axis.title   = element_blank(),
     axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5)
   )
-
-rm(abe_lec_so)
-gc()
 ```
 
 ```{r "Fig S10", fig.width = 13, fig.height = 9}
