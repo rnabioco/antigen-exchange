@@ -1752,6 +1752,7 @@ ML_FEATS <- unique(unlist(ml_feats))
 ```{r "h2o training data", eval = TRAIN_MODELS}
 # Create data.frames
 # * separate frame for each subtype and train/validate/test split
+# * expression values are scaled separately for each gene for each subset/split
 ml_data <- data_splits %>%
   map(~ .x[!names(.x) == "feature"]) %>%
   imap(~ {
@@ -1783,7 +1784,6 @@ ml_data <- data_splits %>%
 # Train models
 # * set Ag-low as the positive class, since there are fewer Ag-low cells
 # * scale expression separately for training/validation/testing data
-# * train two separate batches, take the top model from each
 lb <- c(42, 43) %>%
   map_dfr(~ {
     seed <- .x
@@ -1798,14 +1798,10 @@ lb <- c(42, 43) %>%
         
         res <- ml_dat %>%
           .train_mls(
-            class_clmn    = rf_dat_clmn,
-            ml_dir        = here(params$mod_dir, typ),
-            # include_algos = c("GLM", "StackedEnsemble", "GBM"),
-            # max_models      = 100,  # USED FOR FIRST PASS
-            # balance_classes = FALSE,
-            
-            max_models    = 100,
-            seed          = seed
+            class_clmn = rf_dat_clmn,
+            ml_dir     = here(params$mod_dir, typ),
+            max_models = 100,
+            seed       = seed
           ) %>%
           .$leaderboard %>%
           mutate(
@@ -1895,7 +1891,7 @@ BEST_MLS %>%
 ```{r "h2o Ag module features", eval = TRAIN_MODELS}
 # Filter for top features
 # * include features based on cumulative feature importance
-# * keep top features that account for 90% of overall importance
+# * keep top features that account for 99% of overall importance
 MODULE_FEATS <- BEST_MLS %>%
   split(.$model_name) %>%
   map(~ {

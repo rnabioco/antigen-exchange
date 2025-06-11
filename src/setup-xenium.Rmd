@@ -276,6 +276,84 @@ plot_xenium <- function(df_in, dat_clmn, grp_clmn = NULL, clrs = NULL,
   
   res
 }
+
+.create_cell_heatmap <- function(dat, count_dat = NULL, x = "y_cell", y = "x_cell",
+                                 group_clmn = "cell_type", groups = NULL,
+                                 n_bins = 100, n_col = 4) {
+  
+  # Data to use for calculating cell counts
+  count_dat <- count_dat %||% dat
+  
+  # Create base plot to use for overlaying count data
+  base_xen <- dat %>%
+    ggplot(aes(!!sym(x), !!sym(y))) +
+    geom_bin2d(
+      aes(fill = NULL),
+      bins = n_bins,
+      linewidth = 0.7, color = "black", fill = "white"
+    ) +
+    geom_bin2d(
+      aes(fill = NULL),
+      bins = n_bins,
+      color = NA, fill = "white",
+    )
+  
+  # Create plot for each cell type
+  groups <- groups %||% (
+    dat %>%
+      pull(group_clmn) %>%
+      table() %>%
+      sort(decreasing = TRUE) %>%
+      names()
+  )
+
+  typ_plts <- groups %>%
+    map(~ {
+      grp <- .x
+      
+      typ_dat <- count_dat %>%
+        filter(!!sym(group_clmn) == grp)
+      
+      ttl <- typ_dat %>%
+        nrow() %>%
+        label_comma()() %>%
+        str_c(grp, " (n = ", ., ")")
+      
+      base_xen +
+        geom_bin2d(
+          data = typ_dat,
+          bins = n_bins
+        ) +
+        
+        ggtitle(ttl) +
+        guides(fill = guide_colorbar(ticks = FALSE)) +
+        scale_fill_gradientn(
+          colours = c("white", "#D7301F"),  # just use red for all slices
+          name = "number of cells"
+        ) +
+        coord_equal() +
+        umap_theme_2 +
+        theme(
+          plot.title        = element_text(hjust = 0.5),
+          legend.position   = "bottom",
+          legend.key.height = unit(7, "pt"),
+          legend.key.width  = unit(20, "pt"),
+          legend.title      = element_text(size = 10, hjust = 0.5),
+          legend.text       = element_text(size = 10),
+          legend.title.position = "top"
+        )
+    })
+  
+  if (length(typ_plts) == 1) {
+    res <- typ_plts[[1]]
+    
+  } else {
+    res <- typ_plts %>%
+      wrap_plots(ncol = n_col)
+  }
+  
+  res
+}
 ```
 
 ```{r "{{.x}} xenium create object", eval = create_sobjs}
@@ -365,8 +443,6 @@ xen <- xen %>%
 
 ```{r "{{.x}} xenium cell type reference", eval = create_sobjs}
 # Create reference using scRNA-seq data
-# Run SCTransform separately, merge, PrepSCTFindMarkers to correct sequencing
-#   depth between samples
 ref_file <- here(params$xen_dir, "ref_so.qs")
 
 if (!file.exists(ref_file)) {
@@ -400,8 +476,6 @@ if (!file.exists(ref_file)) {
   ref_so <- ref_so %>%
     AddMetaData(FetchData(., c("UMAP_1", "UMAP_2"))) %>%
     DietSeurat(assays = c("SCT", "RNA"))
-  
-  # ref_so@assays$SCT@counts <- matrix(nrow = 0, ncol = 0)
   
   ref_so %>%
     qsave(ref_file)

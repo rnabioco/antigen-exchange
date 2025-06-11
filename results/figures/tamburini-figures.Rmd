@@ -115,11 +115,6 @@ ag_modules <- rf_typs %>%
 # Keys for naming labels
 ag_clmns <- c("Ag_3wk_score", "Ag_6wk_score")
 
-# ag_labs_2 <- set_names(
-#   c("Ag-score\n21 day", "Ag-score\n42 day"),
-#   ag_clmns
-# )
-
 ag_labs_3 <- set_names(
   c("BC2", "BC1"),
   ag_clmns
@@ -187,6 +182,10 @@ xen_gns <- c(
   "Cd8a",
   "Prox1", "Lyve1",
   "Pdpn", "Pecam1",
+  "Ackr4",
+  "Madcam1",
+  "Marco",
+  "Ptx3",
   "Itgam",  # cDC2
   "Itgax",  # DCs
   "Zbtb46", # DCs
@@ -233,7 +232,8 @@ top_types <- c("LEC", dcs)
 # FOVs to plot
 fovs    <- sort(unique(xen$fov))
 top_fov <- "D"
-bad_fov <- "C"  # section from very end of LN
+med_fov <- "B"  # LN section showing medulla
+bad_fov <- "C"  # LN section from very outside edge
 
 # Format plotting data
 xen_ag_classes <- c(
@@ -988,7 +988,7 @@ dat <- exps[exps != "exp-0"] %>%
     typ_ag_dat %>%
       filter(exp %in% c("exp-0", .x)) %>%
       mutate(
-        exp       = rep_labs[as.character(exp)],
+        exp       = str_replace(.x, "exp-", "r"),
         tm        = as.numeric(as.character(tm)),
         cell_sort = recode(cell_sort, CD45neg = "CD45-", CD45pos = "CD45+")
       )
@@ -1046,7 +1046,7 @@ bx_dat <- ag_objs %>%
       map_dfr(~ {
         dat %>%
           filter(exp %in% c("exp-0", .x)) %>%
-          mutate(exp = rep_labs[as.character(exp)])
+          mutate(exp = str_replace(.x, "exp-", "r"))
       })
   })
 
@@ -1539,9 +1539,9 @@ gene_examples <- lec_so %>%
       "Psap", "Ctsd",
       "Tgfa",
       "Lgmn", "Grn",       # other endosome related genes
-      "Col4a2", "Tmsb4x",  # cell migration, angiogenesis
-      "Ctla2a", "Ltbp4"    # immune response
-      
+      "Col4a2", "Lama4",  # cell migration, angiogenesis
+      "Vim", "Fn1"
+      # "Ctla2a", "Ltbp4",   # immune response
       # "Hmgb1", "Ccl21a"
       # "Col4a2", "Lamc1"
     ),
@@ -2828,8 +2828,13 @@ G.  Ag-score is shown for single and dual immunizations for the 42 day timepoint
 
 ```{r "xenium Ag counts"}
 # Format plot data
+fov_grps <- set_names(
+ c("subcapsular\nsinus", "medullary\nsinus"),
+ c(top_fov, med_fov)
+)
+
 xen_dat <- xen %>%
-  filter(fov %in% top_fov) %>%
+  filter(fov %in% c(top_fov, med_fov)) %>%
   mutate(
     type_ag = if_else(
       cell_type %in% c("LEC", "DC", "B cells"),
@@ -2848,6 +2853,10 @@ xen_dat <- xen %>%
     
     lec_ag = ifelse(cell_type %in% c("LEC", "B cells"), type_ag, "other"),
     dc_ag  = ifelse(cell_type %in% c("DC", "B cells"),  type_ag, "other"),
+    
+    tm    = ex_key[as.character(mouse)],
+    group = fov_grps[as.character(fov)],
+    group = fct_relevel(group, unname(fov_grps))
   ) %>%
   arrange(type_ag, Ag_class) %>%
   mutate(
@@ -2855,9 +2864,12 @@ xen_dat <- xen %>%
     slide = fct_relevel(slide, str_c("section ", xen_slides))
   )
 
+xen_top_dat <- xen_dat %>%
+  filter(fov %in% top_fov)
+
 # Plot Ag+ cells
 # * add pseudo count
-ag_sig_fig <- xen_dat %>%
+ag_sig_fig <- xen_top_dat %>%
   mutate(Ag_counts = Ag_counts + 1) %>%
   plot_xenium(
     "Ag_counts",
@@ -2870,13 +2882,16 @@ ag_sig_fig <- xen_dat %>%
   )
 
 # Format source data
-SOURCE_DATA$`fig5A-C,S7A,C` <- xen_dat %>%
+SOURCE_DATA$`fig5A-C,S7A,B,D,E` <- xen_dat %>%
+  mutate(group = str_replace_all(group, "\n", " ")) %>%
   select(
     cell_id,
     fov,
+    fov_group = group,
     slide,
     immunization_group = mouse,
     cell_type,
+    lec_type,
     Ag_class,
     Ag_counts
   ) %>%
@@ -2908,7 +2923,7 @@ names(new_clrs) <- c(
 # Plot Ag+ cells
 ag_pos_fig <- c("lec_ag", "dc_ag") %>%
   map(~ {
-    xen_dat %>%
+    xen_top_dat %>%
       plot_xenium(
         .x,
         grp_clmn       = "slide",
@@ -2979,7 +2994,7 @@ prox_brs <- dat %>%
 
 ```{r "xenium LEC proximity", fig.width = 18, fig.height = 13}
 # Format data for histograms
-hist_dat <- xen_dat %>%
+hist_dat <- xen_top_dat %>%
   filter(cell_type == "DC")
   
 # Format data for median lines
@@ -3103,17 +3118,10 @@ top <- append(list(ag_sig_fig), ag_pos_fig) %>%
   imap(~ .x + labs(tag = LETTERS[.y])) %>%
   wrap_plots(nrow = 1)
 
-# bot <- wrap_plots(
-#   plot_spacer(), hist + labs(tag = "D"), plot_spacer(),
-#   nrow = 1,
-#   widths = c(0.3, 1, 0.3)
-# )
-
 bot <- wrap_plots(
   prox_brs$`section 1`   + labs(tag = "D"),
   prox_hists$`section 1` + labs(tag = "E"),
   nrow = 1
-  # widths = c(0.3, 1, 0.3)
 )
 
 xen_fig <- wrap_plots(
@@ -3198,81 +3206,56 @@ fig5
 
 ### Figure S7
 
-A.  Localization of annotated cell types is shown for replicate tissue sections
-    analyzed with the Xenium platform.
-    Annotated cell types with >100 identified cells are shown.
+A.  Localization of annotated cell types is shown for representative tissue
+    sections showing the subcapsular sinus (shown in Figure 5) and the medullary
+    sinus.
+    Two adjacent tissue sections are shown for each (section 1 and 2).
+    Annotated cell types with >200 identified cells are shown.
     Color indicates cell density.
-B.  Total Ag counts are shown for the 21 day and 42 day Ag tags, for mice
-    immunized with the 21 day tag (left), 42 day tag (middle),
-    or both 21 and 42 day tags (right).
+B.  The localization of LEC subsets comprising the subcapsular (cLECs and fLECs)
+    and medullary (Marco and Ptx3 LECs) sinuses is shown for tissue sections
+    shown in A.
+C.  Total Ag counts are shown for BC1 and BC2, for mice immunization groups
+    described in Figure 4.
     For each immunization group, tissue sections were analyzed for two LNs from
-    separate mice (LN-1, LN-2), with the exception of the dual-immunization group.
+    separate mice (LN-1, LN-2), with the exception of the dual-immunization
+    group.
     For each LN, two adjacent tissue sections were analyzed
     (section 1, section 2).
-B.  The fraction of Ag+ cells is shown for each cell type for tissue sections
-    shown in Figure 4A.
-D.  Cell-cell interaction enrichment results are shown for section 2 from A for
-    Ag+/- LECs and DCs.
-C.  The distance to the closest Ag+ LEC is shown for Ag+ and Ag- DCs for
-    section 2 from A.
+D.  The fraction of Ag+ cells is shown for each cell type for tissue sections
+    shown in A.
+E.  The fraction of Ag+ cells is shown for LEC subsets comprising the
+    subcapsular (cLECs and fLECs) and medullary (Marco and Ptx3 LECs) sinuses
+    for tissue sections shown in A.
+    Replicate tissue sections were aggregated.
+F.  Cell-cell interaction enrichment results are shown for Ag+/- LECs and DCs
+    for a replicate tissue section for Figure 5D.
+    Arrows indicate significant enrichment.
+G.  The distance to the closest Ag+ LEC is shown for Ag+ and Ag- DCs for
+    a replicate tissue section for Figure 5E.
 
-```{r "xenium cell type sections", fig.width = 14, fig.height = 10}
+```{r "xenium cell type sections", fig.width = 14, fig.height = 15}
 # Format data for plots
 xen_typs <- xen_dat$cell_type %>%
   table() %>%
   sort(decreasing = TRUE)
 
-xen_typs <- xen_typs[xen_typs > 100]
+xen_typs <- xen_typs[xen_typs > 200]
 xen_typs <- xen_typs[names(xen_typs) != "unassigned"]
 
 # Function to set number of bins based on number of cells
-fn <- approxfun(c(last(xen_typs), xen_typs[[1]]), c(45, 100))
+fn <- approxfun(c(last(xen_typs), xen_typs[[1]]), c(65, 75))
 
-# Create base plot to use for overlaying frequency data
-base_xen <- xen_dat %>%
-  plot_xenium(
-    dat_clmn = NULL,
-    grp_clmn = "slide",
-    fill = "white"
-  )
+one_line_strips <- function(x) str_replace(x, "\n", " ")
 
-# Create plots
 typ_plts <- names(xen_typs) %>%
   map(~ {
-    typ <- .x
-    
-    typ_dat <- xen_dat %>%
-      filter(cell_type == typ)
-    
-    ttl <- typ_dat %>%
-      nrow() %>%
-      label_comma()() %>%
-      str_c(typ, " (n = ", ., ")")
-    
-    base_xen +
-      geom_bin2d(
-        aes(y_cell, x_cell),
-        data = typ_dat,
-        bins = floor(fn(xen_typs[[typ]]))
+    xen_dat %>%
+      .create_cell_heatmap(
+        groups = .x,
+        n_bins = fn(xen_typs[[.x]])
       ) +
-      
-      ggtitle(ttl) +
-      guides(fill = guide_colorbar(ticks = FALSE)) +
-      scale_fill_gradientn(
-        colours = c("white", xen_clrs[["LEC"]]),  # just use red for all slices
-        name = "number of cells"
-      ) +
-      facet_wrap(~ slide, nrow = 1) +
-      umap_theme_2 +
-      theme(
-        plot.title        = element_text(hjust = 0.5),
-        legend.position   = "bottom",
-        legend.key.height = unit(7, "pt"),
-        legend.key.width  = unit(20, "pt"),
-        legend.title      = element_text(size = 10, hjust = 0.5),
-        legend.text       = element_text(size = 10),
-        legend.title.position = "top"
-      )
+      facet_grid(slide ~ group, labeller = as_labeller(one_line_strips))
   })
 
 typ_plts <- typ_plts %>%
@@ -3331,12 +3314,15 @@ xen_bars <- xen_bar_dat %>%
   labs(y = "total Ag counts") +
   base_theme +
   theme(
-    legend.position = "bottom",
-    axis.title.x = element_blank()
+    plot.margin     = margin(),
+    legend.position = "right",
+    axis.title.x    = element_blank(),
+    axis.title.y    = element_text(vjust = -4),
+    strip.clip      = "off"
   )
 
 # Format source data
-SOURCE_DATA$figS7B <- xen_bar_dat %>%
+SOURCE_DATA$figS7C <- xen_bar_dat %>%
   select(
     slide,
     fov,
@@ -3350,15 +3336,12 @@ SOURCE_DATA$figS7B <- xen_bar_dat %>%
 ```{r "xenium Ag+ cell types", fig.width = 14, fig.height = 6}
 bar_dat <- xen_dat %>%
   filter(cell_type %in% c(names(xen_typs), "unassigned")) %>%
-  group_by(cell_type, fov, slide) %>%
-
-  group_by(slide, fov, cell_type) %>%
+  group_by(cell_type, group, slide) %>%
   summarize(
-    n = n_distinct(cell_id),
-    n_ag = sum(Ag_class == "Ag+"),
+    n       = n_distinct(cell_id),
+    n_ag    = sum(Ag_class == "Ag+"),
     .groups = "drop"
   ) %>%
-  filter(n_ag > 0) %>%
   mutate(
     pct_ag_pos = (n_ag / n),
     
@@ -3371,51 +3354,184 @@ bar_dat <- xen_dat %>%
 xen_typ_bars <- bar_dat %>%
   mutate(
     cell_type = fct_reorder(cell_type, pct_ag_pos),
-    fov       = fct_reorder(fov, pct_ag_pos, .fun = max)
+    group     = fct_reorder(group, pct_ag_pos, .fun = max, .desc = TRUE)
   ) %>%
-  group_by(fov, slide) %>%
+  group_by(group, slide) %>%
   
   ggplot(aes(pct_ag_pos, cell_type, fill = cell_type)) +
   geom_col() +
   geom_text(
     aes(label = n_lab),
-    hjust = -0.25
+    hjust = -0.2
   ) +
-  facet_wrap(~ slide, nrow = 1) +
+  facet_grid(slide ~ group, labeller = as_labeller(one_line_strips)) +
   scale_fill_manual(values = xen_clrs) +
   scale_x_continuous(
     labels = label_percent(),
     name   = "% Ag+ cells",
-    expand = expansion(c(0.05, 0.3))
+    expand = expansion(c(0.05, 0.45))
   ) +
   base_theme +
   theme(
     legend.position = "none",
-    axis.title.y = element_blank()
+    axis.title.y    = element_blank(),
+    plot.margin     = margin()
   )
 ```
 
-```{r "Fig S7", fig.width = 14, fig.height = 18}
+```{r "xenium lec subsets sections", fig.width = 14, fig.height = 5}
+# LEC subsets on sections
+dat <- xen_dat %>%
+  mutate(
+    region = case_when(
+      lec_type %in% c("cLEC", "fLEC")          ~ "cLEC/fLEC",
+      lec_type %in% c("Marco_LEC", "Ptx3_LEC") ~ "Marco/Ptx3 LEC"
+    )
+  )
+
+lec_clrs["other"] <- "grey80"
+
+lvls <- c("cLEC", "fLEC", "Marco_LEC", "Ptx3_LEC", "tzLEC", "other")
+
+lec_typ_sec <- dat %>%
+  mutate(lec_type = fct_relevel(lec_type, rev(lvls))) %>%
+  ggplot(aes(y_cell, x_cell, fill = lec_type)) +
+  geom_point_trace(
+    trace_position    = lec_type != "other",
+    background_params = list(size = 0.5, color = NA),
+    size   = 0.5,
+    stroke = 0.7
+  ) +
+  facet_grid(slide ~ group, labeller = as_labeller(one_line_strips)) +
+  scale_fill_manual(values = lec_clrs) +
+  guides(fill = guide_legend(override.aes = list(size = 4))) +
+  umap_theme_2 +
+  theme(
+    plot.margin            = margin(0, 0, 30, 0),
+    legend.position        = "inside",
+    legend.position.inside = c(0.5, -0.1),
+    legend.direction       = "horizontal",
+    legend.margin          = margin(),
+    legend.title           = element_blank()
+  )
+
+
+# # NOT USED
+# # Plot marker expression
+# xen_mkrs <- c("Ackr4", "Marco") %>%
+#   map(~ {
+#     dat %>%
+#       arrange(!!sym(.x)) %>%
+#       ggplot(aes(y_cell, x_cell, fill = !!sym(.x))) +
+#       geom_point_trace(
+#         trace_position    = lec_type != "other",
+#         background_params = list(size = 0.001, color = NA),
+#         size = 0.001, stroke = 0.7
+#       ) +
+#       facet_grid(slide ~ group) +
+#       scale_fill_gradientn(
+#         colours = c("lightblue", typ_clrs[["LEC"]]),
+#         name    = str_c(.x, " expression")
+#       ) +
+#       coord_equal() +
+#       umap_theme_2 +
+#       theme(
+#         legend.position       = "bottom",
+#         legend.title.position = "top",
+#         legend.ticks          = element_blank(),
+#         legend.key.width      = unit(30, "pt"),
+#         legend.key.height     = unit(7, "pt")
+#       )
+#   })
+# 
+# xen_mkrs <- wrap_plots(
+#   append(list(lec_typ_sec), xen_mkrs),
+#   nrow = 1
+# )
+# 
+# # LEC subset frequency
+# xen_lec_brs <- dat %>%
+#   filter(cell_type == "LEC") %>%
+#   ggplot(aes(slide, fill = lec_type)) + 
+#   geom_bar(position = position_fill()) +
+#   scale_fill_manual(values = lec_clrs) +
+#   facet_wrap(~ group, nrow = 1) +
+#   base_theme +
+#   theme(
+#     legend.position = "none",
+#     legend.title    = element_blank(),
+#     axis.title      = element_blank(),
+#     axis.text.x     = element_text(angle = 45, hjust = 1),
+#     axis.text.y     = element_blank(),
+#     axis.ticks.y    = element_blank()
+#   )
+```
+
+```{r "xenium Ag+ lec subsets"}
+# Ag+ LEC subsets
+clrs <- c(
+  `cLEC/fLEC`      = "#D7301F",
+  `Marco/Ptx3 LEC` = "#56B4E9"
+)
+
+reg_dat <- dat %>%
+  filter(!is.na(region)) %>%
+  group_by(group, region) %>%
+  summarize(
+    tot     = n(),
+    n       = sum(Ag_class == "Ag+"),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    frac = n / tot,
+    region = fct_relevel(region, names(clrs))
+  )
+
+xen_lec_ag <- reg_dat %>%
+  ggplot(aes(region, frac, fill = region)) + 
+  geom_col(width = 0.85, position = position_dodge(width = 0.9)) +
+  facet_wrap(~ group, scales = "free_y") +
+  scale_fill_manual(values = clrs) +
+  scale_y_continuous(labels = label_percent()) +
+  labs(y = "% Ag+ LECs") +
+  base_theme +
+  theme(
+    legend.position = "none",
+    legend.title    = element_blank(),
+    strip.clip      = "off",
+    axis.title.x    = element_blank(),
+    axis.text.x     = element_text(angle = 45, hjust = 1)
+  )
+```
+
+```{r "Fig S7", fig.width = 14, fig.height = 27}
 bot <- wrap_plots(
-  xen_bars + labs(tag = "B"),
-  xen_typ_bars + labs(tag = "C"),
-  nrow   = 1,
-  widths = c(0.7, 1)
+  lec_typ_sec  + labs(tag = "B"),
+  xen_bars     + labs(tag = "C"),
+  xen_typ_bars + labs(tag = "D"),
+  design = "
+  AAAABBB
+  AAAABBB
+  AAAACCC
+  AAAACCC
+  AAAACCC
+  "
 ) &
   theme(plot.tag = element_text(face = "bold", size = ttl_pt2 * 1.5))
 
 prox <- wrap_plots(
-  prox_brs$`section 2`   + labs(tag = "D"),
-  prox_hists$`section 2` + labs(tag = "E"),
+  xen_lec_ag             + labs(tag = "E"),
+  prox_brs$`section 2`   + labs(tag = "F") + theme(axis.title.x = element_text(vjust = 21)),
+  prox_hists$`section 2` + labs(tag = "G"),
   nrow   = 1,
-  widths = c(1, 1)
+  widths = c(0.7, 1, 1)
 ) &
   theme(plot.tag = element_text(face = "bold", size = ttl_pt2 * 1.5))
 
 figS7 <- plot_grid(
   typ_plts, bot, prox,
   ncol        = 1,
-  rel_heights = c(1, 0.35, 0.35),
+  rel_heights = c(0.95, 0.45, 0.25),
   labels      = c("A", "", ""),
   label_size  = ttl_pt2 * 1.5
 )
@@ -3424,6 +3540,53 @@ figS7 %>%
   .save_fig("figS7.tif", w = 14, h = 27)
 
 figS7
+```
+
+<br>
+
+<br>
+
+The expression of LEC subset marker genes is shown below.
+
+```{r "NEW MEDULLA BOXPLOTS", fig.width = 16, fig.height = 4}
+mkrs <- c("Ackr4", "Madcam1", "Marco", "Ptx3")
+
+bx_dat <- xen_dat %>%
+  group_by(lec_type, group) %>%
+  mutate(
+    x_lab = n(),
+    x_lab = ifelse(
+      x_lab >= 10000,
+      str_c(round(x_lab / 1000, 0), "k"),
+      label_comma()(x_lab)
+    ),
+    x_lab = str_c(lec_type, " (", x_lab, ")")
+  )
+
+clrs <- lec_clrs
+clrs["tzLEC"] <- lighten(clrs["tzLEC"], 0.3)
+
+mkrs %>%
+  map(~ {
+    bx_dat %>%
+      ggplot(aes(x_lab, !!sym(.x), fill = lec_type)) +
+      geom_boxplot(outlier.size = 0.25) +
+      facet_grid(slide ~ group, scales = "free_x") +
+      scale_fill_manual(values = clrs) +
+      labs(y = str_c(.x, " expression")) +
+      base_theme +
+      theme(
+        legend.position = "none",
+        axis.title.x    = element_blank(),
+        axis.text.x     = element_text(angle = 45, hjust = 1)
+      )
+  }) %>%
+  plot_grid(
+    plotlist = .,
+    align = "vh",
+    axis  = "trbl",
+    nrow = 1
+  )
 ```
 
 <br>
@@ -3779,19 +3942,10 @@ figS8 <- plot_grid(
 )
 
 figS8 %>%
-  .save_fig("figS8.tif", w = 14, h = 16)
+  .save_fig("figS8.tif", w = 14, h = 18)
 
 figS8
 ```
-
-<br>
-
-<br>
-
-### Table S4
-
-Cell-cell interaction enrichment results are shown for Ag+ and Ag- cells
-identified using the Xenium spatial transcriptomics platform.
 
 <br>
 
