@@ -677,7 +677,10 @@ A.  UMAP projections show cell types identified for CD45- and CD45+ samples.
 B.  UMAP projections show LEC subsets identified for each timepoint.
 C.  UMAP projections show DC subsets identified for each timepoint.
 D.  The expression of key marker genes is shown for LEC subsets.
-E.  The expression of key marker genes is shown for DC subsets.
+    The center line, box limits, whiskers, and points represent the median,
+    interquartile range (IQR), the range within 1.5×IQR from the box limits,
+    and points outside this range (outliers), respectively.
+E.  The expression of key marker genes is shown for DC subsets as described in D.
 
 <u>Notes</u>
 
@@ -895,10 +898,13 @@ A.  Ag-scores are shown for each timepoint for CD45- cell types.
     (this replicate is plotted for both r1 and r2).
     The number of cells identified for each cell type is shown above each
     timepoint.
+    The center line, box limits, whiskers, and points represent the median,
+    interquartile range (IQR), the range within 1.5×IQR from the box limits,
+    and points outside this range (outliers), respectively.
 B.  Ag-scores are shown for each timepoint for CD45+ cell types,
-    as described in A.
-C.  Ag-scores are shown for each timepoint for LEC subsets, as described in A.
-D.  Ag-scores are shown for each timepoint for DC subsets, as described in A.
+    as described in B.
+C.  Ag-scores are shown for each timepoint for LEC subsets, as described in B.
+D.  Ag-scores are shown for each timepoint for DC subsets, as described in B.
 
 ```{r "mfi vs Ag score"}
 # Format MFI data
@@ -1597,22 +1603,25 @@ fig2
 
 A.  Venn diagram shows the number of genes shared between the cLEC, fLEC and
     collecting LEC gene modules.
-A.  The top 5 gene ontology terms from each database
+B.  The top 5 gene ontology terms from each database
     (biological process, cellular component) are shown for the cLEC, fLEC, and
     collecting LEC Ag-high gene modules.
     The number of overlapping genes is shown to the right of each ontology term.
-B.  Top gene ontology terms are shown for Ag-low gene modules as described in B.
-C.  The expression of each Ag-high gene module is shown for naive LECs
+C.  Top gene ontology terms are shown for Ag-low gene modules as described in B.
+D.  The expression of each Ag-high gene module is shown for naive LECs
     (0 days post immunization) along with timepoints from day 2, 14, 21, and 42.
-D.  The expression of each Ag-low gene module is shown as described in D.
+    The center line, box limits, whiskers, and points represent the median,
+    interquartile range (IQR), the range within 1.5×IQR from the box limits,
+    and points outside this range (outliers), respectively.
+E.  The expression of each Ag-low gene module is shown as described in D.
 F.  The expression of the cLEC Ag-high gene module is shown for LEC and DC
     subsets for 14, 21, and 42 days post-immunization.
     Two-sided p values were calculated by comparing cLECs (marked by arrow)
     with each cell subset using a Wilcoxon rank sum test and
-    adjusted using Benjamini-Hochberg correction.
-    * p < 0.05, ** p < 0.001, *** p < 0.0001.
-E.  The expression of the fLEC Ag-high gene module is shown as described in F.
-G.  The expression of the collecting LEC Ag-high gene module is shown as
+    adjusted using Benjamini-Hochberg correction. * p < 0.05, ** p < 0.001, *** p < 0.0001.
+    Points indicate the median.
+G.  The expression of the fLEC Ag-high gene module is shown as described in F.
+H.  The expression of the collecting LEC Ag-high gene module is shown as
     described in F.
 
 ```{r "ML venn diagram"}
@@ -2061,6 +2070,9 @@ B.  Ag-low module score is shown for Ag-low, Ag-high, and predicted
     One-sided p values were calculated and adjusted using Benjamini-Hochberg
     correction.
     The number of cells plotted is shown below each boxplot.
+    The center line, box limits, whiskers, and points represent the median,
+    interquartile range (IQR), the range within 1.5×IQR from the box limits,
+    and points outside this range (outliers), respectively.
 C.  UMAP projections show fLEC Ag-high module scores for each timepoint (top)
     and Ag-high and Ag-low fLECs (bottom).
 D.  UMAP projections show collecting LEC Ag-high module scores as described in
@@ -2175,7 +2187,15 @@ tbl_s1 <- BEST_MLS %>%
   ) %>%
   arrange(cell_type, model_name, data_split)
 
-tbl_s1 %>%
+# Write table
+desc <- "Metrics are included for training, validation, and testing data. Two models were selected for each subset (GBM, DNN) based on validation metrics."
+
+tbl <- list(
+  description = tibble(description = desc),
+  `table S1`  = tbl_s1
+)
+
+tbl %>%
   write_xlsx(
     here(params$table_dir, "table_s1.xlsx"),
     format_headers = FALSE
@@ -2229,7 +2249,15 @@ tbl_s2 <- BEST_MLS %>%
     tbl
   })
 
-tbl_s2 %>%
+# Write table
+desc <- "Variables used to train models are listed along with relative importance. The top genes contributing to 99% of the cumulative importance were used for the Ag-low and Ag-high gene modules."
+
+tbl <- append(
+  list(description = tibble(description = desc)),
+  tbl_s2
+)
+
+tbl %>%
   write_xlsx(
     here(params$table_dir, "table_s2.xlsx"),
     format_headers = FALSE
@@ -2244,7 +2272,11 @@ bind_rows(tbl_s2)
 
 ### Table S3
 
-Gene ontology terms are shown for Ag-low and Ag-high cells.
+Gene ontology terms are shown for Ag-low and Ag-high gene modules.
+P values were calculated internally using a hypergeometric test and adjusted
+using Benjamini-Hochberg correction.
+Redundant GO terms were removed based on semantic similarity using the
+clusterProfiler package. 
 
 ```{r "Table S3"}
 ex_clmns <- c(
@@ -2257,9 +2289,19 @@ tbl_s3 <- go_sig %>%
   mutate(cell_type = fct_relevel(cell_type, rf_typs)) %>%
   arrange(cell_type, p.adjust) %>%
   select(-all_of(c(ex_clmns)))
-  
-tbl_s3 %>%
-  split(.$Cluster) %>%
+
+# Write table
+desc <- "Gene ontology terms are shown for Ag-low and Ag-high gene modules. P values were calculated internally using a hypergeometric test and adjusted using Benjamini-Hochberg correction. Redundant GO terms were removed based on semantic similarity using the clusterProfiler package."
+
+tbl <- tbl_s3 %>%
+  split(.$Cluster)
+
+tbl <- append(
+  list(description = tibble(description = desc)),
+  tbl
+)
+
+tbl %>%
   write_xlsx(
     here(params$table_dir, "table_s3.xlsx"),
     format_headers = FALSE
@@ -2667,7 +2709,10 @@ A.  Ag-score is shown for single and dual immunizations for the day 0 timepoint
     Benjamini-Hochberg correction.
     This analysis was not performed for a biological replicate for the day 21
     timepoint due to the low number of LECs recovered (<40 total cells).
-D.  Day 0 (BC1) and day 21 (BC2) Ag-score is compared for LEC subsets for mice
+    The center line, box limits, whiskers, and points represent the median,
+    interquartile range (IQR), the range within 1.5×IQR from the box limits,
+    and points outside this range (outliers), respectively.
+B.  Day 0 (BC1) and day 21 (BC2) Ag-score is compared for LEC subsets for mice
     that received dual vaccination.
     Values are shown for a biological replicate.
     The Spearman correlation between BC1 and BC2 is shown for each subset.
@@ -2676,7 +2721,7 @@ D.  Spearman correlation between Ag-high module scores and day 0 and day 21 Ag
     scores is shown for LEC subsets.
     Two-sided p values were calculated and adjusted using Benjamini-Hochberg
     correction.
-D.  The correlation between Ag-low module scores and Ag scores is shown as
+E.  The correlation between Ag-low module scores and Ag scores is shown as
     described in D.
 
 ```{r "ML module exchange correlation", fig.height = 8}
@@ -2818,8 +2863,7 @@ A.  Antigen counts are shown for adjacent LN tissue sections from
     a dual-immunized mouse analyzed with the Xenium platform.
 B.  Localization of Ag+ and Ag- cells is shown for LECs for tissue sections
     from A.
-C.  Localization of Ag+ and Ag- cells is shown for DCs for tissue sections from
-    A.
+C.  Localization of Ag+ and Ag- cells is shown for DCs for tissue sections from A.
 D.  Cell-cell interaction enrichment results are shown for section 1 from A for
     Ag+/- LECs and DCs.
     Arrows indicate significant enrichment for LEC-DC interactions.
@@ -3585,6 +3629,9 @@ E.  Ag-score is shown for single and dual vaccinations for the 21 day timepoint
     Other timepoints are shown in grey.
     P values were calculated using a one-sided Wilcoxon rank sum test with
     Benjamini-Hochberg correction.
+    The center line, box limits, whiskers, and points represent the median,
+    interquartile range (IQR), the range within 1.5×IQR from the box limits,
+    and points outside this range (outliers), respectively.
 F.  Ag-score is shown for single and dual vaccinations for the 0 day timepoint
     for a second biological replicate as described in E.
 
@@ -4379,10 +4426,14 @@ fig7_final
 A.  Ag-high and Ag-low module scores are shown for the predicted Ag classes.
     P values were calculated using a two-sided Wilcoxon rank sum test with
     Benjamini-Hochberg correction.
+    The center line, box limits, whiskers, and points represent the median,
+    interquartile range (IQR), the range within 1.5×IQR from the box limits,
+    and points outside this range (outliers), respectively.
 B.  Ag-high and Ag-low module scores are shown for mock and CHIKV-infected mice
     for each biological replicate.
     P values were calculated using a two-sided
     Wilcoxon rank sum test with Benjamini-Hochberg correction.
+    Boxplots were drawn as described in A.
 C.  The total fraction of cLECs, fLECs, and collecting LECs predicted to be
     Ag-competent is shown for mock and CHIKV-infected mice for two sets of
     predictions made using independent models.
