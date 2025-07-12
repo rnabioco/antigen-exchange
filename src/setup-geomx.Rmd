@@ -485,8 +485,8 @@ pData(geomx) <- pData(geomx) %>%
 ```
 
 ```{r "geomx save objects", eval = create_objs}
-save_objs(geomx_raw,  ob_dir = here(params$geomx_dir))
-save_objs(geomx,      ob_dir = here(params$geomx_dir))
+save_objs(geomx_raw, ob_dir = here(params$geomx_dir))
+save_objs(geomx, ob_dir = here(params$geomx_dir))
 ```
 
 ```{r "geomx load objects"}

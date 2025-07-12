@@ -2402,7 +2402,7 @@ ex_dat <- ag_objs %>%
           )) %>%
           mutate(
             Ag_class_dual = if_else(
-              vaccination == "dual",
+              vaccination == "dual" & subtype %in% rf_typs,
               Ag_class_dual,
               as.character(NA)
             )
@@ -2459,6 +2459,7 @@ ex_source_dat <- ex_dat %>%
       map_dfr(~ {
         .x %>%
           filter(exp != "exp-0") %>%
+          mutate(Ag_class_dual = replace_na(Ag_class_dual, "none")) %>%
           select(
             cell_id            = .cell_id,
             cell_type          = subtype,
