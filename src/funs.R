@@ -1,6 +1,21 @@
 
 # Utility ----
 
+.check_mtime <- function(upstream_file, new_file) {
+  make_file <- !file.exists(new_file)
+  
+  if (!make_file) {
+    up_mtime <- file.info(upstream_file)$mtime
+    mtime    <- file.info(new_file)$mtime
+    
+    if (is.na(up_mtime)) cli_abort("{.file {upstream_file}} does not exist")
+    
+    make_file <- up_mtime > mtime
+  }
+  
+  make_file
+}
+
 #' Save figure as TIFF
 #' 
 #' @param plt Plot to save
@@ -139,20 +154,6 @@ export_matrices <- function(sobj_in, assays = "RNA", feat_type = "Gene Expressio
     tibble::as_tibble(rownames = "cell_id") %>%
     dplyr::select(any_of(columns)) %>%
     readr::write_tsv(meta_out)
-}
-
-#' Calculate a pseudo count for a given vector
-#' 
-#' @param x Vector of values to use for calculation
-#' @param frac The pseudo count is calculated by multiplying the smallest
-#' non-zero value by frac.
-#' @return Values with pseudo count added
-#' @export
-add_pseudo <- function(x, frac = 0.5) {
-  
-  pseudo <- min(x[x > 0]) * frac
-  
-  x + pseudo
 }
 
 #' Run hypergeometric test
@@ -952,6 +953,176 @@ format_ag_data <- function(so_in, norm_factors, ag_key, ...) {
       tm_3 = ifelse(vaccination == "dual", 21, tm),
       tm_6 = ifelse(vaccination == "dual", 42, tm)
     )
+}
+
+#' Identify GO terms
+#' 
+#' By default all expressed genes are used as background for the cell type
+#' This will include results for all terms with any overlap regardless of
+#' significance, we need all terms for plotting enrichment scores
+#' 
+#' Terms with no overlap will not be included in results
+#' 
+#' @param genes Named list of differentially expressed genes for each cell type,
+#' names should correspond to cell type labels found in type_clmn
+#' @param so_in Seurat object so use for determining background gene set, if
+#' `NULL` all genes are used
+#' @param type_clmn Column in Seurat object containing cell types, these should
+#' match the cell types provided by genes
+#' @param max_term_size Maximum term size to include in results
+#' @param min_term_size Minimum term size to include in results
+#' @param db GO database to use, specify 'ALL' to use all three
+#' @param simplify_terms Should GO terms be simplified to removed redundant
+#' results, this has a significant effect on performance
+#' @param n_bkgd Number of top expressed genes to include for the background
+#' gene set
+#' @param exclude_genes Regular expression to use for removing genes before
+#' performing GO analysis, by default ribo protein and mito genes are excluded
+#' @param org_db Bioconductor organism annotation database, should be class
+#' OrgDb
+#' @param sim_data Similarity data to use for simplifying GO terms, generated
+#' using [clusterProfiler::godata()]
+#' @param file Path to output file for saving results, do not include extension
+get_go <- function(genes, so_in, cell_types = NULL, type_clmn = "subtype",
+                   max_term_size = 750, min_term_size = 10, db = "BP",
+                   simplify_terms = TRUE, n_bkgd = Inf,
+                   exclude_genes = "^(Rp[sl]|mt-)", org_db = org.Mm.eg.db,
+                   sim_data = go_sim_data, file = NULL) {
+  
+  # Check for save GO file
+  # this function will save a tsv and a GO object
+  obj_file <- str_c(file, ".qs")
+  tbl_file <- str_c(file, ".tsv")
+  
+  if (!is.null(file) && file.exists(obj_file)) {
+    cli::cli_alert("Loading file {.file {obj_file}}")
+    
+    return(qread(obj_file))
+  }
+  
+  # Set cell types to use for background genes
+  if (is.null(cell_types)) {
+    cell_types <- names(genes)
+    
+  } else if (length(cell_types) != length(genes)) {
+    cli_abort("The length of `cell_types` must match the length of `genes`")
+  }
+  
+  # Identify background gene set for each cell type
+  # this includes all genes with >0 counts for any cell
+  bkgd <- genes %>%
+    map2(cell_types, ~ {
+      bkgd <- NULL
+      
+      # so_in is required to determine background gene list
+      # if genes is not named, all cells in so_in will be used
+      if (!is.null(so_in)) {
+        if (is.character(.y) && (.y %in% so_in[[type_clmn]][[1]])) {
+          bkgd <- subset(so_in, !!sym(type_clmn) == .y)
+          
+        } else {
+          cli_warn("{.y} not in {type_clmn}, all genes used for background.")
+          
+          bkgd <- so_in
+        }
+        
+        bkgd <- bkgd@assays$RNA@data %>%
+          rowMeans() %>%
+          sort(decreasing = TRUE) %>%
+          head(n_bkgd)
+        
+        bkgd <- names(bkgd[bkgd > 0])
+        
+      } else {
+        cli::cli_warn(
+          "Background gene set can only be determined if so_in is provided"
+        )
+      }
+      
+      bkgd
+    })
+  
+  # Identify GO terms for each gene list
+  # * exclude specified genes
+  # * the geneRatio column may not include some input genes if they are not
+  #   included in the "GOALL" gene universe used by clusterProfiler
+  go <- genes %>%
+    imap(~ {
+      .x <- .x[!grepl(exclude_genes, .x)]
+      
+      g <- .x %>%
+        enrichGO(
+          keyType      = "SYMBOL",
+          OrgDb        = org_db,
+          universe     = bkgd[[.y]],
+          maxGSSize    = max_term_size,
+          minGSSize    = min_term_size,
+          pvalueCutoff = 1.1,
+          qvalueCutoff = 1.1,
+          ont          = db
+        )
+      
+      # Add background genes for each term to object
+      # * this column is formatted in the same way as the geneID column
+      # * these genes could be used to calculate overall fold enrichment for
+      #   each cell type for GO clusters, i.e. determine total number of unique
+      #   background genes overlapping all terms in the cluster
+      bkgd_gns <- g@result$ID %>%
+        clusterProfiler::bitr(         # used to fetch gene symbols for GO terms
+          fromType = "GOALL", toType = "SYMBOL",
+          OrgDb = org.Mm.eg.db
+        ) %>%
+        filter(SYMBOL %in% bkgd[[.y]]) %>%
+        split(.$GOALL)
+      
+      bkgd_gns <- bkgd_gns %>%
+        map_chr(~ {
+          .x$SYMBOL %>%
+            unique() %>%
+            str_c(collapse = "/")
+        })
+      
+      g %>%
+        mutate(bgID = bkgd_gns[ID])
+    })
+  
+  # Merge GO objects
+  if (!is.null(names(go))) {
+    go <- merge_result(go)
+    
+    go@fun <- "enrichGO"
+    
+  } else if (length(go) == 1) {
+    go <- go[[1]]
+  }
+  
+  # Simplify terms
+  # * this collapses terms that are very similar
+  # * this is very slow
+  if (simplify_terms && !is.list(go)) {
+    go <- go %>%
+      clusterProfiler::simplify(semData = sim_data)
+  }
+  
+  # Calculate enrichment scores
+  go <- go %>%
+    mutate(
+      n_ovlp       = as.numeric(str_extract(GeneRatio, "^[0-9]+")),
+      tot_genes    = as.numeric(str_extract(GeneRatio, "[0-9]+$")),
+      n_bg_ovlp    = as.numeric(str_extract(BgRatio,   "^[0-9]+")),
+      tot_bg_genes = as.numeric(str_extract(BgRatio,   "[0-9]+$")),
+      enrichment   = (n_ovlp / tot_genes) / (n_bg_ovlp / tot_bg_genes)
+    )
+  
+  # Save results
+  if (!is.null(file)) {
+    qsave(go, obj_file)
+    
+    go@compareClusterResult %>%
+      write_tsv(tbl_file)
+  }
+  
+  go
 }
 
 # Plotting ----
@@ -2092,6 +2263,252 @@ create_chikv_module_boxes <- function(df_in, x = "treatment", module_clmns,
       legend.position = "none",
       axis.title.x    = element_blank(),
       axis.text.x     = element_text(size = ttl_pt2)
+    )
+  
+  res
+}
+
+create_gn_plots <- function(so_in, p_data,
+                            x = "ml_pred_1_grp", plt_clrs, x_lvls,
+                            n_gns = 10, top_gns = NULL,
+                            p_test = wilcox.test, draw_line = TRUE, pt_size = 1,
+                            sort = TRUE) {
+  
+  # Set genes to plot
+  gns <- p_data %>%
+    distinct(gene, class) %>%
+    mutate(top = gene %in% top_gns) %>%
+    group_by(class) %>%
+    mutate(rank = row_number()) %>%
+    arrange(desc(top), rank) %>%
+    slice(1:n_gns) %>%
+    ungroup() %>%
+    arrange(rank)
+  
+  gns <- set_names(gns$class, gns$gene)
+  
+  p_data <- p_data %>%
+    filter(gene %in% names(gns))
+  
+  # Format data
+  n_mice <- n_distinct(so_in$mouse)
+  
+  cell_type <- unique(so_in$subtype)
+  
+  if (length(cell_type) > 1) cli_abort("Object contains more than one cell type")
+  
+  plt_dat <- so_in %>%
+    FetchData(c("mouse", "tm", "subtype", x, names(gns))) %>%
+    as_tibble(rownames = ".cell_id") %>%
+    pivot_longer(all_of(names(gns)), names_to = "gene") %>%
+    left_join(p_data, by = c("tm", x, "subtype", "gene")) %>%
+    
+    mutate(
+      gene      = fct_relevel(gene, names(gns)),
+      tm        = str_c("day ", tm),
+      x         = str_c(!!sym(x), "-", tm),
+      !!sym(x) := fct_relevel(!!sym(x), x_lvls),
+    ) %>%
+    arrange(!!sym(x)) %>%
+    mutate(x = fct_inorder(x))
+  
+  plt_dat <- plt_dat %>%
+    group_by(gene, mouse, tm, subtype, !!sym(x), x) %>%
+    summarize(
+      n       = n_distinct(.cell_id),
+      med     = median(value),
+      q1      = quantile(value, 0.25),
+      q3      = quantile(value, 0.75),
+      p_adj   = unique(p_adj),
+      .groups = "drop"
+    ) %>%
+    group_by(gene) %>%
+    mutate(range = max(q3) - min(q1)) %>%
+    ungroup() %>%
+    mutate(
+      class = gns[gene],
+      p_y = q3 + (range * 0.2)
+    )
+  
+  # Format x-axis labels
+  x_lab <- plt_dat %>%
+    mutate(
+      xlab = scales::label_comma()(n),
+      xlab = str_c(!!sym(x), " (n = ", xlab, ")")
+    ) %>%
+    distinct(xlab, x)
+  
+  x_lab <- set_names(x_lab$xlab, x_lab$x)
+  
+  # Create boxplots
+  plt_dat <- split(plt_dat, plt_dat$class)
+  
+  res <- plt_dat %>%
+    imap(~ {
+      cls <- .y
+      
+      plt <- .x %>%
+        ggplot(aes(x, med, color = !!sym(x))) +
+        geom_segment(
+          aes(x = x, xend = x, y = q1, yend = q3),
+          linewidth = pt_size, color = ln_col
+        ) +
+        geom_point(aes(size = !!sym(x)))
+      
+      if (draw_line) {
+        plt <- plt +
+          geom_smooth(
+            aes(x = as.numeric(as.factor(!!sym(x)))),
+            method = "lm", linewidth = 0.25, linetype = 2,
+            se = FALSE, formula = y ~ x
+          )
+      }
+      
+      plt <- plt +
+        geom_point(
+          aes(y = p_y),
+          data = ~ filter(.x, class == cls, p_adj < 0.05),
+          color = "black", shape = 6, stroke = 1, size = pt_size
+        ) +
+        facet_grid(gene ~ tm, scales = "free", switch = "y") +
+        scale_size_manual(values = c(pt_size, pt_size * 1.25, pt_size * 1.25)) +
+        scale_color_manual(values = plt_clrs) +
+        scale_y_continuous(
+          breaks = ~ c(ceiling(min(.x)), floor(max(.x))),
+          sec.axis = dup_axis(name = str_c(cell_type, " Ag-", .y))
+        ) +
+        scale_x_discrete(labels = x_lab) +
+        base_theme +
+        theme(
+          aspect.ratio       = 1,
+          plot.margin        = margin(15, 15, 15, 15),
+          legend.position    = "none",
+          panel.border       = element_rect(color = "grey75"),
+          strip.placement    = "outside",
+          strip.text.y.left  = element_text(face = "italic"),
+          axis.ticks.y.right = element_blank(),
+          axis.title         = element_blank(),
+          axis.title.y.right = element_text(angle = 270, size = ttl_pt2 * 1.2),
+          axis.text.y.right  = element_blank(),
+          axis.text.x        = element_text(angle = 45, hjust = 1)
+        )
+      
+      # Adjust theme
+      if (.y == dplyr::first(names(plt_dat))) {
+        plt <- plt +
+          theme(
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank()
+          )
+        
+      } else {
+        plt <- plt +
+          theme(
+            strip.text.x = element_blank(),
+            plot.margin  = margin(20, 15, 15, 15)
+          )
+      }
+      
+      plt
+    })
+  
+  res
+}
+
+create_sig_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
+                            pt_size = 0.15, pt_stroke = 0.6,
+                            scale_limits = NULL, outline = TRUE) {
+  res <- so_in %>%
+    plot_scatter(
+      dat_col,
+      "hUMAP_1", "hUMAP_2",
+      group_col    = grp_col,
+      outline      = outline,
+      plot_colors  = clrs,
+      panel_nrow   = 1,
+      size         = pt_size,
+      stroke       = pt_stroke,
+      label_params = list(size = ttl_pt2)
+    ) +
+    guides(fill = guide_colorbar(
+      ticks = FALSE, title.position = "top",
+      barheight = unit(6, "pt"), barwidth = unit(120, "pt"), 
+    )) +
+    base_theme +
+    theme(
+      plot.margin     = margin(),
+      plot.title      = element_text(size = 18),
+      legend.margin   = margin(),
+      legend.position = "bottom",
+      legend.title    = element_blank(),
+      axis.title      = element_blank(),
+      axis.ticks      = element_blank(),
+      axis.text       = element_blank(),
+      aspect.ratio    = 0.9
+    )
+  
+  if (!is.null(scale_limits)) {
+    res <- res +
+      scale_fill_gradientn(colours = clrs, limits = scale_limits)
+  }
+  
+  res
+}
+
+create_grp_umap <- function(so_in, dat_col, grp_col = "mouse", clrs,
+                            lvls = c("Ag-competent", "Ag-low", "Ag-high", "other"),
+                            ...) {
+  
+  # Format n labels  
+  n_labs <- so_in %>%
+    filter(!is.na(!!sym(dat_col))) %>%
+    group_by(!!sym(dat_col)) %>%
+    summarize(n = n()) %>%
+    mutate(
+      n_lab = str_c(!!sym(dat_col), "\nn = ", n)
+    )
+  
+  n_labs <- set_names(n_labs$n_lab, n_labs[[dat_col]])
+  
+  lvls <- lvls[lvls %in% names(n_labs)]
+  
+  # Create UMAPs
+  # * add colors separately since ggplot2 3.5.1 automatically includes `NA` in
+  #   plot legend
+  res <- so_in %>%
+    plot_scatter(
+      dat_col,
+      "hUMAP_1", "hUMAP_2",
+      group_col    = grp_col,
+      plot_lvls    = lvls,
+      panel_nrow   = 1,
+      label_params = list(size = ttl_pt2),
+      ...
+    ) +
+    guides(fill = guide_legend(
+      label.position = "bottom", reverse = TRUE,
+      override.aes = list(size = 4)
+    )) +
+    
+    scale_color_manual(
+      values   = clrs,
+      limits   = lvls,
+      breaks   = lvls,
+      labels   = n_labs,
+      na.value = "grey80"
+    ) +
+    
+    base_theme +
+    theme(
+      plot.margin     = margin(),
+      plot.title      = element_text(size = ttl_pt2),
+      legend.margin   = margin(),
+      legend.position = "bottom",
+      legend.title    = element_blank(),
+      axis.title      = element_blank(),
+      axis.ticks      = element_blank(),
+      axis.text       = element_blank(),
+      aspect.ratio    = 0.9
     )
   
   res

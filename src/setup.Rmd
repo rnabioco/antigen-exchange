@@ -762,9 +762,6 @@ all_meta <- read_tsv(here(params$so_dir, "all_meta.tsv.gz"))
 lec_so   <- load_obj(here(params$so_dir, "lec_so.qs"))
 dc_so    <- load_obj(here(params$so_dir, "dc_so.qs"))
 
-# cd45neg_so <- load_obj(here(params$so_dir, "cd45neg_so.qs"))
-# cd45pos_so <- load_obj(here(params$so_dir, "cd45pos_so.qs"))
-
 # Load cell type markers
 xlsx_path <- here(params$ref_dir, "cell-type-markers.xlsx")
 markers   <- xlsx::read.xlsx(xlsx_path, sheetName = "markers")

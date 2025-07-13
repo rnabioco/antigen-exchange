@@ -99,7 +99,7 @@ chikv_so <- chikv_so %>%
   })
 
 # Add module scores
-# * only add modules for top prediction
+# * only add modules for model 1
 CHIKV_FEATS <- MODULE_FEATS[[1]]
 
 CHIKV_FEATS %>%
@@ -124,7 +124,7 @@ CHIKV_FEATS %>%
 # Data for plotting
 # * cLEC Ag-high heatmap data, not all genes are in CHIKV object
 # * only pull module features for top model
-# * include top 75 genes for figures
+# * include top 70 genes for figures
 CHIKV_FEATS <- CHIKV_FEATS[[rf_cell_type]]$high
 CHIKV_FEATS <- CHIKV_FEATS[CHIKV_FEATS %in% rownames(chikv_so)]
 CHIKV_FEATS <- head(CHIKV_FEATS, 70)

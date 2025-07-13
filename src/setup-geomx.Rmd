@@ -350,23 +350,6 @@ plot_detect$Number <- unlist(lapply(
 plot_detect$Rate <- plot_detect$Number / nrow(fData(geomx))
 
 rownames(plot_detect) <- plot_detect$Freq
-
-
-
-# # Create bar graphs
-# ggplot(plot_detect, aes(x = as.factor(Freq), y = Rate, fill = Rate)) +
-#   geom_bar(stat = "identity") +
-#   geom_text(aes(label = formatC(Number, format = "d", big.mark = ",")),
-#             vjust = 1.6, color = "black", size = 4) +
-#   scale_fill_gradient2(low = "orange2", mid = "lightblue",
-#                        high = "dodgerblue3", midpoint = 0.65,
-#                        limits = c(0,1),
-#                        labels = scales::percent) +
-#   theme_bw() +
-#   scale_y_continuous(labels = scales::percent, limits = c(0,1),
-#                      expand = expansion(mult = c(0, 0))) +
-#   labs(x = "% of Segments",
-#        y = "Genes Detected, % of Panel > LOQ")
 ```
 
 ```{r "geomx normalize data", eval = create_objs}

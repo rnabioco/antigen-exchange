@@ -79,7 +79,7 @@ included below.
 - [x] &nbsp;Report Pearson correlation for Fig S4E-F ([R3C6](#R3C6)).
       Correlation coefficients and p values are included in source data
       spreadsheet.
-- [x] &nbsp;Adjust [Figure 1] and [Figure S1] colors to make them more distinguishable
+- [x] &nbsp;Adjust [Figure 1] and [Figure S2] colors to make them more distinguishable
       ([R2-minor](#R2-minor)).
 - [x] &nbsp;Generate source data tables for all figures.
 
@@ -2768,11 +2768,16 @@ ex_mod_scat <- scat_args %>%
 # Format source data
 # * include p values for spearman and pearson correlations to satisfy reviewer
 #   comment
-scat_p_dat <- scat_dat %>%
-  .calc_cor_pvals(
-    ag_clmns     = ag_clmns,
-    module_clmns = names(MODULE_NAMES)
-  )
+scat_p_dat <- names(MODULE_NAMES) %>%
+  split(., str_detect(., "high")) %>%
+  map(~ {
+    scat_dat %>%
+      .calc_cor_pvals(
+        ag_clmns     = ag_clmns,
+        module_clmns = .x
+      )
+  }) %>%
+  list_rbind()
 
 SOURCE_DATA$`figS6D-E` <- scat_dat %>%
   select(
